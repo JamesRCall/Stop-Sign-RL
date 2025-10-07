@@ -1,0 +1,16 @@
+# environment.yml (optional)
+name: stop-sign-rl
+channels: [pytorch, conda-forge]
+dependencies:
+  - python=3.10
+  - pytorch
+  - torchvision
+  - pip
+  - pip:
+    - stable-baselines3>=2.0.0
+    - gymnasium
+    - numpy
+    - Pillow
+    - tensorboard
+    - tqdm
+    - opencv-python

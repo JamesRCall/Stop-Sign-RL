@@ -1,0 +1,34 @@
+# Python basics
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.egg-info/
+.venv/
+.env
+.env.*
+
+# IDEs/editors
+.vscode/
+.idea/
+
+# Logs / caches
+*.log
+*.tmp
+*.cache/
+
+# Checkpoints, runs, outputs
+runs/
+!runs/analysis/          
+runs/analysis/*.png      
+*.zip
+*.pth
+*.pt
+
+# Weights (keep a placeholder but ignore actual binaries)
+weights/
+!weights/.gitkeep
+
+# Data (keep small sample, ignore big blobs if you add them later)
+data/**/*.zip
+data/**/*.tar

@@ -1,0 +1,22 @@
+# Core
+numpy>=1.24
+Pillow>=9.5
+matplotlib>=3.7
+pandas>=2.0
+
+# PyTorch (pick CUDA build matching your driver if needed)
+torch>=2.2
+torchvision>=0.17
+
+# RL
+stable-baselines3>=2.3.0
+gymnasium>=0.29
+
+# Logging / TB
+tensorboard>=2.14
+
+# YOLOv8/11 runtime
+ultralytics>=8.1
+
+# Optional but commonly needed
+opencv-python>=4.8
