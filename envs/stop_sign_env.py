@@ -40,7 +40,7 @@ class StopSignBlobEnv(gym.Env):
 
         # ---- Blob controls ----
         count_max: int = 80,
-        area_cap: float = 0.20,
+        area_cap: float = 0.30,
 
         # ---- UV paints ----
         # You can pass a list like [VIOLET_GLOW, GREEN_GLOW, ...]
@@ -154,23 +154,39 @@ class StopSignBlobEnv(gym.Env):
             img_attack, _ = self._place_group_on_background(group_attack, self._bg_rgb, seed=place_seed)
 
             # score on FINAL images; preview is the attacked final composite
-            c0 = self._infer_conf(img_plain)
-            ca = self._infer_conf(img_attack)
+            c0 = float(self._infer_conf(img_plain))
+            ca = float(self._infer_conf(img_attack))
             preview = img_attack
 
-            drop = c0 - ca
-            reward = drop - 0.1 * total_area_mask_frac
+            # ------------------ normalized reward ------------------
+            # confidences are in [0,1]; normalize the drop by the baseline
+            rel_drop = max(0.0, (c0 - ca) / max(c0, 1e-3))  # 0..~1 (higher is better for adversary)
+
+            # area penalties: small linear discouragement + stronger penalty above a soft cap
+            cap = float(self.area_cap)             # e.g., 0.20
+            over = max(0.0, total_area_mask_frac - cap)
+            pen_area_lin  = 0.10 * total_area_mask_frac      # light touch everywhere
+            pen_area_over = 0.80 * (over ** 2)               # quadratic over-cap
+
+            # count penalty to avoid degenerate "many tiny blobs" solutions
+            cnt_norm = float(params["count"]) / max(1.0, float(self.count_max))
+            pen_count = 0.10 * cnt_norm
+
+            # combine and squash to [-1, 1] for stable PPO
+            raw = (1.00 * rel_drop) - (pen_area_lin + pen_area_over + pen_count)
+            import math
+            reward = math.tanh(2.0 * raw)  # gain=2 tightens into [-1,1] but keeps signal
 
             obs = np.array(img_attack, dtype=np.uint8)  # agent "sees" what it made
             terminated = False
             truncated = (self._step_in_ep >= self.steps_per_episode)
             info = {
                 "objective": "attack_only",
-                "base_conf": float(c0),
-                "after_conf": float(ca),
-                "delta_conf": float(ca - c0),
+                "base_conf": c0,
+                "after_conf": ca,
+                "delta_conf": ca - c0,
                 "total_area_mask_frac": total_area_mask_frac,
-                "area_cap": float(self.area_cap),
+                "area_cap": cap,
                 "params": {
                     "count": int(params["count"]),
                     "size_scale": float(params["size_scale"]),
@@ -189,16 +205,22 @@ class StopSignBlobEnv(gym.Env):
                     "color_idx": int(params["color_idx"]),
                     "place": place_meta,
                 },
-                # quick diagnostics
-                "conf_plain": float(c0),
-                "conf_uv_day": float(ca),
-                "conf_uv_on": float(ca),
-                "gap": float(drop),
+                # diagnostics for TB
+                "reward_raw": float(raw),
+                "rel_drop": float(rel_drop),
+                "pen_area_lin": float(pen_area_lin),
+                "pen_area_over": float(pen_area_over),
+                "pen_count": float(pen_count),
+                "conf_plain": c0,
+                "conf_uv_day": ca,
+                "conf_uv_on": ca,
+                "gap": float(c0 - ca),
                 "reward": float(reward),
                 # the exact tested image
                 "composited_pil": preview,
             }
             return obs, reward, terminated, truncated, info
+
 
         # -------------------- Phase B (UV-day & UV-on) --------------------
         # 1) UV-day

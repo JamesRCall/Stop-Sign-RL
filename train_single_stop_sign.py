@@ -8,7 +8,7 @@ from PIL import Image
 import torch
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecTransposeImage
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList, BaseCallback, CheckpointCallback
 
@@ -29,7 +29,7 @@ class ProgressETACallback(BaseCallback):
 
     def _on_training_start(self):
         self._t0 = time.perf_counter()
-        self._last_log = self._t0
+        self._last_log = self._t0  # fixed
 
     def _on_step(self) -> bool:
         now = time.perf_counter()
@@ -38,8 +38,8 @@ class ProgressETACallback(BaseCallback):
             elapsed = now - self._t0
             sps = done / max(elapsed, 1e-9)
             if self.verbose:
-                eta = (self.model._total_timesteps - done) / max(sps, 1e-9)
-                print(f"[{done:,}/{self.model._total_timesteps:,}] {sps:,.1f} steps/s | ETA {eta/3600:,.2f}h")
+                eta = max(self.model._total_timesteps - done, 0) / max(sps, 1e-9)
+                print(f"[{done:,}/{self.model._total_timesteps:,}] {sps:,.2f} steps/s | ETA {eta/3600:,.2f}h")
             self.logger.record("progress/steps_per_sec", sps)
             self._last_log = now
         return True
@@ -88,9 +88,9 @@ def make_env_factory(
 
                 # blobs & UV paint pairs
                 count_max=80,
-                area_cap=0.20,
-                uv_paints=uv_paints,              # <— list of UVPaints
-                default_uv_paint=uv_paints[0],    # harmless fallback
+                area_cap=0.30,                 # you asked for 0.30 cap
+                uv_paints=uv_paints,           # list of UVPaints
+                default_uv_paint=uv_paints[0], # fallback
 
                 # reward shaping (Phase B)
                 eps_day_tolerance=eps_day_tolerance,
@@ -106,21 +106,36 @@ def make_env_factory(
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Train PPO on UV-adv stop-sign env")
+
+    # Modes / curriculum
     ap.add_argument("--mode", choices=["attack", "uv", "both"], default="both",
                     help="attack=Phase A only, uv=Phase B only, both=Phase A then B")
     ap.add_argument("--steps-a", type=int, default=400_000, help="timesteps for Phase A (attack only)")
     ap.add_argument("--steps-b", type=int, default=1_200_000, help="timesteps for Phase B (UV gap)")
-    ap.add_argument("--num-envs", type=int, default=8)
-    ap.add_argument("--n-steps", type=int, default=512, help="rollout length per env")
     ap.add_argument("--ep1", type=int, default=12, help="episode steps in Phase A")
     ap.add_argument("--ep2", type=int, default=16, help="episode steps in Phase B")
     ap.add_argument("--attack-alpha", type=float, default=1.0, help="opacity for Phase A blobs")
+
+    # Vectorization / throughput controls
+    ap.add_argument("--num-envs", type=int, default=8, help="number of parallel environments")
+    ap.add_argument("--vec", choices=["dummy", "subproc"], default="dummy",
+                    help="vector env type: dummy (single process) or subproc (parallel processes)")
+    ap.add_argument("--n-steps", type=int, default=512, help="rollout length per env before PPO update")
+
+    # Checkpoint frequency options (choose ONE)
+    ap.add_argument("--save-freq-steps", type=int, default=0,
+                    help="checkpoint every N env-steps (overrides --save-freq-updates if >0)")
+    ap.add_argument("--save-freq-updates", type=int, default=2,
+                    help="checkpoint every K PPO rollouts (1 rollout = n_steps * num_envs)")
+
+    # Paths
     ap.add_argument("--yolo", default="./weights/yolo11n.pt")
     ap.add_argument("--data", default="./data")
     ap.add_argument("--bgdir", default="./data/backgrounds")
     ap.add_argument("--tb", default="./runs/tb")
     ap.add_argument("--ckpt", default="./runs/checkpoints")
     ap.add_argument("--overlays", default="./runs/overlays")
+
     return ap.parse_args()
 
 
@@ -163,23 +178,33 @@ if __name__ == "__main__":
 
     # --- Build vectorized env for current phase ---
     def build_env_for_phase(ep, attack):
-        return VecTransposeImage(
-            DummyVecEnv([
-                make_env_factory(
-                    stop_plain, stop_uv, pole_rgba, backgrounds, YOLO_WTS,
-                    steps_per_episode=ep,
-                    attack_only=attack, attack_alpha=args.attack_alpha,
-                    uv_paints=UV_PAINTS,
-                    eps_day_tolerance=0.03, day_floor=0.80,
-                ) for _ in range(args.num_envs)
-            ])
-        )
+        env_fns = [
+            make_env_factory(
+                stop_plain, stop_uv, pole_rgba, backgrounds, YOLO_WTS,
+                steps_per_episode=ep,
+                attack_only=attack, attack_alpha=args.attack_alpha,
+                uv_paints=UV_PAINTS,
+                eps_day_tolerance=0.03, day_floor=0.80,
+            ) for _ in range(args.num_envs)
+        ]
+        if args.vec == "subproc":
+            venv = SubprocVecEnv(env_fns)
+        else:
+            venv = DummyVecEnv(env_fns)
+        return VecTransposeImage(venv)
 
     env = build_env_for_phase(phaseA_cfg["ep"], phaseA_cfg["attack"])
 
     # --- PPO setup ---
-    N_STEPS = args.n_steps
-    SAVE_FREQ = 2 * N_STEPS * args.num_envs  # every ~2 PPO updates
+    N_STEPS = int(args.n_steps)
+
+    # SAVE FREQUENCY:
+    # If user provided explicit step interval, use it. Otherwise compute by K rollouts.
+    if args.save_freq_steps and args.save_freq_steps > 0:
+        SAVE_FREQ = int(args.save_freq_steps)
+    else:
+        rollout = N_STEPS * args.num_envs
+        SAVE_FREQ = int(max(rollout * max(args.save_freq_updates, 1), 1))
 
     os.makedirs(args.ckpt, exist_ok=True)
     os.makedirs(args.tb, exist_ok=True)
@@ -190,7 +215,7 @@ if __name__ == "__main__":
         env,
         verbose=2,
         n_steps=N_STEPS,
-        batch_size=128,
+        batch_size=128,            # ensure divisible by n_steps*num_envs or SB3 will auto-handle
         learning_rate=2.5e-4,
         ent_coef=0.01,
         vf_coef=0.5,
@@ -217,7 +242,7 @@ if __name__ == "__main__":
 
     # ----------------- Phase A -----------------
     if args.mode in ("attack", "both"):
-        total_A = args.steps_a
+        total_A = int(args.steps_a)
         print(f"\n=== Phase A (attack-only) for {total_A:,} steps ===")
         ckptA = CheckpointCallback(save_freq=SAVE_FREQ, save_path=args.ckpt, name_prefix="phaseA")
         progressA = ProgressETACallback(total_timesteps=total_A, log_every_sec=15, verbose=1)
@@ -233,7 +258,7 @@ if __name__ == "__main__":
         env.set_attr("attack_only", False)
         env.set_attr("steps_per_episode", phaseB_cfg["ep"])
 
-        total_B = args.steps_b
+        total_B = int(args.steps_b)
         ckptB = CheckpointCallback(save_freq=SAVE_FREQ, save_path=args.ckpt, name_prefix="phaseB")
         progressB = ProgressETACallback(total_timesteps=total_B, log_every_sec=15, verbose=1)
         model.learn(
