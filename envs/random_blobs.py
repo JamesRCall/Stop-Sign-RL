@@ -92,12 +92,20 @@ def draw_randomized_blobs_set(
         if total_area_frac >= area_cap - 1e-6:
             break
 
-    # final mask: restrict union to allowed region
+  # final mask: restrict union to allowed region
     if allowed_mask.mode != "L":
         allowed_mask = allowed_mask.convert("L")
     final_mask = ImageChops.multiply(union_mask, allowed_mask)
 
-    # HARD paste: opaque color where mask=255
+    # --- NEW: honor translucency ---
+    a = float(np.clip(alpha, 0.0, 1.0))
+    if a < 1.0:
+        fm = (np.array(final_mask, dtype=np.float32) * a).astype(np.uint8)
+        final_mask = Image.fromarray(fm, mode="L")
+
     comp.paste(color, mask=final_mask)
+
+    # record the actual alpha you used
+    metas[-1]["alpha"] = a if metas else a
 
     return comp, metas
