@@ -13,7 +13,12 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList, BaseCallback, CheckpointCallback
 
 from envs.stop_sign_env import StopSignBlobEnv
-from utils.uv_paint import VIOLET_GLOW  # add more and pass them in uv_paints=[...]
+from utils.uv_paint import (
+    VIOLET_GLOW,
+    GREEN_GLOW,
+    BLUE_GLOW,      # NEW
+    YELLOW_GLOW,    # NEW
+)
 from utils.save_callbacks import SaveImprovingOverlaysCallback
 from utils.tb_callbacks import TensorboardOverlayCallback
 
@@ -71,7 +76,7 @@ def make_env_factory(
     eps_day_tolerance: float = 0.03,
     day_floor: float = 0.80,
 ):
-    uv_paints = uv_paints or [VIOLET_GLOW]
+    uv_paints = uv_paints or [VIOLET_GLOW, GREEN_GLOW, BLUE_GLOW, YELLOW_GLOW]
 
     def _init():
         return Monitor(
@@ -88,9 +93,9 @@ def make_env_factory(
 
                 # blobs & UV paint pairs
                 count_max=80,
-                area_cap=0.30,                 # you asked for 0.30 cap
-                uv_paints=uv_paints,           # list of UVPaints
-                default_uv_paint=uv_paints[0], # fallback
+                area_cap=0.30,
+                uv_paints=uv_paints,             # <- list of 4 paints
+                default_uv_paint=uv_paints[0],
 
                 # reward shaping (Phase B)
                 eps_day_tolerance=eps_day_tolerance,
@@ -162,8 +167,8 @@ if __name__ == "__main__":
     pole_rgba  = Image.open(POLE_PNG).convert("RGBA")
     backgrounds = load_backgrounds(BG_DIR)
 
-    # You can add more pairs here:
-    UV_PAINTS = [VIOLET_GLOW]  # e.g., [VIOLET_GLOW, GREEN_GLOW, BLUE_GLOW]
+    # Use four pairs:
+    UV_PAINTS = [VIOLET_GLOW, GREEN_GLOW, BLUE_GLOW, YELLOW_GLOW]
 
     # --- Env: initial phase config based on mode ---
     if args.mode == "attack":
@@ -198,8 +203,6 @@ if __name__ == "__main__":
     # --- PPO setup ---
     N_STEPS = int(args.n_steps)
 
-    # SAVE FREQUENCY:
-    # If user provided explicit step interval, use it. Otherwise compute by K rollouts.
     if args.save_freq_steps and args.save_freq_steps > 0:
         SAVE_FREQ = int(args.save_freq_steps)
     else:
@@ -215,7 +218,7 @@ if __name__ == "__main__":
         env,
         verbose=2,
         n_steps=N_STEPS,
-        batch_size=128,            # ensure divisible by n_steps*num_envs or SB3 will auto-handle
+        batch_size=128,
         learning_rate=2.5e-4,
         ent_coef=0.01,
         vf_coef=0.5,
@@ -229,14 +232,14 @@ if __name__ == "__main__":
         log_dir=args.tb,
         tag_prefix="uv_adv",
         max_images=50,
-        verbose=1,   # print when it writes images/scalars
+        verbose=1,
     )
     saver = SaveImprovingOverlaysCallback(
         save_dir=args.overlays,
-        threshold=0.0,    # log from the start (no improvement gate)
-        mode="adversary", # force adversary mode for early testing
+        threshold=0.0,
+        mode="adversary",
         max_saved=50,
-        verbose=1,        # print when saving/replacing/logging
+        verbose=1,
         tb_callback=tb_cb,
     )
 
@@ -257,7 +260,6 @@ if __name__ == "__main__":
         print("\nSwitching to Phase B (UV gap objective)...")
         env.set_attr("attack_only", False)
         env.set_attr("steps_per_episode", phaseB_cfg["ep"])
-
         total_B = int(args.steps_b)
         ckptB = CheckpointCallback(save_freq=SAVE_FREQ, save_path=args.ckpt, name_prefix="phaseB")
         progressB = ProgressETACallback(total_timesteps=total_B, log_every_sec=15, verbose=1)
@@ -268,7 +270,6 @@ if __name__ == "__main__":
             tb_log_name="phaseB",
         )
 
-    # --- Final save ---
     final_path = os.path.join(args.ckpt, "ppo_uv_adv_final")
     model.save(final_path)
     print(f"✅ Saved final model to {final_path}")
