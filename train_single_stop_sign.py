@@ -3,7 +3,7 @@ import os
 import glob
 import time
 import argparse
-from typing import List
+from typing import List, Optional
 from PIL import Image
 import torch
 
@@ -16,8 +16,8 @@ from envs.stop_sign_env import StopSignBlobEnv
 from utils.uv_paint import (
     VIOLET_GLOW,
     GREEN_GLOW,
-    BLUE_GLOW,      # NEW
-    YELLOW_GLOW,    # NEW
+    BLUE_GLOW,
+    YELLOW_GLOW,
 )
 from utils.save_callbacks import SaveImprovingOverlaysCallback
 from utils.tb_callbacks import TensorboardOverlayCallback
@@ -94,7 +94,7 @@ def make_env_factory(
                 # blobs & UV paint pairs
                 count_max=80,
                 area_cap=0.30,
-                uv_paints=uv_paints,             # <- list of 4 paints
+                uv_paints=uv_paints,             # list of 4 paints
                 default_uv_paint=uv_paints[0],
 
                 # reward shaping (Phase B)
@@ -107,6 +107,24 @@ def make_env_factory(
             )
         )
     return _init
+
+
+def find_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
+    if not os.path.isdir(ckpt_dir):
+        return None
+    # Prefer phase checkpoints, then any zip
+    patterns = [
+        os.path.join(ckpt_dir, "phaseA_*_steps.zip"),
+        os.path.join(ckpt_dir, "phaseB_*_steps.zip"),
+        os.path.join(ckpt_dir, "*.zip"),
+    ]
+    cands = []
+    for pat in patterns:
+        cands.extend(glob.glob(pat))
+    if not cands:
+        return None
+    cands.sort(key=lambda p: os.path.getmtime(p))
+    return cands[-1]
 
 
 def parse_args():
@@ -132,6 +150,12 @@ def parse_args():
                     help="checkpoint every N env-steps (overrides --save-freq-updates if >0)")
     ap.add_argument("--save-freq-updates", type=int, default=2,
                     help="checkpoint every K PPO rollouts (1 rollout = n_steps * num_envs)")
+
+    # Resume / batch size
+    ap.add_argument("--resume-from", default="", help="Path to a saved .zip checkpoint to resume from")
+    ap.add_argument("--resume-latest", action="store_true", help="Auto-pick latest checkpoint from --ckpt dir")
+    ap.add_argument("--batch-size", type=int, default=int(os.getenv("PPO_BATCH_SIZE", "128")),
+                    help="PPO batch size (can be set via PPO_BATCH_SIZE env)")
 
     # Paths
     ap.add_argument("--yolo", default="./weights/yolo11n.pt")
@@ -213,12 +237,13 @@ if __name__ == "__main__":
     os.makedirs(args.tb, exist_ok=True)
     os.makedirs(args.overlays, exist_ok=True)
 
+    # Build a fresh model first (used if not resuming)
     model = PPO(
         "CnnPolicy",
         env,
         verbose=2,
         n_steps=N_STEPS,
-        batch_size=128,
+        batch_size=int(args.batch_size),
         learning_rate=2.5e-4,
         ent_coef=0.01,
         vf_coef=0.5,
@@ -227,11 +252,28 @@ if __name__ == "__main__":
         device="auto",
     )
 
+    # --- Optional: resume from a checkpoint ---
+    ckpt_path = None
+    if args.resume_from:
+        ckpt_path = args.resume_from
+    elif args.resume_latest or os.getenv("RESUME_LATEST", "0") == "1":
+        ckpt_path = find_latest_checkpoint(args.ckpt)
+
+    if ckpt_path and os.path.isfile(ckpt_path):
+        print(f"🔄 Resuming from: {ckpt_path}")
+        model = PPO.load(ckpt_path, env=env, device="auto")
+        # Align runtime hypers to current CLI settings after load
+        model.n_steps = N_STEPS
+        model.batch_size = int(args.batch_size)
+        # You can also adjust lr/clip here if desired:
+        # model.learning_rate = 2.5e-4
+        # model.clip_range = 0.1
+
     # --- Callbacks (shared) ---
     tb_cb = TensorboardOverlayCallback(
         log_dir=args.tb,
         tag_prefix="uv_adv",
-        max_images=50,
+        max_images=10,        # safer on RAM
         verbose=1,
     )
     saver = SaveImprovingOverlaysCallback(
