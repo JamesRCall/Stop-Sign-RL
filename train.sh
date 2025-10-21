@@ -5,9 +5,9 @@ set -euo pipefail
 # Defaults (can be overridden)
 # ==============================
 MODE="${MODE:-both}"                    # attack | uv | both
-NUM_ENVS="${NUM_ENVS:-8}"
+NUM_ENVS="${NUM_ENVS:-32}"
 N_STEPS="${N_STEPS:-512}"
-BATCH="${BATCH:-128}"                   # NOTE: your trainer must read PPO_BATCH_SIZE env or accept --batch-size
+BATCH="${BATCH:-4096}"                  # trainer can read PPO_BATCH_SIZE or --batch-size
 VEC="${VEC:-subproc}"                   # dummy | subproc
 
 TB_DIR="${TB_DIR:-./_runs/tb}"          # keep this outside OneDrive to avoid file locks
@@ -18,8 +18,12 @@ PORT="${PORT:-6006}"
 NGROK_URL="${NGROK_URL:-https://curliest-ally-sobersidedly.ngrok-free.dev}"
 
 SAVE_FREQ_UPDATES="${SAVE_FREQ_UPDATES:-2}"  # checkpoints every K PPO rollouts
-
 PY_MAIN="${PY_MAIN:-train_single_stop_sign.py}"
+
+# Monitoring
+MON_INTERVAL="${MON_INTERVAL:-5}"       # seconds between samples
+ENABLE_MON="${ENABLE_MON:-1}"           # 1=on, 0=off
+MON_LOG="./_runs/monitor.log"
 
 # ==============================
 # CLI overrides
@@ -42,6 +46,9 @@ Options:
   --port P                    (default: $PORT)
   --ngrok-url URL             (default: $NGROK_URL)
 
+  --mon-interval SEC          (default: $MON_INTERVAL)
+  --no-monitor                (disable resource monitor)
+
   -h, --help
 EOF
 }
@@ -61,6 +68,9 @@ while [[ $# -gt 0 ]]; do
     --port) PORT="$2"; shift 2;;
     --ngrok-url) NGROK_URL="$2"; shift 2;;
 
+    --mon-interval) MON_INTERVAL="$2"; shift 2;;
+    --no-monitor) ENABLE_MON="0"; shift 1;;
+
     -h|--help) usage; exit 0;;
     *) echo "Unknown option: $1"; usage; exit 1;;
   esac
@@ -71,11 +81,16 @@ mkdir -p "$TB_DIR" "$CKPT_DIR" "$OVR_DIR" ./_runs
 # ==============================
 # Helpers
 # ==============================
+TB_PID=""
+NGROK_PID=""
+MON_PID=""
+
 cleanup() {
   echo ""
   echo "[CLEANUP] Stopping background services..."
-  [[ -n "${TB_PID:-}" ]] && kill "$TB_PID" 2>/dev/null || true
-  [[ -n "${NGROK_PID:-}" ]] && kill "$NGROK_PID" 2>/dev/null || true
+  [[ -n "${TB_PID}" ]] && kill "$TB_PID" 2>/dev/null || true
+  [[ -n "${NGROK_PID}" ]] && kill "$NGROK_PID" 2>/dev/null || true
+  [[ -n "${MON_PID}" ]] && kill "$MON_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -89,11 +104,9 @@ start_tensorboard() {
 
 start_ngrok() {
   echo "[NGROK] Starting tunnel for TensorBoard (${PORT}) → ${NGROK_URL}"
-  # ngrok v3 prefers --url, older builds used --domain; try --url then fallback.
   if ngrok http --help 2>/dev/null | grep -q -- "--url"; then
     ngrok http --url="${NGROK_URL}" "${PORT}" > ./_runs/ngrok.log 2>&1 &
   else
-    # try older flag
     ngrok http --domain="$(echo "${NGROK_URL}" | sed 's~https\?://~~')" "${PORT}" > ./_runs/ngrok.log 2>&1 &
   fi
   NGROK_PID=$!
@@ -102,11 +115,58 @@ start_ngrok() {
   echo "[NGROK] If you see auth errors, run once: ngrok config add-authtoken <YOUR_TOKEN>"
 }
 
+start_monitor() {
+  [[ "${ENABLE_MON}" != "1" ]] && { echo "[MON] Monitor disabled"; return; }
+  echo "[MON] Starting resource monitor @ ${MON_INTERVAL}s → ${MON_LOG}"
+  {
+    echo "=== Resource monitor started: $(date) ==="
+    echo "interval=${MON_INTERVAL}s"
+    echo ""
+
+    has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+    while true; do
+      ts="$(date '+%F %T')"
+      echo "----- ${ts} -----"
+
+      # GPU + VRAM (nvidia-smi)
+      if has_cmd nvidia-smi; then
+        echo "[GPU] nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits"
+        nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits | awk '{printf "GPU util=%s%%, mem=%s/%s MiB\n",$1,$2,$3}'
+      else
+        echo "[GPU] nvidia-smi not found"
+      fi
+
+      # CPU
+      if has_cmd mpstat; then
+        mpstat 1 1 | awk '/all/ {printf "[CPU] usr=%.1f%% sys=%.1f%% idle=%.1f%%\n",$3,$5,$12}'
+      elif has_cmd top; then
+        top -b -n1 | awk -F',' '/Cpu\(s\)/{print "[CPU]" $0}'
+      else
+        echo "[CPU] mpstat/top not found"
+      fi
+
+      # RAM
+      if has_cmd free; then
+        free -m | awk '/Mem:/ {printf "[RAM] used=%d MiB / total=%d MiB (%.1f%%)\n",$3,$2,($3/$2)*100}'
+      else
+        echo "[RAM] free not found"
+      fi
+
+      echo ""
+      sleep "${MON_INTERVAL}"
+    done
+  } >> "${MON_LOG}" 2>&1 &
+  MON_PID=$!
+  echo "[MON] PID=${MON_PID} | log: ${MON_LOG}"
+}
+
 # ==============================
 # Start services
 # ==============================
 start_tensorboard
 start_ngrok
+start_monitor
 
 # ==============================
 # Run training (foreground)
@@ -114,6 +174,7 @@ start_ngrok
 echo "[TRAIN] Launching training:"
 echo "        mode=${MODE} num-envs=${NUM_ENVS} vec=${VEC} n-steps=${N_STEPS} batch=${BATCH}"
 echo "        tb=${TB_DIR} ckpt=${CKPT_DIR} overlays=${OVR_DIR} save-freq-updates=${SAVE_FREQ_UPDATES}"
+echo "        monitor: interval=${MON_INTERVAL}s → ${MON_LOG}"
 echo ""
 
 # If your trainer supports --batch-size, append it. If not, it will be ignored.
