@@ -307,10 +307,9 @@ class StopSignBlobEnv(gym.Env):
     # ============================ helpers ====================================
 
     def _infer_conf(self, pil_rgb: Image.Image) -> float:
-        try:
-            return float(self.det.infer_confidence(pil_rgb))
-        except Exception:
-            return 0.0
+        # TEMP: surface errors (or set debug=True in DetectorWrapper)
+        return float(self.det.infer_confidence(pil_rgb))
+
 
     def _map_action(self, a: np.ndarray) -> Dict[str, Any]:
         a = np.clip(a, -1, 1).astype(np.float32)
