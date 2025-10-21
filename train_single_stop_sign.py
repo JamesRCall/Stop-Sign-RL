@@ -95,7 +95,7 @@ def make_env_factory(
 
                 # blobs & UV paint pairs
                 count_max=80,
-                area_cap=0.70,
+                area_cap=0.99,
                 uv_paints=uv_paints,
                 default_uv_paint=uv_paints[0],
 

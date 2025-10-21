@@ -40,7 +40,7 @@ class StopSignBlobEnv(gym.Env):
 
             # ---- Blob controls ----
             count_max: int = 80,
-            area_cap: float = 0.70,             # <-- you already raised to 0.70
+            area_cap: float = 0.99,             # <-- you already raised to 0.70
 
             # ---- UV paints ----
             uv_paints: Optional[List[UVPaint]] = None,

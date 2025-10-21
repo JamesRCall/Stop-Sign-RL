@@ -23,7 +23,7 @@ def draw_randomized_blobs_set(
     mode: str,
     rng: np.random.Generator,
     allowed_mask: Image.Image = None, # L mask: where blobs are permitted
-    area_cap: float = 0.70,           # cap as fraction of allowed_mask area
+    area_cap: float = 0.99,           # cap as fraction of allowed_mask area
     cap_relative_to_mask: bool = True,# kept for API compatibility
     single_color: bool = True
 ) -> Tuple[Image.Image, List[Dict[str, Any]]]:
