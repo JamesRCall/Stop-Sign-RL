@@ -110,9 +110,9 @@ def make_env_factory(
 
 
 def find_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
+    """Pick the newest .zip in ckpt_dir, preferring phaseA/phaseB patterns."""
     if not os.path.isdir(ckpt_dir):
         return None
-    # Prefer phase checkpoints, then any zip
     patterns = [
         os.path.join(ckpt_dir, "phaseA_*_steps.zip"),
         os.path.join(ckpt_dir, "phaseB_*_steps.zip"),
@@ -145,19 +145,13 @@ def parse_args():
                     help="vector env type: dummy (single process) or subproc (parallel processes)")
     ap.add_argument("--n-steps", type=int, default=512, help="rollout length per env before PPO update")
 
-    # Checkpoint frequency options (choose ONE)
+    # Checkpoint cadence (ONE of these is used)
     ap.add_argument("--save-freq-steps", type=int, default=0,
                     help="checkpoint every N env-steps (overrides --save-freq-updates if >0)")
     ap.add_argument("--save-freq-updates", type=int, default=2,
                     help="checkpoint every K PPO rollouts (1 rollout = n_steps * num_envs)")
 
-    # Resume / batch size
-    ap.add_argument("--resume-from", default="", help="Path to a saved .zip checkpoint to resume from")
-    ap.add_argument("--resume-latest", action="store_true", help="Auto-pick latest checkpoint from --ckpt dir")
-    ap.add_argument("--batch-size", type=int, default=int(os.getenv("PPO_BATCH_SIZE", "128")),
-                    help="PPO batch size (can be set via PPO_BATCH_SIZE env)")
-
-    # Paths
+    # Paths (as your train.sh provides)
     ap.add_argument("--yolo", default="./weights/yolo11n.pt")
     ap.add_argument("--data", default="./data")
     ap.add_argument("--bgdir", default="./data/backgrounds")
@@ -191,7 +185,7 @@ if __name__ == "__main__":
     pole_rgba  = Image.open(POLE_PNG).convert("RGBA")
     backgrounds = load_backgrounds(BG_DIR)
 
-    # Use four pairs:
+    # Four UV paint pairs
     UV_PAINTS = [VIOLET_GLOW, GREEN_GLOW, BLUE_GLOW, YELLOW_GLOW]
 
     # --- Env: initial phase config based on mode ---
@@ -226,24 +220,26 @@ if __name__ == "__main__":
 
     # --- PPO setup ---
     N_STEPS = int(args.n_steps)
+    BATCH_SIZE = int(os.getenv("PPO_BATCH_SIZE", "128"))  # train.sh exports PPO_BATCH_SIZE=$BATCH
 
     if args.save_freq_steps and args.save_freq_steps > 0:
         SAVE_FREQ = int(args.save_freq_steps)
     else:
         rollout = N_STEPS * args.num_envs
-        SAVE_FREQ = int(max(rollout * max(args.save_freq_updates, 1), 1))
+        SAVE_FREQ = int(max(rollout * max(int(os.getenv("SAVE_FREQ_UPDATES", "0")) or  # allow env override
+                                          args.save_freq_updates, 1), 1))
 
     os.makedirs(args.ckpt, exist_ok=True)
     os.makedirs(args.tb, exist_ok=True)
     os.makedirs(args.overlays, exist_ok=True)
 
-    # Build a fresh model first (used if not resuming)
+    # Build a fresh model (we may replace it with a loaded one)
     model = PPO(
         "CnnPolicy",
         env,
         verbose=2,
         n_steps=N_STEPS,
-        batch_size=int(args.batch_size),
+        batch_size=BATCH_SIZE,
         learning_rate=2.5e-4,
         ent_coef=0.01,
         vf_coef=0.5,
@@ -252,28 +248,23 @@ if __name__ == "__main__":
         device="auto",
     )
 
-    # --- Optional: resume from a checkpoint ---
-    ckpt_path = None
-    if args.resume_from:
-        ckpt_path = args.resume_from
-    elif args.resume_latest or os.getenv("RESUME_LATEST", "0") == "1":
-        ckpt_path = find_latest_checkpoint(args.ckpt)
-
-    if ckpt_path and os.path.isfile(ckpt_path):
-        print(f"🔄 Resuming from: {ckpt_path}")
-        model = PPO.load(ckpt_path, env=env, device="auto")
-        # Align runtime hypers to current CLI settings after load
-        model.n_steps = N_STEPS
-        model.batch_size = int(args.batch_size)
-        # You can also adjust lr/clip here if desired:
-        # model.learning_rate = 2.5e-4
-        # model.clip_range = 0.1
+    # --- Auto-resume from latest checkpoint in --ckpt (no extra flag needed) ---
+    latest_ckpt = find_latest_checkpoint(args.ckpt)
+    if latest_ckpt:
+        try:
+            print(f"🔄 Auto-resume: loading latest checkpoint → {latest_ckpt}")
+            model = PPO.load(latest_ckpt, env=env, device="auto")
+            # align runtime hypers to current CLI/env
+            model.n_steps = N_STEPS
+            model.batch_size = BATCH_SIZE
+        except Exception as e:
+            print(f"⚠️  Failed to load checkpoint ({e}). Starting fresh model.")
 
     # --- Callbacks (shared) ---
     tb_cb = TensorboardOverlayCallback(
         log_dir=args.tb,
         tag_prefix="uv_adv",
-        max_images=10,        # safer on RAM
+        max_images=10,        # keep RAM reasonable
         verbose=1,
     )
     saver = SaveImprovingOverlaysCallback(
