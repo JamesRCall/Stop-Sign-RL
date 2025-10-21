@@ -27,79 +27,80 @@ class StopSignBlobEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(
-        self,
-        stop_sign_image: Image.Image,
-        stop_sign_uv_image: Optional[Image.Image] = None,
-        background_images: Optional[List[Image.Image]] = None,
-        pole_image: Optional[Image.Image] = None,
-        yolo_weights: str = "yolo11n.pt",
-        img_size: Tuple[int, int] = (640, 640),
+            self,
+            stop_sign_image: Image.Image,
+            stop_sign_uv_image: Optional[Image.Image] = None,
+            background_images: Optional[List[Image.Image]] = None,
+            pole_image: Optional[Image.Image] = None,
+            yolo_weights: str = "yolo11n.pt",
+            img_size: Tuple[int, int] = (640, 640),
 
-        # ---- Transforms / episode ----
-        steps_per_episode: int = 16,
+            # ---- Transforms / episode ----
+            steps_per_episode: int = 16,
 
-        # ---- Blob controls ----
-        count_max: int = 80,
-        area_cap: float = 0.30,
+            # ---- Blob controls ----
+            count_max: int = 80,
+            area_cap: float = 0.70,             # <-- you already raised to 0.70
 
-        # ---- UV paints ----
-        # You can pass a list like [VIOLET_GLOW, GREEN_GLOW, ...]
-        uv_paints: Optional[List[UVPaint]] = None,
-        # Fallback if policy doesn't choose: use this (kept for convenience)
-        default_uv_paint: UVPaint = VIOLET_GLOW,
+            # ---- UV paints ----
+            uv_paints: Optional[List[UVPaint]] = None,
+            default_uv_paint: UVPaint = VIOLET_GLOW,
 
-        # ---- Reward shaping (Phase B) ----
-        eps_day_tolerance: float = 0.03,
-        day_floor: float = 0.80,
+            # ---- Reward shaping (Phase B) ----
+            eps_day_tolerance: float = 0.03,
+            day_floor: float = 0.80,
 
-        # ---- Curriculum controls ----
-        attack_only: bool = False,           # Phase A if True
-        attack_alpha: float = 1.0,           # blob opacity in Phase A
+            # ---- Curriculum controls ----
+            attack_only: bool = False,
+            attack_alpha: float = 1.0,
 
-        seed: Optional[int] = None,
-    ):
-        super().__init__()
-        self.img_size = tuple(img_size)
-        self.steps_per_episode = int(steps_per_episode)
+            # ---- NEW: where the detector runs (cpu|cuda) ----
+            yolo_device: str = "cpu",           # <--- ADD THIS
 
-        # blobs
-        self.count_max = int(count_max)
-        self.area_cap = float(area_cap)
+            seed: Optional[int] = None,
+        ):
+            super().__init__()
+            self.img_size = tuple(img_size)
+            self.steps_per_episode = int(steps_per_episode)
 
-        # UV paint list
-        self.uv_paints: List[UVPaint] = list(uv_paints) if uv_paints else [default_uv_paint]
-        self.default_uv_paint = default_uv_paint
+            # blobs
+            self.count_max = int(count_max)
+            self.area_cap = float(area_cap)
 
-        # reward shaping
-        self.eps_day_tolerance = float(eps_day_tolerance)
-        self.day_floor = float(day_floor)
+            # UV paint list
+            self.uv_paints: List[UVPaint] = list(uv_paints) if uv_paints else [default_uv_paint]
+            self.default_uv_paint = default_uv_paint
 
-        # curriculum
-        self.attack_only = bool(attack_only)
-        self.attack_alpha = float(attack_alpha)
+            # reward shaping
+            self.eps_day_tolerance = float(eps_day_tolerance)
+            self.day_floor = float(day_floor)
 
-        # assets
-        self.sign_rgba_plain = stop_sign_image.convert("RGBA")
-        self.sign_rgba_uv = (stop_sign_uv_image or stop_sign_image).convert("RGBA")
-        self.bg_list = [im.convert("RGB") for im in (background_images or [])]
-        self.pole_rgba = None if pole_image is None else pole_image.convert("RGBA")
+            # curriculum
+            self.attack_only = bool(attack_only)
+            self.attack_alpha = float(attack_alpha)
 
-        # detector
-        self.det = DetectorWrapper(yolo_weights)
+            # assets
+            self.sign_rgba_plain = stop_sign_image.convert("RGBA")
+            self.sign_rgba_uv = (stop_sign_uv_image or stop_sign_image).convert("RGBA")
+            self.bg_list = [im.convert("RGB") for im in (background_images or [])]
+            self.pole_rgba = None if pole_image is None else pole_image.convert("RGBA")
 
-        # spaces
-        # action: [0]=count, [1]=size_scale, [2]=color_idx (continuous -> discrete),
-        # the rest reserved (so you can add more later)
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(8,), dtype=np.float32)
-        self.observation_space = spaces.Box(
-            low=0, high=255, shape=(self.img_size[1], self.img_size[0], 3), dtype=np.uint8
-        )
+            # ---- NEW: remember device and pass to detector
+            self.yolo_device = str(yolo_device).lower().strip()  # "cpu" or "cuda"
 
-        # RNG & episodic state
-        self.rng = np.random.default_rng(seed)
-        self._step_in_ep = 0
-        self._bg_rgb = None  # cached background for this episode
+            # detector
+            self.det = DetectorWrapper(yolo_weights, device=self.yolo_device)  # <--- CHANGED
 
+            # spaces (unchanged)
+            self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(8,), dtype=np.float32)
+            self.observation_space = spaces.Box(
+                low=0, high=255, shape=(self.img_size[1], self.img_size[0], 3), dtype=np.uint8
+            )
+
+            # RNG & episodic state (unchanged)
+            self.rng = np.random.default_rng(seed)
+            self._step_in_ep = 0
+            self._bg_rgb = None
     # ----------------------------- phase control -----------------------------
     def set_phase_attack_only(self, attack_only: bool, attack_alpha: Optional[float] = None):
         self.attack_only = bool(attack_only)

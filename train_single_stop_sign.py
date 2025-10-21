@@ -75,6 +75,7 @@ def make_env_factory(
     uv_paints=None,
     eps_day_tolerance: float = 0.03,
     day_floor: float = 0.80,
+    yolo_device: str = "cpu",           # <— NEW: force detector device per worker
 ):
     uv_paints = uv_paints or [VIOLET_GLOW, GREEN_GLOW, BLUE_GLOW, YELLOW_GLOW]
 
@@ -86,6 +87,7 @@ def make_env_factory(
                 background_images=backgrounds,
                 pole_image=pole_rgba,
                 yolo_weights=yolo_wts,
+                yolo_device=yolo_device,         # <— pass through to env / wrapper
                 img_size=(640, 640),
 
                 # episodes
@@ -93,8 +95,8 @@ def make_env_factory(
 
                 # blobs & UV paint pairs
                 count_max=80,
-                area_cap=0.30,
-                uv_paints=uv_paints,             # list of 4 paints
+                area_cap=0.70,
+                uv_paints=uv_paints,
                 default_uv_paint=uv_paints[0],
 
                 # reward shaping (Phase B)
@@ -159,10 +161,20 @@ def parse_args():
     ap.add_argument("--ckpt", default="./runs/checkpoints")
     ap.add_argument("--overlays", default="./runs/overlays")
 
+    # NEW: how env workers load the detector
+    ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "cpu"),
+                    help="Device for YOLO detector inside env workers: cpu|cuda (default: cpu)")
+
     return ap.parse_args()
 
 
 if __name__ == "__main__":
+    # Helpful CUDA allocator knobs to reduce fragmentation (safe defaults)
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
+    # Avoid thread oversubscription blowing up memory/CPU in subprocs
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+
     args = parse_args()
     print("torch.cuda.is_available():", torch.cuda.is_available())
     if torch.cuda.is_available():
@@ -208,6 +220,7 @@ if __name__ == "__main__":
                 attack_only=attack, attack_alpha=args.attack_alpha,
                 uv_paints=UV_PAINTS,
                 eps_day_tolerance=0.03, day_floor=0.80,
+                yolo_device=args.detector_device,     # <— HERE
             ) for _ in range(args.num_envs)
         ]
         if args.vec == "subproc":
@@ -226,7 +239,7 @@ if __name__ == "__main__":
         SAVE_FREQ = int(args.save_freq_steps)
     else:
         rollout = N_STEPS * args.num_envs
-        SAVE_FREQ = int(max(rollout * max(int(os.getenv("SAVE_FREQ_UPDATES", "0")) or  # allow env override
+        SAVE_FREQ = int(max(rollout * max(int(os.getenv("SAVE_FREQ_UPDATES", "0")) or
                                           args.save_freq_updates, 1), 1))
 
     os.makedirs(args.ckpt, exist_ok=True)
