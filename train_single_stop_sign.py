@@ -1,52 +1,43 @@
-# train_single_stop_sign.py
-import os
-import glob
-import time
-import argparse
+import os, glob, time, argparse
 from typing import List, Optional
 from PIL import Image
 import torch
+import numpy as np
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecTransposeImage
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import CallbackList, BaseCallback, CheckpointCallback
+from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
 
-from envs.stop_sign_env import StopSignBlobEnv
-from utils.uv_paint import (
-    VIOLET_GLOW,
-    GREEN_GLOW,
-    BLUE_GLOW,
-    YELLOW_GLOW,
-)
+from envs.stop_sign_grid_env import StopSignGridEnv
+from utils.uv_paint import VIOLET_GLOW   # single pair; swap here if you want another
 from utils.save_callbacks import SaveImprovingOverlaysCallback
 from utils.tb_callbacks import TensorboardOverlayCallback
 
 
-# ----------------- small progress logger -----------------
+# ----------------- progress logger -----------------
 class ProgressETACallback(BaseCallback):
     def __init__(self, total_timesteps: int, log_every_sec: float = 10.0, verbose: int = 1):
         super().__init__(verbose)
         self.total_timesteps = int(total_timesteps)
         self.log_every_sec = float(log_every_sec)
         self._t0 = None
-        self._last_log = None
+        self._last = None
 
     def _on_training_start(self):
         self._t0 = time.perf_counter()
-        self._last_log = self._t0  # fixed
+        self._last = self._t0
 
     def _on_step(self) -> bool:
         now = time.perf_counter()
-        if now - self._last_log >= self.log_every_sec:
+        if (now - self._last) >= self.log_every_sec:
             done = self.num_timesteps
-            elapsed = now - self._t0
-            sps = done / max(elapsed, 1e-9)
+            sps = done / max(now - self._t0, 1e-9)
             if self.verbose:
                 eta = max(self.model._total_timesteps - done, 0) / max(sps, 1e-9)
                 print(f"[{done:,}/{self.model._total_timesteps:,}] {sps:,.2f} steps/s | ETA {eta/3600:,.2f}h")
             self.logger.record("progress/steps_per_sec", sps)
-            self._last_log = now
+            self._last = now
         return True
 
 
@@ -63,115 +54,86 @@ def load_backgrounds(folder: str) -> List[Image.Image]:
     return imgs[:20]
 
 
-def make_env_factory(
-    stop_plain: Image.Image,
-    stop_uv: Image.Image,
-    pole_rgba: Image.Image,
-    backgrounds: List[Image.Image],
-    yolo_wts: str,
-    steps_per_episode: int,
-    attack_only: bool,
-    attack_alpha: float,
-    uv_paints=None,
-    eps_day_tolerance: float = 0.03,
-    day_floor: float = 0.80,
-    yolo_device: str = "cpu",           # <— NEW: force detector device per worker
-):
-    uv_paints = uv_paints or [VIOLET_GLOW, GREEN_GLOW, BLUE_GLOW, YELLOW_GLOW]
-
-    def _init():
-        return Monitor(
-            StopSignBlobEnv(
-                stop_sign_image=stop_plain,
-                stop_sign_uv_image=stop_uv,
-                background_images=backgrounds,
-                pole_image=pole_rgba,
-                yolo_weights=yolo_wts,
-                yolo_device=yolo_device,         # <— pass through to env / wrapper
-                img_size=(640, 640),
-
-                # episodes
-                steps_per_episode=steps_per_episode,
-
-                # blobs & UV paint pairs
-                count_max=80,
-                area_cap=0.99,
-                uv_paints=uv_paints,
-                default_uv_paint=uv_paints[0],
-
-                # reward shaping (Phase B)
-                eps_day_tolerance=eps_day_tolerance,
-                day_floor=day_floor,
-
-                # curriculum (Phase A)
-                attack_only=attack_only,
-                attack_alpha=attack_alpha,
-            )
-        )
-    return _init
-
-
 def find_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
-    """Pick the newest .zip in ckpt_dir, preferring phaseA/phaseB patterns."""
     if not os.path.isdir(ckpt_dir):
         return None
-    patterns = [
-        os.path.join(ckpt_dir, "phaseA_*_steps.zip"),
-        os.path.join(ckpt_dir, "phaseB_*_steps.zip"),
-        os.path.join(ckpt_dir, "*.zip"),
-    ]
-    cands = []
-    for pat in patterns:
-        cands.extend(glob.glob(pat))
+    cands = glob.glob(os.path.join(ckpt_dir, "*.zip"))
     if not cands:
         return None
     cands.sort(key=lambda p: os.path.getmtime(p))
     return cands[-1]
 
 
+def make_env_factory(
+    stop_plain: Image.Image,
+    stop_uv: Image.Image,
+    pole_rgba: Image.Image,
+    backgrounds: List[Image.Image],
+    steps_per_episode: int,
+    eval_K: int,
+    grid_cell_px: int,
+    uv_drop_threshold: float,
+    yolo_wts: str,
+    yolo_device: str,
+):
+    def _init():
+        return Monitor(
+            StopSignGridEnv(
+                stop_sign_image=stop_plain,
+                stop_sign_uv_image=stop_uv,
+                background_images=backgrounds,
+                pole_image=pole_rgba,
+                yolo_weights=yolo_wts,
+                yolo_device=yolo_device,
+                img_size=(640, 640),
+
+                steps_per_episode=steps_per_episode,
+                eval_K=eval_K,
+
+                grid_cell_px=grid_cell_px,
+                max_cells=None,  # optional cap; leave None because we terminate by threshold
+                uv_paint=VIOLET_GLOW,  # single color pair for this project
+                use_single_color=True,
+
+                uv_drop_threshold=uv_drop_threshold,
+                day_tolerance=0.05,
+                lambda_day=1.0,
+            )
+        )
+    return _init
+
+
 def parse_args():
-    ap = argparse.ArgumentParser(description="Train PPO on UV-adv stop-sign env")
-
-    # Modes / curriculum
-    ap.add_argument("--mode", choices=["attack", "uv", "both"], default="both",
-                    help="attack=Phase A only, uv=Phase B only, both=Phase A then B")
-    ap.add_argument("--steps-a", type=int, default=400_000, help="timesteps for Phase A (attack only)")
-    ap.add_argument("--steps-b", type=int, default=1_200_000, help="timesteps for Phase B (UV gap)")
-    ap.add_argument("--ep1", type=int, default=12, help="episode steps in Phase A")
-    ap.add_argument("--ep2", type=int, default=16, help="episode steps in Phase B")
-    ap.add_argument("--attack-alpha", type=float, default=1.0, help="opacity for Phase A blobs")
-
-    # Vectorization / throughput controls
-    ap.add_argument("--num-envs", type=int, default=8, help="number of parallel environments")
-    ap.add_argument("--vec", choices=["dummy", "subproc"], default="dummy",
-                    help="vector env type: dummy (single process) or subproc (parallel processes)")
-    ap.add_argument("--n-steps", type=int, default=512, help="rollout length per env before PPO update")
-
-    # Checkpoint cadence (ONE of these is used)
-    ap.add_argument("--save-freq-steps", type=int, default=0,
-                    help="checkpoint every N env-steps (overrides --save-freq-updates if >0)")
-    ap.add_argument("--save-freq-updates", type=int, default=2,
-                    help="checkpoint every K PPO rollouts (1 rollout = n_steps * num_envs)")
-
-    # Paths (as your train.sh provides)
-    ap.add_argument("--yolo", default="./weights/yolo11n.pt")
+    ap = argparse.ArgumentParser("Train PPO on grid-square UV attack over stop sign")
     ap.add_argument("--data", default="./data")
     ap.add_argument("--bgdir", default="./data/backgrounds")
+    ap.add_argument("--yolo", default="./weights/yolo11n.pt")
+    ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "cpu"))
     ap.add_argument("--tb", default="./runs/tb")
     ap.add_argument("--ckpt", default="./runs/checkpoints")
     ap.add_argument("--overlays", default="./runs/overlays")
 
-    # NEW: how env workers load the detector
-    ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "cpu"),
-                    help="Device for YOLO detector inside env workers: cpu|cuda (default: cpu)")
+    ap.add_argument("--num-envs", type=int, default=8)
+    ap.add_argument("--vec", choices=["dummy", "subproc"], default="subproc")
+    ap.add_argument("--n-steps", type=int, default=256)
+    ap.add_argument("--batch-size", type=int, default=4096)
+    ap.add_argument("--total-steps", type=int, default=400_000)
 
+    ap.add_argument("--episode-steps", type=int, default=7000)
+    ap.add_argument("--eval-K", type=int, default=10)
+    ap.add_argument("--grid-cell", type=int, default=2, choices=[2, 4])
+    ap.add_argument("--uv-threshold", type=float, default=0.70)
+
+    ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint in --ckpt")
+
+    ap.add_argument("--save-freq-steps", type=int, default=0)
+    ap.add_argument("--save-freq-updates", type=int, default=2)
     return ap.parse_args()
 
 
 if __name__ == "__main__":
-    # Helpful CUDA allocator knobs to reduce fragmentation (safe defaults)
+    # allocator knobs
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
-    # Avoid thread oversubscription blowing up memory/CPU in subprocs
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
 
@@ -180,79 +142,45 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         print("Using cuda device")
 
-    # --- Paths ---
+    # paths
     STOP_PLAIN = os.path.join(args.data, "stop_sign.png")
     STOP_UV    = os.path.join(args.data, "stop_sign_uv.png")
     POLE_PNG   = os.path.join(args.data, "pole.png")
     BG_DIR     = args.bgdir
-    YOLO_WTS   = args.yolo
 
-    # --- Load images (keep alpha for sign & pole) ---
     stop_plain = Image.open(STOP_PLAIN).convert("RGBA")
-    if os.path.exists(STOP_UV):
-        stop_uv = Image.open(STOP_UV).convert("RGBA")
-    else:
-        print(f"⚠️  {STOP_UV} not found — using stop_sign.png for UV phase.")
-        stop_uv = stop_plain.copy()
+    stop_uv    = Image.open(STOP_UV).convert("RGBA") if os.path.exists(STOP_UV) else stop_plain.copy()
     pole_rgba  = Image.open(POLE_PNG).convert("RGBA")
-    backgrounds = load_backgrounds(BG_DIR)
+    bgs        = load_backgrounds(BG_DIR)
 
-    # Four UV paint pairs
-    UV_PAINTS = [VIOLET_GLOW, GREEN_GLOW, BLUE_GLOW, YELLOW_GLOW]
-
-    # --- Env: initial phase config based on mode ---
-    if args.mode == "attack":
-        phaseA_cfg = dict(ep=args.ep1, attack=True)
-        phaseB_cfg = None
-    elif args.mode == "uv":
-        phaseA_cfg = dict(ep=args.ep2, attack=False)
-        phaseB_cfg = None
-    else:  # both
-        phaseA_cfg = dict(ep=args.ep1, attack=True)
-        phaseB_cfg = dict(ep=args.ep2, attack=False)
-
-    # --- Build vectorized env for current phase ---
-    def build_env_for_phase(ep, attack):
-        env_fns = [
+    def build_env():
+        fns = [
             make_env_factory(
-                stop_plain, stop_uv, pole_rgba, backgrounds, YOLO_WTS,
-                steps_per_episode=ep,
-                attack_only=attack, attack_alpha=args.attack_alpha,
-                uv_paints=UV_PAINTS,
-                eps_day_tolerance=0.03, day_floor=0.80,
-                yolo_device=args.detector_device,     # <— HERE
+                stop_plain, stop_uv, pole_rgba, bgs,
+                steps_per_episode=args.episode_steps,
+                eval_K=args.eval_K,
+                grid_cell_px=args.grid_cell,
+                uv_drop_threshold=args.uv_threshold,
+                yolo_wts=args.yolo,
+                yolo_device=args.detector_device,
             ) for _ in range(args.num_envs)
         ]
-        if args.vec == "subproc":
-            venv = SubprocVecEnv(env_fns)
-        else:
-            venv = DummyVecEnv(env_fns)
-        return VecTransposeImage(venv)
+        v = SubprocVecEnv(fns) if args.vec == "subproc" else DummyVecEnv(fns)
+        return VecTransposeImage(v)
 
-    env = build_env_for_phase(phaseA_cfg["ep"], phaseA_cfg["attack"])
+    env = build_env()
 
-    # --- PPO setup ---
-    N_STEPS = int(args.n_steps)
-    BATCH_SIZE = int(os.getenv("PPO_BATCH_SIZE", "128"))  # train.sh exports PPO_BATCH_SIZE=$BATCH
-
-    if args.save_freq_steps and args.save_freq_steps > 0:
-        SAVE_FREQ = int(args.save_freq_steps)
-    else:
-        rollout = N_STEPS * args.num_envs
-        SAVE_FREQ = int(max(rollout * max(int(os.getenv("SAVE_FREQ_UPDATES", "0")) or
-                                          args.save_freq_updates, 1), 1))
-
-    os.makedirs(args.ckpt, exist_ok=True)
+    # PPO
     os.makedirs(args.tb, exist_ok=True)
+    os.makedirs(args.ckpt, exist_ok=True)
     os.makedirs(args.overlays, exist_ok=True)
 
-    # Build a fresh model (we may replace it with a loaded one)
     model = PPO(
         "CnnPolicy",
         env,
         verbose=2,
-        n_steps=N_STEPS,
-        batch_size=BATCH_SIZE,
+        n_steps=int(args.n_steps),
+        batch_size=int(args.batch_size),
         learning_rate=2.5e-4,
         ent_coef=0.01,
         vf_coef=0.5,
@@ -261,61 +189,38 @@ if __name__ == "__main__":
         device="auto",
     )
 
-    # --- Auto-resume from latest checkpoint in --ckpt (no extra flag needed) ---
-    latest_ckpt = find_latest_checkpoint(args.ckpt)
-    if latest_ckpt:
-        try:
-            print(f"🔄 Auto-resume: loading latest checkpoint → {latest_ckpt}")
-            model = PPO.load(latest_ckpt, env=env, device="auto")
-            # align runtime hypers to current CLI/env
-            model.n_steps = N_STEPS
-            model.batch_size = BATCH_SIZE
-        except Exception as e:
-            print(f"⚠️  Failed to load checkpoint ({e}). Starting fresh model.")
+    # resume if asked
+    if args.resume:
+        ckpt = find_latest_checkpoint(args.ckpt)
+        if ckpt:
+            print(f"🔄 Resuming from: {ckpt}")
+            model = PPO.load(ckpt, env=env, device="auto")
+            model.n_steps = int(args.n_steps)
+            model.batch_size = int(args.batch_size)
 
-    # --- Callbacks (shared) ---
-    tb_cb = TensorboardOverlayCallback(
-        log_dir=args.tb,
-        tag_prefix="uv_adv",
-        max_images=10,        # keep RAM reasonable
-        verbose=1,
-    )
+    # callbacks
+    # Save “best” (lowest after_conf) UV-on examples, keep top-50, log to TB
+    tb_cb = TensorboardOverlayCallback(args.tb, tag_prefix="grid_uv", max_images=25, verbose=1)
     saver = SaveImprovingOverlaysCallback(
-        save_dir=args.overlays,
-        threshold=0.0,
-        mode="adversary",
-        max_saved=50,
-        verbose=1,
-        tb_callback=tb_cb,
+        save_dir=args.overlays, threshold=0.0, mode="adversary",
+        max_saved=50, verbose=1, tb_callback=tb_cb
     )
 
-    # ----------------- Phase A -----------------
-    if args.mode in ("attack", "both"):
-        total_A = int(args.steps_a)
-        print(f"\n=== Phase A (attack-only) for {total_A:,} steps ===")
-        ckptA = CheckpointCallback(save_freq=SAVE_FREQ, save_path=args.ckpt, name_prefix="phaseA")
-        progressA = ProgressETACallback(total_timesteps=total_A, log_every_sec=15, verbose=1)
-        model.learn(
-            total_timesteps=total_A,
-            callback=CallbackList([tb_cb, saver, ckptA, progressA]),
-            tb_log_name="phaseA",
-        )
+    # checkpoint cadence
+    if args.save_freq_steps and args.save_freq_steps > 0:
+        SAVE_FREQ = int(args.save_freq_steps)
+    else:
+        SAVE_FREQ = max(int(args.n_steps) * int(args.num_envs) * max(args.save_freq_updates, 1), 1)
+    ckpt_cb = CheckpointCallback(save_freq=SAVE_FREQ, save_path=args.ckpt, name_prefix="grid")
 
-    # ----------------- Switch to Phase B -----------------
-    if phaseB_cfg:
-        print("\nSwitching to Phase B (UV gap objective)...")
-        env.set_attr("attack_only", False)
-        env.set_attr("steps_per_episode", phaseB_cfg["ep"])
-        total_B = int(args.steps_b)
-        ckptB = CheckpointCallback(save_freq=SAVE_FREQ, save_path=args.ckpt, name_prefix="phaseB")
-        progressB = ProgressETACallback(total_timesteps=total_B, log_every_sec=15, verbose=1)
-        model.learn(
-            total_timesteps=total_B,
-            reset_num_timesteps=False,
-            callback=CallbackList([tb_cb, saver, ckptB, progressB]),
-            tb_log_name="phaseB",
-        )
+    progress = ProgressETACallback(total_timesteps=int(args.total_steps), log_every_sec=15, verbose=1)
 
-    final_path = os.path.join(args.ckpt, "ppo_uv_adv_final")
-    model.save(final_path)
-    print(f"✅ Saved final model to {final_path}")
+    model.learn(
+        total_timesteps=int(args.total_steps),
+        callback=CallbackList([tb_cb, saver, ckpt_cb, progress]),
+        tb_log_name="grid_uv",
+    )
+
+    final = os.path.join(args.ckpt, "ppo_grid_uv_final")
+    model.save(final)
+    print(f"✅ Saved final model to {final}")
