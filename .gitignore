@@ -30,5 +30,3 @@ weights/
 !weights/.gitkeep
 
 # Data (keep small sample, ignore big blobs if you add them later)
-data/**/*.zip
-data/**/*.tar
