@@ -17,7 +17,7 @@ class StopSignGridEnv(gym.Env):
 
     Action (continuous -> discrete):
       a[0], a[1] in [-1, 1]  ->  (row, col) index into sign grid
-      (cell size = 2x2 or 4x4 px; configured via grid_cell_px)
+      (cell size = 4x4 px by default; configurable via grid_cell_px)
 
     Per step:
       • Add 1 new grid cell (2x2 / 4x4 square) to a running episode mask.
@@ -37,14 +37,15 @@ class StopSignGridEnv(gym.Env):
     Observation:
       RGB image of the *daylight* composite for the first transform (H,W,3) uint8.
 
-    Reward (per step):
-      reward =  + drop_on_mean
-                - lambda_day * max(0, drop_day_mean - day_tolerance)
-                + small shaping for nearing the threshold
-      with a gentle diminishing bonus as drop_on approaches the threshold.
+    Reward (per step, normalized):
+      Let raw_core = drop_on - lambda_day * max(0, drop_day - day_tolerance).
+      Add a smooth shaping bonus as drop_on approaches threshold, plus a small
+      success bonus once drop_on >= uv_drop_threshold, then squash:
 
-    Done:
-      True if (drop_on_mean ≥ uv_drop_threshold) or step == steps_per_episode.
+          raw_total = raw_core + shaping + success_bonus
+          reward    = tanh(2 * raw_total)    ∈ (-1, 1)
+
+      so PPO always sees a bounded per-step reward.
     """
 
     metadata = {"render_modes": []}
@@ -59,21 +60,21 @@ class StopSignGridEnv(gym.Env):
         img_size: Tuple[int, int] = (640, 640),
 
         # Episodes
-        steps_per_episode: int = 7000,       # can be very long for tiny cells; terminate by threshold
-        eval_K: int = 10,                    # number of matched transforms per step
+        steps_per_episode: int = 7000,
+        eval_K: int = 10,
 
         # Grid config
-        grid_cell_px: int = 2,               # 2 or 4
-        max_cells: Optional[int] = None,     # optional hard cap of cells per episode
+        grid_cell_px: int = 4,               # 🔴 default 4x4 now
+        max_cells: Optional[int] = None,
 
         # Paint (single pair)
-        uv_paint: UVPaint = VIOLET_GLOW,     # day/active, translucent flags in the paint
-        use_single_color: bool = True,       # keep for clarity
+        uv_paint: UVPaint = VIOLET_GLOW,
+        use_single_color: bool = True,
 
         # Threshold logic
-        uv_drop_threshold: float = 0.70,     # terminate when c0_on - c_on >= 0.70
-        day_tolerance: float = 0.05,         # allowed c0_day - c_day without penalty
-        lambda_day: float = 1.0,             # penalty scale for day drop beyond tolerance
+        uv_drop_threshold: float = 0.70,
+        day_tolerance: float = 0.05,
+        lambda_day: float = 1.0,
 
         # YOLO
         yolo_device: str = "cpu",
@@ -117,7 +118,6 @@ class StopSignGridEnv(gym.Env):
         )
 
         # action/obs spaces
-        # 2-D continuous -> (row, col)
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
         H, W = self.img_size[1], self.img_size[0]
         self.observation_space = spaces.Box(
@@ -141,9 +141,8 @@ class StopSignGridEnv(gym.Env):
         Gw, Gh = math.ceil(W / g), math.ceil(H / g)
 
         signA = np.array(self._sign_alpha, dtype=np.uint8) > 0
-        # a cell is "valid" if its center lands inside the alpha mask
         valid = np.zeros((Gh, Gw), dtype=bool)
-        rects: List[Tuple[int, int, int, int]] = []  # (x0,y0,x1,y1) per cell (flattened index)
+        rects: List[Tuple[int, int, int, int]] = []
 
         for r in range(Gh):
             for c in range(Gw):
@@ -156,7 +155,7 @@ class StopSignGridEnv(gym.Env):
 
         self.Gw, self.Gh = Gw, Gh
         self._cell_rects = rects
-        self._valid_cells = valid  # shape (Gh, Gw)
+        self._valid_cells = valid
 
     # ----------------------------- lifecycle ---------------------------------
 
@@ -167,14 +166,10 @@ class StopSignGridEnv(gym.Env):
         self._step = 0
         self._episode_cells = np.zeros((self.Gh, self.Gw), dtype=bool)
 
-        # Choose single background for the whole episode
         self._bg_rgb = self._choose_bg_rgb()
-
-        # Choose placement seed and the K transform seeds used every step
         self._place_seed = int(self.rng.integers(0, 2**31 - 1))
         self._transform_seeds = [int(self.rng.integers(0, 2**31 - 1)) for _ in range(self.eval_K)]
 
-        # Provide an initial plain day image as observation (transform #0)
         obs = self._render_variant(kind="day", use_overlay=False, transform_seed=self._transform_seeds[0])
         return np.array(obs, dtype=np.uint8), {}
 
@@ -191,36 +186,37 @@ class StopSignGridEnv(gym.Env):
             if self._episode_cells[r, c]:
                 r, c = self._nearest_valid_free_cell(r, c)
 
-        # mark as selected
         self._episode_cells[r, c] = True
 
-        # optional: hard cap on cells per episode
+        terminated = False
         if self.max_cells is not None:
             total_on = int(self._episode_cells.sum())
             if total_on >= self.max_cells:
                 terminated = True
-            else:
-                terminated = False
-        else:
-            terminated = False
 
         # 2) Evaluate K matched transforms: plain vs overlay, both day and UV-on
         c0_day, c_day, c0_on, c_on = self._eval_over_K()
-
         drop_day = float(c0_day - c_day)
         drop_on  = float(c0_on - c_on)
 
-        # 3) reward & early stopping on UV threshold
-        # encourage big UV-on drop; penalize day drop beyond tolerance
+        # 3) reward (normalized) & early stopping on UV threshold
+        # core term: big UV drop good, day drop beyond tolerance bad
         pen_day = max(0.0, drop_day - self.day_tolerance)
-        raw = drop_on - self.lambda_day * pen_day
+        raw_core = drop_on - self.lambda_day * pen_day
 
-        # add a smooth bonus as we approach the threshold (sigmoid-ish)
+        # smooth shaping as we move toward threshold
         thr = self.uv_drop_threshold
-        shaping = 0.25 * math.tanh(4.0 * (drop_on - 0.5*thr))
-        reward = raw + shaping
+        shaping = 0.25 * math.tanh(4.0 * (drop_on - 0.5 * thr))
 
-        # done?
+        # success bonus once we’ve actually crossed the threshold
+        success_bonus = 0.0
+        if drop_on >= thr:
+            success_bonus = 0.5
+
+        # total “pre-normalized” reward, then squash to ~[-1, 1]
+        raw_total = raw_core + shaping + success_bonus
+        reward = math.tanh(2.0 * raw_total)
+
         if drop_on >= thr:
             terminated = True
 
@@ -230,7 +226,7 @@ class StopSignGridEnv(gym.Env):
         obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
         obs = np.array(obs_img, dtype=np.uint8)
 
-        # Save a preview UV-on image for callbacks (transform #0, final stage)
+        # preview image: UV-on, transform #0
         preview_on = self._render_variant(kind="on", use_overlay=True, transform_seed=self._transform_seeds[0])
 
         info = {
@@ -238,17 +234,21 @@ class StopSignGridEnv(gym.Env):
             "c0_day": c0_day, "c_day": c_day,
             "c0_on": c0_on,   "c_on": c_on,
             "drop_day": drop_day, "drop_on": drop_on,
-            "reward_raw": float(raw),
+            "reward_core": float(raw_core),
+            "reward_raw_total": float(raw_total),
             "reward": float(reward),
             "selected_cells": int(self._episode_cells.sum()),
             "grid_cell_px": int(self.grid_cell_px),
             "uv_drop_threshold": float(self.uv_drop_threshold),
             "day_tolerance": float(self.day_tolerance),
-            # for saver/TB
-            "base_conf": float(c0_on),    # align with previous naming (after_conf uses UV-on)
+            "base_conf": float(c0_on),
             "after_conf": float(c_on),
             "total_area_mask_frac": self._area_frac_selected(),
-            "params": {"count": int(self._episode_cells.sum()), "size_scale": float(self.grid_cell_px), "alpha": float(self.paint.active_alpha)},
+            "params": {
+                "count": int(self._episode_cells.sum()),
+                "size_scale": float(self.grid_cell_px),
+                "alpha": float(self.paint.active_alpha),
+            },
             "trace": {
                 "phase": "grid_uv",
                 "grid_cell_px": int(self.grid_cell_px),
@@ -256,19 +256,17 @@ class StopSignGridEnv(gym.Env):
                 "place_seed": int(self._place_seed),
                 "transform_seeds": [int(s) for s in self._transform_seeds],
             },
-            "composited_pil": preview_on,  # what we actually tested for UV-on (one view)
+            "composited_pil": preview_on,
         }
         return obs, float(reward), bool(terminated), bool(truncated), info
 
     # ----------------------------- helpers -----------------------------------
 
     def _selected_indices_list(self) -> List[int]:
-        # flatten row-major
         idxs = np.flatnonzero(self._episode_cells.reshape(-1)).tolist()
         return idxs
 
     def _area_frac_selected(self) -> float:
-        # approximate: fraction of VALID cells turned on
         valid_total = int(self._valid_cells.sum())
         if valid_total == 0:
             return 0.0
@@ -283,7 +281,6 @@ class StopSignGridEnv(gym.Env):
         return r, c
 
     def _nearest_valid_free_cell(self, r: int, c: int) -> Tuple[int, int]:
-        # small BFS ring search expanding radius
         if self._is_valid_free(r, c):
             return r, c
         for rad in range(1, max(self.Gh, self.Gw)):
@@ -297,47 +294,44 @@ class StopSignGridEnv(gym.Env):
                     rr, cc = r + dr, c + dc
                     if self._is_valid_free(rr, cc):
                         return rr, cc
-        # fallback to any free valid cell
         free_valid = np.where(self._valid_cells & (~self._episode_cells))
         if free_valid[0].size:
             i = int(self.rng.integers(0, free_valid[0].size))
             return int(free_valid[0][i]), int(free_valid[1][i])
-        # no free cells remaining; return original (won't add more area)
         return r, c
 
     def _is_valid_free(self, r: int, c: int) -> bool:
-        return (0 <= r < self.Gh) and (0 <= c < self.Gw) and self._valid_cells[r, c] and (not self._episode_cells[r, c])
-
-    # ----- rendering over K transforms -----
+        return (
+            0 <= r < self.Gh
+            and 0 <= c < self.Gw
+            and self._valid_cells[r, c]
+            and (not self._episode_cells[r, c])
+        )
 
     def _render_variant(self, kind: str, use_overlay: bool, transform_seed: int) -> Image.Image:
-        """
-        Render ONE composite (day or UV-on), with or without the current grid overlay,
-        using the episode's fixed background and placement seed, and the given transform seed.
-        Returns an RGB PIL image sized to self.img_size.
-        """
         assert kind in ("day", "on")
-        # pick base sign
         sign_src = self.sign_rgba_day if kind == "day" else self.sign_rgba_on
-        sign = sign_src if not use_overlay else self._apply_grid_overlay(sign_src, mode=("day" if kind=="day" else "on"))
-        # apply transforms (pose, blur, photometric)
+        sign = sign_src if not use_overlay else self._apply_grid_overlay(
+            sign_src, mode=("day" if kind == "day" else "on")
+        )
         sign_t = self._transform_sign(sign, transform_seed)
-        # compose onto episode background, using fixed placement
         img = self._compose_on_bg(sign_t, self._place_seed)
         return img
 
-
     def _eval_over_K(self) -> Tuple[float, float, float, float]:
-        """Return mean confidences: (c0_day, c_day, c0_on, c_on) over K transforms."""
         c0_day_list, c_day_list, c0_on_list, c_on_list = [], [], [], []
         for t_seed in self._transform_seeds:
-            # Plain (day & on)
             plain_day = self._compose_on_bg(self._transform_sign(self.sign_rgba_day, t_seed), self._place_seed)
             plain_on  = self._compose_on_bg(self._transform_sign(self.sign_rgba_on,  t_seed), self._place_seed)
 
-            # Overlay masks on sign, then same transform/placement
-            over_day = self._compose_on_bg(self._transform_sign(self._apply_grid_overlay(self.sign_rgba_day, mode="day"), t_seed), self._place_seed)
-            over_on  = self._compose_on_bg(self._transform_sign(self._apply_grid_overlay(self.sign_rgba_on,  mode="on"),  t_seed), self._place_seed)
+            over_day = self._compose_on_bg(
+                self._transform_sign(self._apply_grid_overlay(self.sign_rgba_day, mode="day"), t_seed),
+                self._place_seed,
+            )
+            over_on  = self._compose_on_bg(
+                self._transform_sign(self._apply_grid_overlay(self.sign_rgba_on,  mode="on"),  t_seed),
+                self._place_seed,
+            )
 
             c0_day_list.append(self._infer_conf(plain_day))
             c0_on_list.append(self._infer_conf(plain_on))
@@ -347,10 +341,7 @@ class StopSignGridEnv(gym.Env):
         mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
         return mean(c0_day_list), mean(c_day_list), mean(c0_on_list), mean(c_on_list)
 
-    # ----- low-level compose pipeline -----
-
     def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
-        """Paste filled rectangles (selected cells) onto the sign RGB, respecting sign alpha."""
         rgb = sign_rgba.convert("RGB")
         a   = sign_rgba.split()[-1]
 
@@ -362,16 +353,13 @@ class StopSignGridEnv(gym.Env):
             color = self.paint.active_rgb
             alpha = self.paint.active_alpha if self.paint.translucent else 1.0
 
-        # paint a binary mask with selected cell rects; then apply alpha
         mask = Image.new("L", rgb.size, 0)
         mdraw = ImageDraw.Draw(mask)
-        g = self.grid_cell_px
         on = np.argwhere(self._episode_cells)
         for r, c in on:
             x0, y0, x1, y1 = self._cell_rects[r * self.Gw + c]
             mdraw.rectangle([x0, y0, x1, y1], fill=255)
 
-        # restrict to sign alpha
         mask = Image.composite(mask, Image.new("L", mask.size, 0), self._sign_alpha)
 
         if alpha < 1.0:
@@ -386,7 +374,6 @@ class StopSignGridEnv(gym.Env):
         W, H = sign_rgba.size
         out = sign_rgba.copy()
 
-        # mild affine
         angle = rng.uniform(-6, 6)
         shear = rng.uniform(-4, 4)
         scale = 1.0 + rng.uniform(-0.10, 0.10)
@@ -396,12 +383,10 @@ class StopSignGridEnv(gym.Env):
         aff = _affine_matrix(angle, shear, scale, tx, ty, W, H)
         out = out.transform((W, H), Image.AFFINE, data=aff, resample=Image.BILINEAR, fillcolor=(0, 0, 0, 0))
 
-        # light perspective
         if rng.random() < 0.5:
             coeffs = _random_perspective_coeffs(W, H, rng, max_shift=0.06)
             out = out.transform((W, H), Image.PERSPECTIVE, coeffs, resample=Image.BILINEAR, fillcolor=(0, 0, 0, 0))
 
-        # photometric
         rgb, a = out.convert("RGB"), out.split()[-1]
         if rng.random() < 0.7:
             rgb = ImageEnhance.Brightness(rgb).enhance(float(rng.uniform(0.9, 1.1)))
@@ -424,8 +409,6 @@ class StopSignGridEnv(gym.Env):
         group = self._compose_sign_and_pole(sign_rgba_t)
         img, _ = self._place_group_on_background(group, self._bg_rgb, seed=place_seed)
         return img
-
-    # ---- compose helpers (same as your previous env, tuned to realistic pole) ----
 
     def _compose_sign_and_pole(
         self,
@@ -491,9 +474,8 @@ class StopSignGridEnv(gym.Env):
         if self.bg_list:
             idx = int(self.rng.integers(0, len(self.bg_list)))
             return self.bg_list[idx].resize((W, H), Image.BILINEAR).convert("RGB")
-        return Image.new("RGB", (W, H), (200, 200, 200))
+        return Image.new("RGB", (200, 200, 200))
 
-    # ---- detector ----
     def _infer_conf(self, pil_rgb: Image.Image) -> float:
         try:
             return float(self.det.infer_confidence(pil_rgb))
@@ -518,6 +500,7 @@ def _affine_matrix(angle_deg, shear_deg, scale, tx, ty, W, H):
     f += cy - (d * cx + e * cy)
     return (a, b, c, d, e, f)
 
+
 def _random_perspective_coeffs(W, H, rng, max_shift=0.06):
     dx, dy = W * max_shift, H * max_shift
     src = [(0, 0), (W, 0), (W, H), (0, H)]
@@ -527,7 +510,6 @@ def _random_perspective_coeffs(W, H, rng, max_shift=0.06):
         (W + rng.uniform(-dx, dx), H + rng.uniform(-dy, dy)),
         (rng.uniform(-dx, dx), H + rng.uniform(-dy, dy)),
     ]
-    import numpy as np
     A = []
     for (x, y), (u, v) in zip(src, dst):
         A.extend([[x, y, 1, 0, 0, 0, -u * x, -u * y],
