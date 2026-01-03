@@ -93,7 +93,7 @@ def make_env_factory(
 
                 grid_cell_px=grid_cell_px,
                 max_cells=None,  # optional cap; leave None because we terminate by threshold
-                uv_paint=VIOLET_GLOW,  # single color pair for this project
+                uv_paint=GREEN_GLOW,  # single color pair for this project
                 use_single_color=True,
 
                 uv_drop_threshold=uv_drop_threshold,
