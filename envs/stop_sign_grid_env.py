@@ -79,7 +79,7 @@ class StopSignGridEnv(gym.Env):
         day_tolerance: float = 0.05,
         lambda_day: float = 1.0,
         min_base_conf: float = 0.20,
-        cell_cover_thresh: float = 0.6,
+        cell_cover_thresh: float = 0.78,
 
 
         # YOLO
