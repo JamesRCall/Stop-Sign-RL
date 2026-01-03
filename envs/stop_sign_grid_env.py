@@ -79,7 +79,7 @@ class StopSignGridEnv(gym.Env):
         day_tolerance: float = 0.05,
         lambda_day: float = 1.0,
         min_base_conf: float = 0.20,
-        cell_cover_thresh: float = 0.78,
+        cell_cover_thresh: float = 0.60,
 
 
         # YOLO
@@ -143,7 +143,7 @@ class StopSignGridEnv(gym.Env):
 
 
         # action/obs spaces
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+        self.action_space = spaces.Discrete(self._n_valid)
         H, W = self.img_size[1], self.img_size[0]
         self.observation_space = spaces.Box(
             low=0, high=255, shape=(H, W, 3), dtype=np.uint8
@@ -182,6 +182,9 @@ class StopSignGridEnv(gym.Env):
         self.Gw, self.Gh = Gw, Gh
         self._cell_rects = rects
         self._valid_cells = valid
+        self._valid_coords = np.argwhere(self._valid_cells)  # shape (N,2)
+        self._n_valid = int(self._valid_coords.shape[0])
+
 
     # ----------------------------- lifecycle ---------------------------------
 
@@ -211,33 +214,47 @@ class StopSignGridEnv(gym.Env):
 
     # ----------------------------- step --------------------------------------
 
-    def step(self, action: np.ndarray):
+    def step(self, action):
         self._step += 1
 
-        # 1) map action → cell (r,c); enforce non-duplicate; remap if needed
-        r, c = self._map_to_cell(action)
-        if not self._valid_cells[r, c]:
-            r, c = self._nearest_valid_free_cell(r, c)
-        else:
-            if self._episode_cells[r, c]:
-                r, c = self._nearest_valid_free_cell(r, c)
+        # 1) Action is an index into valid cells (octagon-aware)
+        idx = int(action)
+        idx = max(0, min(idx, self._n_valid - 1))
+        r, c = self._valid_coords[idx]
+        r, c = int(r), int(c)
+
+        # Enforce non-duplicate: if already used, sample a random unused valid cell
+        if self._episode_cells[r, c]:
+            free_mask = self._valid_cells & (~self._episode_cells)
+            coords = np.argwhere(free_mask)
+            if coords.size == 0:
+                # no free cells left
+                terminated = True
+                truncated = (self._step >= self.steps_per_episode)
+
+                obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
+                obs = np.array(obs_img, dtype=np.uint8)
+                info = {"objective": "grid_uv", "note": "no_free_cells"}
+                return obs, 0.0, bool(terminated), bool(truncated), info
+
+            pick = coords[int(self.rng.integers(0, coords.shape[0]))]
+            r, c = int(pick[0]), int(pick[1])
 
         self._episode_cells[r, c] = True
 
         terminated = False
         if self.max_cells is not None:
-            total_on = int(self._episode_cells.sum())
-            if total_on >= self.max_cells:
+            if int(self._episode_cells.sum()) >= self.max_cells:
                 terminated = True
 
-        # 2) Evaluate K matched transforms: plain vs overlay, both day and UV-on
+        # 2) Evaluate overlay vs baseline
         c_day, c_on = self._eval_overlay_over_K()
         c0_day, c0_on = self._baseline_c0_day, self._baseline_c0_on
 
         drop_day = float(c0_day - c_day)
         drop_on  = float(c0_on - c_on)
 
-        # (Option A) Smooth UV drop signal over recent steps to reduce volatility
+        # (Option A reward smoothing) Smooth UV drop signal over recent steps
         self._drop_hist.append(drop_on)
         if self.use_ema:
             if self._drop_ema is None:
@@ -249,17 +266,14 @@ class StopSignGridEnv(gym.Env):
         else:
             drop_on_s = float(np.mean(self._drop_hist)) if len(self._drop_hist) else float(drop_on)
 
-        # (5) Baseline gating: if the detector didn't see the sign in baseline,
-        # don't let the agent "win" on junk scenes.
+        # (Baseline gating)
         if c0_on < self.min_base_conf:
-            # Small penalty to discourage these states
             reward = -0.05
-            terminated = False
+            # keep termination from max_cells if you want; I’m leaving it as-is:
             truncated = (self._step >= self.steps_per_episode)
 
             obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
             obs = np.array(obs_img, dtype=np.uint8)
-
             info = {
                 "objective": "grid_uv",
                 "c0_day": c0_day, "c_day": c_day,
@@ -270,22 +284,14 @@ class StopSignGridEnv(gym.Env):
             }
             return obs, float(reward), bool(terminated), bool(truncated), info
 
-
-        # 3) reward (normalized) & early stopping on UV threshold
-        # core term: big UV drop good, day drop beyond tolerance bad
+        # 3) Reward using smoothed UV drop
         pen_day = max(0.0, drop_day - self.day_tolerance)
         raw_core = drop_on_s - self.lambda_day * pen_day
 
-        # smooth shaping as we move toward threshold
         thr = self.uv_drop_threshold
         shaping = 0.25 * math.tanh(4.0 * (drop_on_s - 0.5 * thr))
+        success_bonus = 0.5 if drop_on_s >= thr else 0.0
 
-        # success bonus once we’ve actually crossed the threshold
-        success_bonus = 0.0
-        if drop_on_s >= thr:
-            success_bonus = 0.5
-
-        # total “pre-normalized” reward, then squash to ~[-1, 1]
         raw_total = raw_core + shaping + success_bonus
         reward = math.tanh(2.0 * raw_total)
 
@@ -294,11 +300,9 @@ class StopSignGridEnv(gym.Env):
 
         truncated = (self._step >= self.steps_per_episode)
 
-        # 4) observation: daylight composite for transform #0
+        # 4) Observation and preview
         obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
         obs = np.array(obs_img, dtype=np.uint8)
-
-        # preview image: UV-on, transform #0
         preview_on = self._render_variant(kind="on", use_overlay=True, transform_seed=self._transform_seeds[0])
 
         info = {
@@ -316,11 +320,6 @@ class StopSignGridEnv(gym.Env):
             "base_conf": float(c0_on),
             "after_conf": float(c_on),
             "total_area_mask_frac": self._area_frac_selected(),
-            "params": {
-                "count": int(self._episode_cells.sum()),
-                "size_scale": float(self.grid_cell_px),
-                "alpha": float(self.paint.active_alpha),
-            },
             "trace": {
                 "phase": "grid_uv",
                 "grid_cell_px": int(self.grid_cell_px),
@@ -330,11 +329,11 @@ class StopSignGridEnv(gym.Env):
             },
         }
 
-        # (6) Only include the PIL preview occasionally to reduce overhead
         if (self._step % self.info_image_every) == 0:
             info["composited_pil"] = preview_on
 
         return obs, float(reward), bool(terminated), bool(truncated), info
+
 
     # ----------------------------- helpers -----------------------------------
 
