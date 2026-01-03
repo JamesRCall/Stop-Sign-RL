@@ -58,10 +58,12 @@ class StopSignGridEnv(gym.Env):
         pole_image: Optional[Image.Image],
         yolo_weights: str = "weights/yolo11n.pt",
         img_size: Tuple[int, int] = (640, 640),
+        detector_debug: bool = False,
+
 
         # Episodes
         steps_per_episode: int = 7000,
-        eval_K: int = 10,
+        eval_K: int = 3,
 
         # Grid config
         grid_cell_px: int = 4,               # 🔴 default 4x4 now
@@ -75,11 +77,15 @@ class StopSignGridEnv(gym.Env):
         uv_drop_threshold: float = 0.70,
         day_tolerance: float = 0.05,
         lambda_day: float = 1.0,
+        min_base_conf: float = 0.20,
+
 
         # YOLO
         yolo_device: str = "cpu",
         conf_thresh: float = 0.10,
         iou_thresh: float = 0.45,
+        info_image_every: int = 50,
+
 
         seed: Optional[int] = None,
     ):
@@ -111,11 +117,15 @@ class StopSignGridEnv(gym.Env):
         self.uv_drop_threshold = float(uv_drop_threshold)
         self.day_tolerance = float(day_tolerance)
         self.lambda_day = float(lambda_day)
+        self.min_base_conf = float(min_base_conf)
+        self.info_image_every = int(info_image_every)
+
 
         # detector
         self.det = DetectorWrapper(
-            yolo_weights, device=yolo_device, conf=conf_thresh, iou=iou_thresh, debug=False
+            yolo_weights, device=yolo_device, conf=conf_thresh, iou=iou_thresh, debug=detector_debug
         )
+
 
         # action/obs spaces
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
@@ -171,6 +181,13 @@ class StopSignGridEnv(gym.Env):
         self._transform_seeds = [int(self.rng.integers(0, 2**31 - 1)) for _ in range(self.eval_K)]
 
         obs = self._render_variant(kind="day", use_overlay=False, transform_seed=self._transform_seeds[0])
+
+        # Cache plain baseline confidences (same throughout episode)
+        c0_day, c0_on = self._eval_plain_over_K()
+        self._baseline_c0_day = c0_day
+        self._baseline_c0_on  = c0_on
+
+
         return np.array(obs, dtype=np.uint8), {}
 
     # ----------------------------- step --------------------------------------
@@ -195,9 +212,33 @@ class StopSignGridEnv(gym.Env):
                 terminated = True
 
         # 2) Evaluate K matched transforms: plain vs overlay, both day and UV-on
-        c0_day, c_day, c0_on, c_on = self._eval_over_K()
+        c_day, c_on = self._eval_overlay_over_K()
+        c0_day, c0_on = self._baseline_c0_day, self._baseline_c0_on
+
         drop_day = float(c0_day - c_day)
         drop_on  = float(c0_on - c_on)
+
+        # (5) Baseline gating: if the detector didn't see the sign in baseline,
+        # don't let the agent "win" on junk scenes.
+        if c0_on < self.min_base_conf:
+            # Small penalty to discourage these states
+            reward = -0.05
+            terminated = False
+            truncated = (self._step >= self.steps_per_episode)
+
+            obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
+            obs = np.array(obs_img, dtype=np.uint8)
+
+            info = {
+                "objective": "grid_uv",
+                "c0_day": c0_day, "c_day": c_day,
+                "c0_on": c0_on,   "c_on": c_on,
+                "drop_day": drop_day, "drop_on": drop_on,
+                "note": "baseline_conf_too_low",
+                "min_base_conf": float(self.min_base_conf),
+            }
+            return obs, float(reward), bool(terminated), bool(truncated), info
+
 
         # 3) reward (normalized) & early stopping on UV threshold
         # core term: big UV drop good, day drop beyond tolerance bad
@@ -256,11 +297,28 @@ class StopSignGridEnv(gym.Env):
                 "place_seed": int(self._place_seed),
                 "transform_seeds": [int(s) for s in self._transform_seeds],
             },
-            "composited_pil": preview_on,
         }
+
+        # (6) Only include the PIL preview occasionally to reduce overhead
+        if (self._step % self.info_image_every) == 0:
+            info["composited_pil"] = preview_on
+
         return obs, float(reward), bool(terminated), bool(truncated), info
 
     # ----------------------------- helpers -----------------------------------
+
+    def _eval_plain_over_K(self) -> Tuple[float, float]:
+        imgs_plain_day, imgs_plain_on = [], []
+        for t_seed in self._transform_seeds:
+            plain_day = self._compose_on_bg(self._transform_sign(self.sign_rgba_day, t_seed), self._place_seed)
+            plain_on  = self._compose_on_bg(self._transform_sign(self.sign_rgba_on,  t_seed), self._place_seed)
+            imgs_plain_day.append(plain_day)
+            imgs_plain_on.append(plain_on)
+        c0_day_list = self.det.infer_confidence_batch(imgs_plain_day)
+        c0_on_list  = self.det.infer_confidence_batch(imgs_plain_on)
+        mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
+        return mean(c0_day_list), mean(c0_on_list)
+
 
     def _selected_indices_list(self) -> List[int]:
         idxs = np.flatnonzero(self._episode_cells.reshape(-1)).tolist()
@@ -319,27 +377,55 @@ class StopSignGridEnv(gym.Env):
         return img
 
     def _eval_over_K(self) -> Tuple[float, float, float, float]:
-        c0_day_list, c_day_list, c0_on_list, c_on_list = [], [], [], []
+        imgs_plain_day = []
+        imgs_plain_on  = []
+        imgs_over_day  = []
+        imgs_over_on   = []
+
+        # Precompute overlays once per step (huge win)
+        over_sign_day = self._apply_grid_overlay(self.sign_rgba_day, mode="day")
+        over_sign_on  = self._apply_grid_overlay(self.sign_rgba_on,  mode="on")
+
         for t_seed in self._transform_seeds:
             plain_day = self._compose_on_bg(self._transform_sign(self.sign_rgba_day, t_seed), self._place_seed)
             plain_on  = self._compose_on_bg(self._transform_sign(self.sign_rgba_on,  t_seed), self._place_seed)
 
-            over_day = self._compose_on_bg(
-                self._transform_sign(self._apply_grid_overlay(self.sign_rgba_day, mode="day"), t_seed),
-                self._place_seed,
-            )
-            over_on  = self._compose_on_bg(
-                self._transform_sign(self._apply_grid_overlay(self.sign_rgba_on,  mode="on"),  t_seed),
-                self._place_seed,
-            )
+            over_day  = self._compose_on_bg(self._transform_sign(over_sign_day, t_seed), self._place_seed)
+            over_on   = self._compose_on_bg(self._transform_sign(over_sign_on,  t_seed), self._place_seed)
 
-            c0_day_list.append(self._infer_conf(plain_day))
-            c0_on_list.append(self._infer_conf(plain_on))
-            c_day_list.append(self._infer_conf(over_day))
-            c_on_list.append(self._infer_conf(over_on))
+            imgs_plain_day.append(plain_day)
+            imgs_plain_on.append(plain_on)
+            imgs_over_day.append(over_day)
+            imgs_over_on.append(over_on)
+
+        # Batch inference: 4 calls total instead of 4*K
+        c0_day_list = self.det.infer_confidence_batch(imgs_plain_day)
+        c0_on_list  = self.det.infer_confidence_batch(imgs_plain_on)
+        c_day_list  = self.det.infer_confidence_batch(imgs_over_day)
+        c_on_list   = self.det.infer_confidence_batch(imgs_over_on)
 
         mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
         return mean(c0_day_list), mean(c_day_list), mean(c0_on_list), mean(c_on_list)
+
+    def _eval_overlay_over_K(self) -> Tuple[float, float]:
+        imgs_over_day, imgs_over_on = [], []
+
+        # Precompute overlays once per step
+        over_sign_day = self._apply_grid_overlay(self.sign_rgba_day, mode="day")
+        over_sign_on  = self._apply_grid_overlay(self.sign_rgba_on,  mode="on")
+
+        for t_seed in self._transform_seeds:
+            over_day = self._compose_on_bg(self._transform_sign(over_sign_day, t_seed), self._place_seed)
+            over_on  = self._compose_on_bg(self._transform_sign(over_sign_on,  t_seed), self._place_seed)
+            imgs_over_day.append(over_day)
+            imgs_over_on.append(over_on)
+
+        c_day_list = self.det.infer_confidence_batch(imgs_over_day)
+        c_on_list  = self.det.infer_confidence_batch(imgs_over_on)
+
+        mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
+        return mean(c_day_list), mean(c_on_list)
+
 
     def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
         rgb = sign_rgba.convert("RGB")
@@ -358,7 +444,8 @@ class StopSignGridEnv(gym.Env):
         on = np.argwhere(self._episode_cells)
         for r, c in on:
             x0, y0, x1, y1 = self._cell_rects[r * self.Gw + c]
-            mdraw.rectangle([x0, y0, x1, y1], fill=255)
+            mdraw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=255)
+
 
         mask = Image.composite(mask, Image.new("L", mask.size, 0), self._sign_alpha)
 
@@ -475,12 +562,6 @@ class StopSignGridEnv(gym.Env):
             idx = int(self.rng.integers(0, len(self.bg_list)))
             return self.bg_list[idx].resize((W, H), Image.BILINEAR).convert("RGB")
         return Image.new("RGB", (200, 200, 200))
-
-    def _infer_conf(self, pil_rgb: Image.Image) -> float:
-        try:
-            return float(self.det.infer_confidence(pil_rgb))
-        except Exception:
-            return 0.0
 
 
 # ---------------------------- helpers (module level) ----------------------------

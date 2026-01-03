@@ -107,3 +107,42 @@ class DetectorWrapper:
                 self._logged_names = True
             return 0.0
         return float(confs[mask].max())
+
+    def infer_confidence_batch(self, pil_images) -> list[float]:
+        """
+        Returns a list of max confidences for target class, one per image.
+        Ultralytics supports passing a list of images to predict().
+        """
+        try:
+            results = self.model.predict(
+                pil_images,
+                conf=self.conf,
+                iou=self.iou,
+                verbose=False,
+                device=self.device,
+            )
+        except Exception as e:
+            if self.debug:
+                print(f"[DetectorWrapper] batch predict() error on device={self.device}: {e}")
+            return [0.0 for _ in pil_images]
+
+        out = []
+        import numpy as np
+
+        def to_numpy(x):
+            try:
+                return x.detach().cpu().numpy()
+            except Exception:
+                return np.asarray(x)
+
+        for r0 in results:
+            boxes = getattr(r0, "boxes", None)
+            if boxes is None or len(boxes) == 0:
+                out.append(0.0)
+                continue
+            confs = to_numpy(boxes.conf).astype(float).reshape(-1)
+            clss  = to_numpy(boxes.cls).astype(int).reshape(-1)
+            mask = (clss == self.target_id)
+            out.append(float(confs[mask].max()) if mask.any() else 0.0)
+        return out
+

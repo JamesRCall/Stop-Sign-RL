@@ -89,6 +89,7 @@ def make_env_factory(
 
                 steps_per_episode=steps_per_episode,
                 eval_K=eval_K,
+                detector_debug=True,
 
                 grid_cell_px=grid_cell_px,
                 max_cells=None,  # optional cap; leave None because we terminate by threshold
@@ -108,7 +109,7 @@ def parse_args():
     ap.add_argument("--data", default="./data")
     ap.add_argument("--bgdir", default="./data/backgrounds")
     ap.add_argument("--yolo", default="./weights/yolo11n.pt")
-    ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "cpu"))
+    ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "auto"))
     ap.add_argument("--tb", default="./runs/tb")
     ap.add_argument("--ckpt", default="./runs/checkpoints")
     ap.add_argument("--overlays", default="./runs/overlays")
@@ -116,7 +117,7 @@ def parse_args():
     ap.add_argument("--num-envs", type=int, default=8)
     ap.add_argument("--vec", choices=["dummy", "subproc"], default="subproc")
     ap.add_argument("--n-steps", type=int, default=256)
-    ap.add_argument("--batch-size", type=int, default=4096)
+    ap.add_argument("--batch-size", type=int, default=1024)
     ap.add_argument("--total-steps", type=int, default=400_000)
 
     ap.add_argument("--episode-steps", type=int, default=7000)
@@ -138,9 +139,14 @@ if __name__ == "__main__":
     os.environ.setdefault("MKL_NUM_THREADS", "1")
 
     args = parse_args()
+    if "cuda" in str(args.detector_device).lower() and args.vec == "subproc":
+        print("⚠️ CUDA detector + SubprocVecEnv is risky. Switching vec to dummy.")
+        args.vec = "dummy"
     print("torch.cuda.is_available():", torch.cuda.is_available())
     if torch.cuda.is_available():
         print("Using cuda device")
+
+    
 
     # paths
     STOP_PLAIN = os.path.join(args.data, "stop_sign.png")
