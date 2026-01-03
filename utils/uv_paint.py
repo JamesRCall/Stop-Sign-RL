@@ -31,8 +31,8 @@ VIOLET_GLOW = UVPaint(
     day_hex="#C9C9C9",      # neutral gray (subtle before activation)
     active_hex="#7B00FF",   # vivid violet under UV
     translucent=True,
-    day_alpha=0.30,
-    active_alpha=0.85,
+    day_alpha=0.25,
+    active_alpha=1.0,
 )
 
 GREEN_GLOW = UVPaint(
@@ -41,7 +41,7 @@ GREEN_GLOW = UVPaint(
     active_hex="#00FF7F",   # spring green-ish UV glow
     translucent=True,
     day_alpha=0.25,
-    active_alpha=0.85,
+    active_alpha=1.0,
 )
 
 # New: BLUE_GLOW and YELLOW_GLOW
@@ -50,8 +50,8 @@ BLUE_GLOW = UVPaint(
     day_hex="#D5D5D5",      # faint gray pre-activation
     active_hex="#00BFFF",   # deep sky blue glow under UV
     translucent=True,
-    day_alpha=0.28,
-    active_alpha=0.85,
+    day_alpha=0.25,
+    active_alpha=1.0,
 )
 
 YELLOW_GLOW = UVPaint(
@@ -59,6 +59,6 @@ YELLOW_GLOW = UVPaint(
     day_hex="#D8D8D8",
     active_hex="#FFD400",   # bright yellow glow under UV
     translucent=True,
-    day_alpha=0.28,
-    active_alpha=0.85,
+    day_alpha=0.25,
+    active_alpha=1.0,
 )
