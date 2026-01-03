@@ -10,7 +10,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
 
 from envs.stop_sign_grid_env import StopSignGridEnv
-from utils.uv_paint import VIOLET_GLOW   # single pair; swap here if you want another
+from utils.uv_paint import GREEN_GLOW  # single pair; swap here if you want another
 from utils.save_callbacks import SaveImprovingOverlaysCallback
 from utils.tb_callbacks import TensorboardOverlayCallback
 
