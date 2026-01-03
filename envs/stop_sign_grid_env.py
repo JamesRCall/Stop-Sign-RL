@@ -109,6 +109,8 @@ class StopSignGridEnv(gym.Env):
         if self.grid_cell_px not in (2, 4):
             raise ValueError("grid_cell_px must be 2 or 4")
 
+        self.cell_cover_thresh = float(cell_cover_thresh)
+
         # build sign alpha and grid on construction
         self._sign_alpha = self.sign_rgba_day.split()[-1]  # L mask of octagon
         self._build_grid_index()
@@ -125,7 +127,6 @@ class StopSignGridEnv(gym.Env):
         self.lambda_day = float(lambda_day)
         self.min_base_conf = float(min_base_conf)
         self.info_image_every = int(info_image_every)
-        self.cell_cover_thresh = float(cell_cover_thresh)
 
 
         # Reward smoothing state (Option A)
