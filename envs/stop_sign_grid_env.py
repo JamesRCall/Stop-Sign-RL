@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Tuple, Dict, Any, List, Optional
 import math
 import numpy as np
+from collections import deque
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 import gymnasium as gym
@@ -58,16 +59,15 @@ class StopSignGridEnv(gym.Env):
         pole_image: Optional[Image.Image],
         yolo_weights: str = "weights/yolo11n.pt",
         img_size: Tuple[int, int] = (640, 640),
+        detector_debug: bool = False,
+
 
         # Episodes
         steps_per_episode: int = 7000,
-        eval_K: int = 10,
+        eval_K: int = 3,
 
         # Grid config
         grid_cell_px: int = 4,               # 🔴 default 4x4 now
-        # Hex/octagon-aware grid validity + anti-corner bias
-        cell_cover_thresh: float = 0.60,       # fraction of cell pixels inside sign mask to count as valid
-        prefer_interior: bool = True,          # tie-break toward interior cells when remapping
         max_cells: Optional[int] = None,
 
         # Paint (single pair)
@@ -78,11 +78,20 @@ class StopSignGridEnv(gym.Env):
         uv_drop_threshold: float = 0.70,
         day_tolerance: float = 0.05,
         lambda_day: float = 1.0,
+        min_base_conf: float = 0.20,
+        cell_cover_thresh: float = 0.6,
+
 
         # YOLO
         yolo_device: str = "cpu",
         conf_thresh: float = 0.10,
         iou_thresh: float = 0.45,
+        info_image_every: int = 50,
+
+        # Reward smoothing (Option A)
+        reward_smooth_n: int = 10,
+        use_ema: bool = True,
+        ema_beta: float = 0.90,
 
         seed: Optional[int] = None,
     ):
@@ -102,8 +111,6 @@ class StopSignGridEnv(gym.Env):
 
         # build sign alpha and grid on construction
         self._sign_alpha = self.sign_rgba_day.split()[-1]  # L mask of octagon
-        self.cell_cover_thresh = float(cell_cover_thresh)
-        self.prefer_interior = bool(prefer_interior)
         self._build_grid_index()
 
         self.max_cells = int(max_cells) if max_cells is not None else None
@@ -116,11 +123,23 @@ class StopSignGridEnv(gym.Env):
         self.uv_drop_threshold = float(uv_drop_threshold)
         self.day_tolerance = float(day_tolerance)
         self.lambda_day = float(lambda_day)
+        self.min_base_conf = float(min_base_conf)
+        self.info_image_every = int(info_image_every)
+        self.cell_cover_thresh = float(cell_cover_thresh)
+
+
+        # Reward smoothing state (Option A)
+        self.reward_smooth_n = int(reward_smooth_n)
+        self.use_ema = bool(use_ema)
+        self.ema_beta = float(ema_beta)
+        self._drop_hist = deque(maxlen=self.reward_smooth_n)
+        self._drop_ema = None
 
         # detector
         self.det = DetectorWrapper(
-            yolo_weights, device=yolo_device, conf=conf_thresh, iou=iou_thresh, debug=False
+            yolo_weights, device=yolo_device, conf=conf_thresh, iou=iou_thresh, debug=detector_debug
         )
+
 
         # action/obs spaces
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
@@ -153,26 +172,11 @@ class StopSignGridEnv(gym.Env):
             for c in range(Gw):
                 x0, y0 = c * g, r * g
                 x1, y1 = min(W, x0 + g), min(H, y0 + g)
-                # cell coverage inside the octagon mask (prevents skinny edge/corner slivers)
                 cell = signA[y0:y1, x0:x1]
                 cover = float(cell.mean()) if cell.size else 0.0
                 valid[r, c] = (cover >= self.cell_cover_thresh)
-                rects.append((x0, y0, x1, y1))
 
-        # Interior preference score: number of valid neighbors (8-neighborhood).
-        # Higher scores tend to be deeper inside the octagon, lower scores near edges/corners.
-        nbr = np.zeros_like(valid, dtype=np.int16)
-        for rr in range(Gh):
-            for cc in range(Gw):
-                if not valid[rr, cc]:
-                    continue
-                s = 0
-                for r2 in (rr - 1, rr, rr + 1):
-                    for c2 in (cc - 1, cc, cc + 1):
-                        if 0 <= r2 < Gh and 0 <= c2 < Gw and valid[r2, c2]:
-                            s += 1
-                nbr[rr, cc] = s
-        self._neighbor_score = nbr
+                rects.append((x0, y0, x1, y1))
 
         self.Gw, self.Gh = Gw, Gh
         self._cell_rects = rects
@@ -192,6 +196,16 @@ class StopSignGridEnv(gym.Env):
         self._transform_seeds = [int(self.rng.integers(0, 2**31 - 1)) for _ in range(self.eval_K)]
 
         obs = self._render_variant(kind="day", use_overlay=False, transform_seed=self._transform_seeds[0])
+
+        # Cache plain baseline confidences (same throughout episode)
+        c0_day, c0_on = self._eval_plain_over_K()
+        self._baseline_c0_day = c0_day
+        self._baseline_c0_on  = c0_on
+
+        # Reset reward smoothing buffers (Option A)
+        self._drop_hist.clear()
+        self._drop_ema = None
+
         return np.array(obs, dtype=np.uint8), {}
 
     # ----------------------------- step --------------------------------------
@@ -216,29 +230,65 @@ class StopSignGridEnv(gym.Env):
                 terminated = True
 
         # 2) Evaluate K matched transforms: plain vs overlay, both day and UV-on
-        c0_day, c_day, c0_on, c_on = self._eval_over_K()
+        c_day, c_on = self._eval_overlay_over_K()
+        c0_day, c0_on = self._baseline_c0_day, self._baseline_c0_on
+
         drop_day = float(c0_day - c_day)
         drop_on  = float(c0_on - c_on)
+
+        # (Option A) Smooth UV drop signal over recent steps to reduce volatility
+        self._drop_hist.append(drop_on)
+        if self.use_ema:
+            if self._drop_ema is None:
+                self._drop_ema = drop_on
+            else:
+                b = float(self.ema_beta)
+                self._drop_ema = b * float(self._drop_ema) + (1.0 - b) * drop_on
+            drop_on_s = float(self._drop_ema)
+        else:
+            drop_on_s = float(np.mean(self._drop_hist)) if len(self._drop_hist) else float(drop_on)
+
+        # (5) Baseline gating: if the detector didn't see the sign in baseline,
+        # don't let the agent "win" on junk scenes.
+        if c0_on < self.min_base_conf:
+            # Small penalty to discourage these states
+            reward = -0.05
+            terminated = False
+            truncated = (self._step >= self.steps_per_episode)
+
+            obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
+            obs = np.array(obs_img, dtype=np.uint8)
+
+            info = {
+                "objective": "grid_uv",
+                "c0_day": c0_day, "c_day": c_day,
+                "c0_on": c0_on,   "c_on": c_on,
+                "drop_day": drop_day, "drop_on": drop_on, "drop_on_smooth": float(drop_on_s),
+                "note": "baseline_conf_too_low",
+                "min_base_conf": float(self.min_base_conf),
+            }
+            return obs, float(reward), bool(terminated), bool(truncated), info
+
 
         # 3) reward (normalized) & early stopping on UV threshold
         # core term: big UV drop good, day drop beyond tolerance bad
         pen_day = max(0.0, drop_day - self.day_tolerance)
-        raw_core = drop_on - self.lambda_day * pen_day
+        raw_core = drop_on_s - self.lambda_day * pen_day
 
         # smooth shaping as we move toward threshold
         thr = self.uv_drop_threshold
-        shaping = 0.25 * math.tanh(4.0 * (drop_on - 0.5 * thr))
+        shaping = 0.25 * math.tanh(4.0 * (drop_on_s - 0.5 * thr))
 
         # success bonus once we’ve actually crossed the threshold
         success_bonus = 0.0
-        if drop_on >= thr:
+        if drop_on_s >= thr:
             success_bonus = 0.5
 
         # total “pre-normalized” reward, then squash to ~[-1, 1]
         raw_total = raw_core + shaping + success_bonus
         reward = math.tanh(2.0 * raw_total)
 
-        if drop_on >= thr:
+        if drop_on_s >= thr:
             terminated = True
 
         truncated = (self._step >= self.steps_per_episode)
@@ -254,7 +304,7 @@ class StopSignGridEnv(gym.Env):
             "objective": "grid_uv",
             "c0_day": c0_day, "c_day": c_day,
             "c0_on": c0_on,   "c_on": c_on,
-            "drop_day": drop_day, "drop_on": drop_on,
+            "drop_day": drop_day, "drop_on": drop_on, "drop_on_smooth": float(drop_on_s),
             "reward_core": float(raw_core),
             "reward_raw_total": float(raw_total),
             "reward": float(reward),
@@ -277,11 +327,28 @@ class StopSignGridEnv(gym.Env):
                 "place_seed": int(self._place_seed),
                 "transform_seeds": [int(s) for s in self._transform_seeds],
             },
-            "composited_pil": preview_on,
         }
+
+        # (6) Only include the PIL preview occasionally to reduce overhead
+        if (self._step % self.info_image_every) == 0:
+            info["composited_pil"] = preview_on
+
         return obs, float(reward), bool(terminated), bool(truncated), info
 
     # ----------------------------- helpers -----------------------------------
+
+    def _eval_plain_over_K(self) -> Tuple[float, float]:
+        imgs_plain_day, imgs_plain_on = [], []
+        for t_seed in self._transform_seeds:
+            plain_day = self._compose_on_bg(self._transform_sign(self.sign_rgba_day, t_seed), self._place_seed)
+            plain_on  = self._compose_on_bg(self._transform_sign(self.sign_rgba_on,  t_seed), self._place_seed)
+            imgs_plain_day.append(plain_day)
+            imgs_plain_on.append(plain_on)
+        c0_day_list = self.det.infer_confidence_batch(imgs_plain_day)
+        c0_on_list  = self.det.infer_confidence_batch(imgs_plain_on)
+        mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
+        return mean(c0_day_list), mean(c0_on_list)
+
 
     def _selected_indices_list(self) -> List[int]:
         idxs = np.flatnonzero(self._episode_cells.reshape(-1)).tolist()
@@ -302,43 +369,22 @@ class StopSignGridEnv(gym.Env):
         return r, c
 
     def _nearest_valid_free_cell(self, r: int, c: int) -> Tuple[int, int]:
-        """Map an invalid/occupied target to the nearest free valid cell.
-
-        This version avoids scan-order bias (which tends to push selections toward corners)
-        by selecting the true nearest candidate (Euclidean distance in grid space) with a
-        random tie-break. Optionally, it prefers interior cells on ties using a
-        precomputed neighbor-count score.
-        """
-        if self._is_valid_free(r, c):
-            return r, c
-
         free_mask = self._valid_cells & (~self._episode_cells)
-        coords = np.argwhere(free_mask)  # (N, 2) of (rr, cc)
+        coords = np.argwhere(free_mask)  # (N, 2) array of (rr, cc)
+
         if coords.size == 0:
             return r, c
 
-        dr = coords[:, 0] - int(r)
-        dc = coords[:, 1] - int(c)
+        dr = coords[:, 0] - r
+        dc = coords[:, 1] - c
         d2 = dr * dr + dc * dc
         m = d2.min()
 
+        # random tie-break among equally near cells
         cand = coords[d2 == m]
-        if cand.shape[0] == 1:
-            rr, cc = cand[0]
-            return int(rr), int(cc)
-
-        # Prefer interior cells among nearest candidates (optional).
-        if getattr(self, "prefer_interior", False) and hasattr(self, "_neighbor_score"):
-            scores = np.array([self._neighbor_score[int(rr), int(cc)] for rr, cc in cand], dtype=np.int16)
-            best = cand[scores == scores.max()]
-            i = int(self.rng.integers(0, best.shape[0]))
-            rr, cc = best[i]
-            return int(rr), int(cc)
-
-        # Random tie-break among equally-near candidates
         i = int(self.rng.integers(0, cand.shape[0]))
-        rr, cc = cand[i]
-        return int(rr), int(cc)
+        return int(cand[i, 0]), int(cand[i, 1])
+
 
     def _is_valid_free(self, r: int, c: int) -> bool:
         return (
@@ -359,27 +405,55 @@ class StopSignGridEnv(gym.Env):
         return img
 
     def _eval_over_K(self) -> Tuple[float, float, float, float]:
-        c0_day_list, c_day_list, c0_on_list, c_on_list = [], [], [], []
+        imgs_plain_day = []
+        imgs_plain_on  = []
+        imgs_over_day  = []
+        imgs_over_on   = []
+
+        # Precompute overlays once per step (huge win)
+        over_sign_day = self._apply_grid_overlay(self.sign_rgba_day, mode="day")
+        over_sign_on  = self._apply_grid_overlay(self.sign_rgba_on,  mode="on")
+
         for t_seed in self._transform_seeds:
             plain_day = self._compose_on_bg(self._transform_sign(self.sign_rgba_day, t_seed), self._place_seed)
             plain_on  = self._compose_on_bg(self._transform_sign(self.sign_rgba_on,  t_seed), self._place_seed)
 
-            over_day = self._compose_on_bg(
-                self._transform_sign(self._apply_grid_overlay(self.sign_rgba_day, mode="day"), t_seed),
-                self._place_seed,
-            )
-            over_on  = self._compose_on_bg(
-                self._transform_sign(self._apply_grid_overlay(self.sign_rgba_on,  mode="on"),  t_seed),
-                self._place_seed,
-            )
+            over_day  = self._compose_on_bg(self._transform_sign(over_sign_day, t_seed), self._place_seed)
+            over_on   = self._compose_on_bg(self._transform_sign(over_sign_on,  t_seed), self._place_seed)
 
-            c0_day_list.append(self._infer_conf(plain_day))
-            c0_on_list.append(self._infer_conf(plain_on))
-            c_day_list.append(self._infer_conf(over_day))
-            c_on_list.append(self._infer_conf(over_on))
+            imgs_plain_day.append(plain_day)
+            imgs_plain_on.append(plain_on)
+            imgs_over_day.append(over_day)
+            imgs_over_on.append(over_on)
+
+        # Batch inference: 4 calls total instead of 4*K
+        c0_day_list = self.det.infer_confidence_batch(imgs_plain_day)
+        c0_on_list  = self.det.infer_confidence_batch(imgs_plain_on)
+        c_day_list  = self.det.infer_confidence_batch(imgs_over_day)
+        c_on_list   = self.det.infer_confidence_batch(imgs_over_on)
 
         mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
         return mean(c0_day_list), mean(c_day_list), mean(c0_on_list), mean(c_on_list)
+
+    def _eval_overlay_over_K(self) -> Tuple[float, float]:
+        imgs_over_day, imgs_over_on = [], []
+
+        # Precompute overlays once per step
+        over_sign_day = self._apply_grid_overlay(self.sign_rgba_day, mode="day")
+        over_sign_on  = self._apply_grid_overlay(self.sign_rgba_on,  mode="on")
+
+        for t_seed in self._transform_seeds:
+            over_day = self._compose_on_bg(self._transform_sign(over_sign_day, t_seed), self._place_seed)
+            over_on  = self._compose_on_bg(self._transform_sign(over_sign_on,  t_seed), self._place_seed)
+            imgs_over_day.append(over_day)
+            imgs_over_on.append(over_on)
+
+        c_day_list = self.det.infer_confidence_batch(imgs_over_day)
+        c_on_list  = self.det.infer_confidence_batch(imgs_over_on)
+
+        mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
+        return mean(c_day_list), mean(c_on_list)
+
 
     def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
         rgb = sign_rgba.convert("RGB")
@@ -398,7 +472,8 @@ class StopSignGridEnv(gym.Env):
         on = np.argwhere(self._episode_cells)
         for r, c in on:
             x0, y0, x1, y1 = self._cell_rects[r * self.Gw + c]
-            mdraw.rectangle([x0, y0, x1, y1], fill=255)
+            mdraw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=255)
+
 
         mask = Image.composite(mask, Image.new("L", mask.size, 0), self._sign_alpha)
 
@@ -515,12 +590,6 @@ class StopSignGridEnv(gym.Env):
             idx = int(self.rng.integers(0, len(self.bg_list)))
             return self.bg_list[idx].resize((W, H), Image.BILINEAR).convert("RGB")
         return Image.new("RGB", (200, 200, 200))
-
-    def _infer_conf(self, pil_rgb: Image.Image) -> float:
-        try:
-            return float(self.det.infer_confidence(pil_rgb))
-        except Exception:
-            return 0.0
 
 
 # ---------------------------- helpers (module level) ----------------------------
