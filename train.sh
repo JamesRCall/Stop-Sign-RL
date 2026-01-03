@@ -1,24 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export YOLO_DEVICE=cuda:0
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:256"
+# ==============================
+# GPU + allocator knobs
+# ==============================
+export YOLO_DEVICE="${YOLO_DEVICE:-cuda:0}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:256}"
 
+# Optional: keeps CPU from thrashing when you use lots of env logic
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+
+# Optional (often helps on big GPUs; safe if it doesn't)
+export TORCH_CUDNN_V8_API_ENABLED="${TORCH_CUDNN_V8_API_ENABLED:-1}"
 
 # ==============================
-# Defaults (can be overridden)
+# Defaults (override via env or CLI)
 # ==============================
-MODE="${MODE:-both}"                    # attack | uv | both
-NUM_ENVS="${NUM_ENVS:-32}"
+NUM_ENVS="${NUM_ENVS:-1}"            # with CUDA detector, keep 1 unless you build a detector server
+VEC="${VEC:-dummy}"                 # must be dummy for CUDA+YOLO in current architecture
+
+EVAL_K="${EVAL_K:-3}"
+GRID_CELL="${GRID_CELL:-4}"
+
 N_STEPS="${N_STEPS:-512}"
-BATCH="${BATCH:-4096}"
-VEC="${VEC:-subproc}"
+BATCH="${BATCH:-1024}"              # safe default; will be clamped below
+TOTAL_STEPS="${TOTAL_STEPS:-400000}"
 
 TB_DIR="${TB_DIR:-./_runs/tb}"
 CKPT_DIR="${CKPT_DIR:-./_runs/checkpoints}"
 OVR_DIR="${OVR_DIR:-./_runs/overlays}"
-
 PORT="${PORT:-6006}"
+
 SAVE_FREQ_UPDATES="${SAVE_FREQ_UPDATES:-2}"
 PY_MAIN="${PY_MAIN:-train_single_stop_sign.py}"
 
@@ -35,11 +48,15 @@ usage() {
 Usage: $0 [options]
 
 Options:
-  --mode {attack|uv|both}     (default: $MODE)
   --num-envs N                (default: $NUM_ENVS)
+  --vec {dummy|subproc}       (default: $VEC)
+
+  --eval-k K                  (default: $EVAL_K)
+  --grid-cell {2|4}           (default: $GRID_CELL)
+
   --n-steps N                 (default: $N_STEPS)
   --batch N                   (default: $BATCH)
-  --vec {dummy|subproc}       (default: $VEC)
+  --total-steps N             (default: $TOTAL_STEPS)
 
   --tb DIR                    (default: $TB_DIR)
   --ckpt DIR                  (default: $CKPT_DIR)
@@ -55,11 +72,15 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --mode) MODE="$2"; shift 2;;
     --num-envs) NUM_ENVS="$2"; shift 2;;
+    --vec) VEC="$2"; shift 2;;
+
+    --eval-k) EVAL_K="$2"; shift 2;;
+    --grid-cell) GRID_CELL="$2"; shift 2;;
+
     --n-steps) N_STEPS="$2"; shift 2;;
     --batch) BATCH="$2"; shift 2;;
-    --vec) VEC="$2"; shift 2;;
+    --total-steps) TOTAL_STEPS="$2"; shift 2;;
 
     --tb) TB_DIR="$2"; shift 2;;
     --ckpt) CKPT_DIR="$2"; shift 2;;
@@ -77,6 +98,21 @@ done
 mkdir -p "$TB_DIR" "$CKPT_DIR" "$OVR_DIR" ./_runs
 
 # ==============================
+# Safety: CUDA + subproc is a trap here
+# ==============================
+if [[ "${YOLO_DEVICE}" == cuda* ]] && [[ "${VEC}" == "subproc" ]]; then
+  echo "⚠️ CUDA YOLO + SubprocVecEnv is unstable in current design. Forcing --vec dummy."
+  VEC="dummy"
+fi
+
+# PPO constraint: batch_size must be <= n_steps * num_envs
+ROLLOUT=$(( N_STEPS * NUM_ENVS ))
+if (( BATCH > ROLLOUT )); then
+  echo "⚠️ batch (${BATCH}) > rollout (${ROLLOUT}). Clamping batch -> ${ROLLOUT}."
+  BATCH="${ROLLOUT}"
+fi
+
+# ==============================
 # Helpers
 # ==============================
 TB_PID=""
@@ -92,13 +128,11 @@ trap cleanup EXIT
 
 start_tensorboard() {
   echo "[TB] Starting TensorBoard on port ${PORT}, logdir=${TB_DIR}"
-  # Bind to localhost so it can be SSH-forwarded securely
   tensorboard --logdir "${TB_DIR}" --host localhost --port "${PORT}" > ./_runs/tensorboard.log 2>&1 &
   TB_PID=$!
   sleep 2
   echo "[TB] PID=${TB_PID} | log: ./_runs/tensorboard.log"
-  echo "[TB] To view remotely: ssh -L ${PORT}:localhost:${PORT} <user>@<server>"
-  echo "[TB] Then open: http://localhost:${PORT}"
+  echo "[TB] Open: http://localhost:${PORT}"
 }
 
 start_monitor() {
@@ -108,33 +142,19 @@ start_monitor() {
     echo "=== Resource monitor started: $(date) ==="
     echo "interval=${MON_INTERVAL}s"
     echo ""
-
     has_cmd() { command -v "$1" >/dev/null 2>&1; }
-
     while true; do
       ts="$(date '+%F %T')"
       echo "----- ${ts} -----"
-
-      # GPU + VRAM
       if has_cmd nvidia-smi; then
-        nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total \
-          --format=csv,noheader,nounits | awk '{printf "[GPU] util=%s%% mem=%s/%s MiB\n",$1,$2,$3}'
+        nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total \
+          --format=csv,noheader,nounits | awk '{printf "[GPU] util=%s%% memUtil=%s%% mem=%s/%s MiB\n",$1,$2,$3,$4}'
       else
         echo "[GPU] nvidia-smi not found"
       fi
-
-      # CPU
-      if has_cmd mpstat; then
-        mpstat 1 1 | awk '/all/ {printf "[CPU] usr=%.1f%% sys=%.1f%% idle=%.1f%%\n",$3,$5,$12}'
-      elif has_cmd top; then
-        top -b -n1 | awk -F',' '/Cpu\(s\)/{print "[CPU]" $0}'
-      fi
-
-      # RAM
       if has_cmd free; then
         free -m | awk '/Mem:/ {printf "[RAM] used=%d MiB / total=%d MiB (%.1f%%)\n",$3,$2,($3/$2)*100}'
       fi
-
       echo ""
       sleep "${MON_INTERVAL}"
     done
@@ -152,19 +172,22 @@ start_monitor
 # ==============================
 # Run training
 # ==============================
-echo "[TRAIN] Launching training:"
-echo "        mode=${MODE} num-envs=${NUM_ENVS} vec=${VEC} n-steps=${N_STEPS} batch=${BATCH}"
+echo "[TRAIN] Launching GPU training:"
+echo "        YOLO_DEVICE=${YOLO_DEVICE}"
+echo "        num-envs=${NUM_ENVS} vec=${VEC} eval_K=${EVAL_K} grid=${GRID_CELL}"
+echo "        n-steps=${N_STEPS} batch=${BATCH} total-steps=${TOTAL_STEPS}"
 echo "        tb=${TB_DIR} ckpt=${CKPT_DIR} overlays=${OVR_DIR}"
-echo "        monitor: interval=${MON_INTERVAL}s → ${MON_LOG}"
 echo ""
 
-export PPO_BATCH_SIZE="${BATCH}"
-
 python "${PY_MAIN}" \
-  --mode "${MODE}" \
+  --detector-device "${YOLO_DEVICE}" \
   --num-envs "${NUM_ENVS}" \
   --vec "${VEC}" \
   --n-steps "${N_STEPS}" \
+  --batch-size "${BATCH}" \
+  --total-steps "${TOTAL_STEPS}" \
+  --eval-K "${EVAL_K}" \
+  --grid-cell "${GRID_CELL}" \
   --save-freq-updates "${SAVE_FREQ_UPDATES}" \
   --tb "${TB_DIR}" \
   --ckpt "${CKPT_DIR}" \
