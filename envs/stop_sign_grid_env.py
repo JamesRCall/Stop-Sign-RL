@@ -67,7 +67,7 @@ class StopSignGridEnv(gym.Env):
         eval_K: int = 3,
 
         # Grid config
-        grid_cell_px: int = 4,               # 🔴 default 4x4 now
+        grid_cell_px: int = 16,               # 🔴 default 4x4 now
         max_cells: Optional[int] = None,
 
         # Paint (single pair)
@@ -106,7 +106,7 @@ class StopSignGridEnv(gym.Env):
         self.pole_rgba = None if pole_image is None else pole_image.convert("RGBA")
 
         self.grid_cell_px = int(grid_cell_px)
-        if self.grid_cell_px not in (2, 4):
+        if self.grid_cell_px not in (2, 4, 8, 16, 32):
             raise ValueError("grid_cell_px must be 2 or 4")
 
         self.cell_cover_thresh = float(cell_cover_thresh)
