@@ -329,8 +329,13 @@ class StopSignGridEnv(gym.Env):
             },
         }
 
-        if (self._step % self.info_image_every) == 0:
+        # Always attach the final image if we succeeded (hit threshold), so it can be saved reliably.
+        if terminated and (drop_on_s >= self.uv_drop_threshold):
             info["composited_pil"] = preview_on
+        # Otherwise only attach occasionally to reduce overhead
+        elif (self._step % self.info_image_every) == 0:
+            info["composited_pil"] = preview_on
+
 
         return obs, float(reward), bool(terminated), bool(truncated), info
 

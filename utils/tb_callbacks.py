@@ -112,3 +112,89 @@ class TensorboardOverlayCallback(BaseCallback):
             if self.verbose:
                 print("[TB] overlay writer closed")
             self.writer = None
+# --- NEW: Episode summary metrics callback ---
+from typing import List
+import numpy as np
+from stable_baselines3.common.callbacks import BaseCallback
+from torch.utils.tensorboard import SummaryWriter
+import os
+
+
+class EpisodeMetricsCallback(BaseCallback):
+    """
+    Logs episode-level scalars:
+      - episode/area_frac_final
+      - episode/length_steps
+
+    X-axis is episode index (so you can see improvement run-to-run).
+    Also logs *_vs_timesteps variants so you can align with training time.
+    """
+
+    def __init__(self, log_dir: str, verbose: int = 0):
+        super().__init__(verbose)
+        self.log_dir = os.path.abspath(log_dir)
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.tb_dir = os.path.join(self.log_dir, "tb_episode_metrics")
+        os.makedirs(self.tb_dir, exist_ok=True)
+
+        self.writer: SummaryWriter | None = None
+        self._ep_count = 0
+        self._ep_len: List[int] = []
+
+    def _on_training_start(self) -> None:
+        if self.writer is None:
+            self.writer = SummaryWriter(log_dir=self.tb_dir)
+
+        # initialize per-env counters
+        n_envs = getattr(self.training_env, "num_envs", 1)
+        self._ep_len = [0 for _ in range(int(n_envs))]
+
+        if self.verbose:
+            print(f"[TB] episode metrics -> {self.tb_dir} (n_envs={n_envs})")
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", None)
+        dones = self.locals.get("dones", None)
+
+        if infos is None or dones is None:
+            return True
+
+        # dones can be list/np array
+        for env_idx, (done, info) in enumerate(zip(dones, infos)):
+            # increment length counter for this env each step
+            self._ep_len[env_idx] += 1
+
+            if not done:
+                continue
+
+            self._ep_count += 1
+            ep_len = int(self._ep_len[env_idx])
+            self._ep_len[env_idx] = 0  # reset for next episode
+
+            # pull area fraction from info (your env already sets this)
+            area = None
+            if isinstance(info, dict):
+                area = info.get("total_area_mask_frac", None)
+
+            # Fallback: if not present, store NaN (so TB shows gaps instead of crashing)
+            area_val = float(area) if area is not None else float("nan")
+
+            # log vs EPISODE INDEX (best for “is it improving?”)
+            if self.writer is not None:
+                self.writer.add_scalar("episode/length_steps", ep_len, self._ep_count)
+                self.writer.add_scalar("episode/area_frac_final", area_val, self._ep_count)
+
+                # also log vs global timesteps (sometimes useful)
+                self.writer.add_scalar("episode/length_steps_vs_timesteps", ep_len, self.num_timesteps)
+                self.writer.add_scalar("episode/area_frac_final_vs_timesteps", area_val, self.num_timesteps)
+
+                self.writer.flush()
+
+        return True
+
+    def _on_training_end(self) -> None:
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+            self.writer = None
+

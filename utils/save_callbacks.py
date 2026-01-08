@@ -113,6 +113,13 @@ class SaveImprovingOverlaysCallback(BaseCallback):
             return min(range(len(self._top)), key=lambda i: self._top[i]["key"])
 
     # ---------- file helpers ----------
+    def _is_success(self, info: Dict[str, Any]) -> bool:
+        # Prefer the smoothed signal if present (Option A)
+        drop = _safe_float(info.get("drop_on_smooth", info.get("drop_on", 0.0)))
+        thr  = _safe_float(info.get("uv_drop_threshold", 0.0))
+        return drop >= thr and thr > 0.0
+
+
     def _delete_entry_files(self, entry: Dict[str, Any]):
         for p in (entry.get("json_path"), entry.get("png_path")):
             if p and os.path.isfile(p):
@@ -167,6 +174,8 @@ class SaveImprovingOverlaysCallback(BaseCallback):
         infos = self.locals.get("infos", [])
         if not infos:
             return True
+        dones = self.locals.get("dones", None)
+
 
         for env_idx, info in enumerate(infos):
             if not isinstance(info, dict):
@@ -179,6 +188,24 @@ class SaveImprovingOverlaysCallback(BaseCallback):
 
             if not self._passes_threshold(delta, mode):
                 continue
+            # ---- NEW: save final overlay when an episode ends AND it met the env threshold ----
+            done = bool(dones[env_idx]) if isinstance(dones, (list, tuple, np.ndarray)) else False
+            if done and isinstance(info, dict) and self._is_success(info):
+                stem = f"success_step{self.num_timesteps:09d}_env{env_idx:02d}"
+                rec = self._save_record(stem, info)
+                if self.verbose:
+                    print(f"[SUCCESS saved] {stem} -> {rec.get('png_path')}")
+                # also write a trace line (optional)
+                base_conf, after_conf, _, _ = self._extract_metrics(info)
+                score = base_conf - after_conf  # adversary score style
+                self._write_trace_line(info, score)
+
+                # optional: also TB log it
+                if self.tb_callback is not None:
+                    try:
+                        self.tb_callback.log_overlay_record(rec["meta"], global_step=self.num_timesteps)
+                    except Exception:
+                        pass
 
             stem = f"{mode}_step{self.num_timesteps:09d}_env{env_idx:02d}"
             new_entry = self._save_record(stem, info)

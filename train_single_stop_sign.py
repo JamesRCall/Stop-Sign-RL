@@ -12,7 +12,8 @@ from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback,
 from envs.stop_sign_grid_env import StopSignGridEnv
 from utils.uv_paint import GREEN_GLOW  # single pair; swap here if you want another
 from utils.save_callbacks import SaveImprovingOverlaysCallback
-from utils.tb_callbacks import TensorboardOverlayCallback
+from utils.tb_callbacks import TensorboardOverlayCallback, EpisodeMetricsCallback
+
 
 
 # ----------------- progress logger -----------------
@@ -207,6 +208,9 @@ if __name__ == "__main__":
     # callbacks
     # Save “best” (lowest after_conf) UV-on examples, keep top-50, log to TB
     tb_cb = TensorboardOverlayCallback(args.tb, tag_prefix="grid_uv", max_images=25, verbose=1)
+    
+    ep_cb = EpisodeMetricsCallback(args.tb, verbose=1)
+    
     saver = SaveImprovingOverlaysCallback(
         save_dir=args.overlays, threshold=0.0, mode="adversary",
         max_saved=50, verbose=1, tb_callback=tb_cb
@@ -223,7 +227,7 @@ if __name__ == "__main__":
 
     model.learn(
         total_timesteps=int(args.total_steps),
-        callback=CallbackList([tb_cb, saver, ckpt_cb, progress]),
+        callback=CallbackList([tb_cb, ep_cp, saver, ckpt_cb, progress]),
         tb_log_name="grid_uv",
     )
 
