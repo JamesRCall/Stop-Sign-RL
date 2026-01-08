@@ -21,7 +21,7 @@ NUM_ENVS="${NUM_ENVS:-1}"            # with CUDA detector, keep 1 unless you bui
 VEC="${VEC:-dummy}"                 # must be dummy for CUDA+YOLO in current architecture
 
 EVAL_K="${EVAL_K:-3}"
-GRID_CELL="${GRID_CELL:-4}"
+GRID_CELL="${GRID_CELL:-16}"
 
 N_STEPS="${N_STEPS:-512}"
 BATCH="${BATCH:-1024}"              # safe default; will be clamped below
@@ -52,7 +52,7 @@ Options:
   --vec {dummy|subproc}       (default: $VEC)
 
   --eval-k K                  (default: $EVAL_K)
-  --grid-cell {2|4}           (default: $GRID_CELL)
+  --grid-cell {2|4|8|16|32}           (default: $GRID_CELL)
 
   --n-steps N                 (default: $N_STEPS)
   --batch N                   (default: $BATCH)
