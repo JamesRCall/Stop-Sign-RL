@@ -227,7 +227,7 @@ if __name__ == "__main__":
 
     model.learn(
         total_timesteps=int(args.total_steps),
-        callback=CallbackList([tb_cb, ep_cp, saver, ckpt_cb, progress]),
+        callback=CallbackList([tb_cb, ep_cb, saver, ckpt_cb, progress]),
         tb_log_name="grid_uv",
     )
 
