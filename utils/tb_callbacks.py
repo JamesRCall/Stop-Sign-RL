@@ -125,6 +125,10 @@ class EpisodeMetricsCallback(BaseCallback):
     Logs episode-level scalars:
       - episode/area_frac_final
       - episode/length_steps
+      - episode/drop_on_final, episode/drop_on_smooth_final
+      - episode/base_conf_final, episode/after_conf_final
+      - episode/reward_final, episode/selected_cells_final
+      - episode/eval_K_used_final, episode/uv_success_final, episode/area_cap_exceeded_final
 
     X-axis is episode index (so you can see improvement run-to-run).
     Also logs *_vs_timesteps variants so you can align with training time.
@@ -171,22 +175,67 @@ class EpisodeMetricsCallback(BaseCallback):
             ep_len = int(self._ep_len[env_idx])
             self._ep_len[env_idx] = 0  # reset for next episode
 
-            # pull area fraction from info (your env already sets this)
+            # pull key metrics from final info for this episode
             area = None
+            drop_on = None
+            drop_on_s = None
+            base_conf = None
+            after_conf = None
+            reward = None
+            selected_cells = None
+            eval_k = None
+            uv_success = None
+            area_cap_exceeded = None
             if isinstance(info, dict):
                 area = info.get("total_area_mask_frac", None)
+                drop_on = info.get("drop_on", None)
+                drop_on_s = info.get("drop_on_smooth", None)
+                base_conf = info.get("base_conf", info.get("c0_on", None))
+                after_conf = info.get("after_conf", info.get("c_on", None))
+                reward = info.get("reward", None)
+                selected_cells = info.get("selected_cells", None)
+                eval_k = info.get("eval_K_used", None)
+                uv_success = info.get("uv_success", None)
+                area_cap_exceeded = info.get("area_cap_exceeded", None)
 
             # Fallback: if not present, store NaN (so TB shows gaps instead of crashing)
             area_val = float(area) if area is not None else float("nan")
+            drop_on_val = float(drop_on) if drop_on is not None else float("nan")
+            drop_on_s_val = float(drop_on_s) if drop_on_s is not None else float("nan")
+            base_conf_val = float(base_conf) if base_conf is not None else float("nan")
+            after_conf_val = float(after_conf) if after_conf is not None else float("nan")
+            reward_val = float(reward) if reward is not None else float("nan")
+            selected_cells_val = float(selected_cells) if selected_cells is not None else float("nan")
+            eval_k_val = float(eval_k) if eval_k is not None else float("nan")
+            uv_success_val = float(uv_success) if uv_success is not None else float("nan")
+            area_cap_exceeded_val = float(area_cap_exceeded) if area_cap_exceeded is not None else float("nan")
 
             # log vs EPISODE INDEX (best for “is it improving?”)
             if self.writer is not None:
                 self.writer.add_scalar("episode/length_steps", ep_len, self._ep_count)
                 self.writer.add_scalar("episode/area_frac_final", area_val, self._ep_count)
+                self.writer.add_scalar("episode/drop_on_final", drop_on_val, self._ep_count)
+                self.writer.add_scalar("episode/drop_on_smooth_final", drop_on_s_val, self._ep_count)
+                self.writer.add_scalar("episode/base_conf_final", base_conf_val, self._ep_count)
+                self.writer.add_scalar("episode/after_conf_final", after_conf_val, self._ep_count)
+                self.writer.add_scalar("episode/reward_final", reward_val, self._ep_count)
+                self.writer.add_scalar("episode/selected_cells_final", selected_cells_val, self._ep_count)
+                self.writer.add_scalar("episode/eval_K_used_final", eval_k_val, self._ep_count)
+                self.writer.add_scalar("episode/uv_success_final", uv_success_val, self._ep_count)
+                self.writer.add_scalar("episode/area_cap_exceeded_final", area_cap_exceeded_val, self._ep_count)
 
                 # also log vs global timesteps (sometimes useful)
                 self.writer.add_scalar("episode/length_steps_vs_timesteps", ep_len, self.num_timesteps)
                 self.writer.add_scalar("episode/area_frac_final_vs_timesteps", area_val, self.num_timesteps)
+                self.writer.add_scalar("episode/drop_on_final_vs_timesteps", drop_on_val, self.num_timesteps)
+                self.writer.add_scalar("episode/drop_on_smooth_final_vs_timesteps", drop_on_s_val, self.num_timesteps)
+                self.writer.add_scalar("episode/base_conf_final_vs_timesteps", base_conf_val, self.num_timesteps)
+                self.writer.add_scalar("episode/after_conf_final_vs_timesteps", after_conf_val, self.num_timesteps)
+                self.writer.add_scalar("episode/reward_final_vs_timesteps", reward_val, self.num_timesteps)
+                self.writer.add_scalar("episode/selected_cells_final_vs_timesteps", selected_cells_val, self.num_timesteps)
+                self.writer.add_scalar("episode/eval_K_used_final_vs_timesteps", eval_k_val, self.num_timesteps)
+                self.writer.add_scalar("episode/uv_success_final_vs_timesteps", uv_success_val, self.num_timesteps)
+                self.writer.add_scalar("episode/area_cap_exceeded_final_vs_timesteps", area_cap_exceeded_val, self.num_timesteps)
 
                 self.writer.flush()
 

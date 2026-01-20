@@ -84,9 +84,9 @@ class StopSignGridEnv(gym.Env):
         day_tolerance: float = 0.05,
         lambda_day: float = 1.0,
         lambda_area: float = 0.3,
+        uv_min_alpha: float = 0.08,
         min_base_conf: float = 0.20,
         cell_cover_thresh: float = 0.60,
-        area_cap_frac: Optional[float] = None,
         area_cap_penalty: float = -0.20,
 
 
@@ -125,7 +125,7 @@ class StopSignGridEnv(gym.Env):
 
         self.grid_cell_px = int(grid_cell_px)
         if self.grid_cell_px not in (2, 4, 8, 16, 32):
-            raise ValueError("grid_cell_px must be 2 or 4")
+            raise ValueError("grid_cell_px must be one of: 2, 4, 8, 16, 32")
 
         self.cell_cover_thresh = float(cell_cover_thresh)
 
@@ -154,9 +154,9 @@ class StopSignGridEnv(gym.Env):
         self.day_tolerance = float(day_tolerance)
         self.lambda_day = float(lambda_day)
         self.lambda_area = float(lambda_area)
+        self.uv_min_alpha = float(uv_min_alpha)
         self.min_base_conf = float(min_base_conf)
         self.info_image_every = int(info_image_every)
-        self.area_cap_frac = float(area_cap_frac) if area_cap_frac is not None else None
         self.area_cap_penalty = float(area_cap_penalty)
 
 
@@ -287,22 +287,30 @@ class StopSignGridEnv(gym.Env):
             pick = coords[int(self.rng.integers(0, coords.shape[0]))]
             r, c = int(pick[0]), int(pick[1])
 
+        selected_cells = int(self._episode_cells.sum())
+        valid_total = int(self._valid_cells.sum())
+        if self.area_cap_frac is not None and valid_total > 0:
+            next_area_frac = float(selected_cells + 1) / float(valid_total)
+            if next_area_frac > self.area_cap_frac:
+                terminated = True
+                truncated = (self._step >= self.steps_per_episode)
+                obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
+                obs = np.array(obs_img, dtype=np.uint8)
+                area_frac = float(selected_cells) / float(valid_total)
+                info = {
+                    "objective": "grid_uv",
+                    "note": "area_cap_exceeded",
+                    "selected_cells": int(selected_cells),
+                    "total_area_mask_frac": float(area_frac),
+                    "area_cap": float(self.area_cap_frac),
+                    "uv_success": False,
+                    "area_cap_exceeded": True,
+                }
+                return obs, float(self.area_cap_penalty), bool(terminated), bool(truncated), info
+
         self._episode_cells[r, c] = True
 
         area_frac = self._area_frac_selected()
-        if self.area_cap_frac is not None and area_frac >= self.area_cap_frac:
-            terminated = True
-            truncated = (self._step >= self.steps_per_episode)
-            obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
-            obs = np.array(obs_img, dtype=np.uint8)
-            info = {
-                "objective": "grid_uv",
-                "note": "area_cap_exceeded",
-                "selected_cells": int(self._episode_cells.sum()),
-                "total_area_mask_frac": float(area_frac),
-                "area_cap": float(self.area_cap_frac),
-            }
-            return obs, float(self.area_cap_penalty), bool(terminated), bool(truncated), info
 
         terminated = False
         max_cells_reached = False
@@ -354,6 +362,8 @@ class StopSignGridEnv(gym.Env):
                 "min_base_conf": float(self.min_base_conf),
                 "total_area_mask_frac": float(area_frac),
                 "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
+                "uv_success": False,
+                "area_cap_exceeded": bool(cap_exceeded),
             }
             return obs, float(reward), bool(terminated), bool(truncated), info
 
@@ -403,6 +413,8 @@ class StopSignGridEnv(gym.Env):
             "after_conf": float(c_on),
             "total_area_mask_frac": float(area_frac),
             "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
+            "uv_success": bool(uv_success),
+            "area_cap_exceeded": bool(cap_exceeded),
             "trace": {
                 "phase": "grid_uv",
                 "grid_cell_px": int(self.grid_cell_px),
@@ -417,9 +429,11 @@ class StopSignGridEnv(gym.Env):
         # Always attach the final image if we succeeded (hit threshold), so it can be saved reliably.
         if terminated and uv_success:
             info["composited_pil"] = preview_on
+            info["overlay_pil"] = self._render_overlay_pattern(mode="on")
         # Otherwise only attach occasionally to reduce overhead
         elif (self._step % self.info_image_every) == 0:
             info["composited_pil"] = preview_on
+            info["overlay_pil"] = self._render_overlay_pattern(mode="on")
 
 
         return obs, float(reward), bool(terminated), bool(truncated), info
@@ -577,6 +591,8 @@ class StopSignGridEnv(gym.Env):
         else:
             color = self.paint.active_rgb
             alpha = self.paint.active_alpha if self.paint.translucent else 1.0
+            if self.paint.translucent:
+                alpha = max(alpha, self.uv_min_alpha)
 
         mask = Image.new("L", rgb.size, 0)
         mdraw = ImageDraw.Draw(mask)
@@ -594,6 +610,36 @@ class StopSignGridEnv(gym.Env):
 
         rgb.paste(color, mask=mask)
         return Image.merge("RGBA", (*rgb.split(), a))
+
+    def _render_overlay_pattern(self, mode: str) -> Image.Image:
+        """Render only the overlay pattern on a transparent background."""
+        assert mode in ("day", "on")
+        size = self.sign_rgba_day.size
+        img = Image.new("RGBA", size, (0, 0, 0, 0))
+
+        if mode == "day":
+            color = self.paint.day_rgb
+            alpha = self.paint.day_alpha if self.paint.translucent else 1.0
+        else:
+            color = self.paint.active_rgb
+            alpha = self.paint.active_alpha if self.paint.translucent else 1.0
+            if self.paint.translucent:
+                alpha = max(alpha, self.uv_min_alpha)
+
+        mask = Image.new("L", size, 0)
+        mdraw = ImageDraw.Draw(mask)
+        on = np.argwhere(self._episode_cells)
+        for r, c in on:
+            x0, y0, x1, y1 = self._cell_rects[r * self.Gw + c]
+            mdraw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=255)
+
+        mask = Image.composite(mask, Image.new("L", size, 0), self._sign_alpha)
+        if alpha < 1.0:
+            arr = (np.array(mask, dtype=np.float32) * float(alpha)).astype(np.uint8)
+            mask = Image.fromarray(arr, mode="L")
+
+        img.paste(color, mask=mask)
+        return img
 
     def _transform_sign(self, sign_rgba: Image.Image, seed: int) -> Image.Image:
         rng = np.random.default_rng(seed)

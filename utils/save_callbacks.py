@@ -46,7 +46,7 @@ class SaveImprovingOverlaysCallback(BaseCallback):
         self,
         save_dir: str,
         threshold: float = 0.0,
-        mode: str = "auto",  # "adversary" | "helper" | "auto"
+        mode: str = "auto",  # "adversary" | "helper" | "minimal" | "auto"
         max_saved: int = 50,
         verbose: int = 0,
         tb_callback: Optional[object] = None,
@@ -65,7 +65,7 @@ class SaveImprovingOverlaysCallback(BaseCallback):
 
     # ---------- scoring utilities ----------
     def _resolve_mode(self, info: Dict[str, Any]) -> str:
-        if self.mode in ("adversary", "helper"):
+        if self.mode in ("adversary", "helper", "minimal"):
             return self.mode
         return str(info.get("objective", "adversary")).lower()
 
@@ -77,6 +77,8 @@ class SaveImprovingOverlaysCallback(BaseCallback):
         return base_conf, after_conf, area_frac, count
 
     def _passes_threshold(self, delta: float, mode: str) -> bool:
+        if mode == "minimal":
+            return True
         if mode == "helper":
             return delta >= self.threshold
         return (-delta) >= self.threshold  # adversary
@@ -85,12 +87,21 @@ class SaveImprovingOverlaysCallback(BaseCallback):
         # Lexicographic key for sorting / comparison
         if mode == "adversary":
             return (after_conf, area_frac, count)
+        if mode == "minimal":
+            return (area_frac, after_conf, count)
         else:
             return (after_conf, -area_frac, -count)
 
     def _is_better(self, mode: str, key_a, key_b) -> bool:
         if mode == "adversary":
             # smaller after_conf wins
+            if key_a[0] != key_b[0]:
+                return key_a[0] < key_b[0]
+            if key_a[1] != key_b[1]:
+                return key_a[1] < key_b[1]
+            return key_a[2] < key_b[2]
+        elif mode == "minimal":
+            # smaller area_frac wins
             if key_a[0] != key_b[0]:
                 return key_a[0] < key_b[0]
             if key_a[1] != key_b[1]:
@@ -109,11 +120,18 @@ class SaveImprovingOverlaysCallback(BaseCallback):
             return -1
         if mode == "adversary":
             return max(range(len(self._top)), key=lambda i: self._top[i]["key"])
+        if mode == "minimal":
+            return max(range(len(self._top)), key=lambda i: self._top[i]["key"])
         else:
             return min(range(len(self._top)), key=lambda i: self._top[i]["key"])
 
     # ---------- file helpers ----------
     def _is_success(self, info: Dict[str, Any]) -> bool:
+        if "uv_success" in info:
+            try:
+                return bool(info.get("uv_success"))
+            except Exception:
+                pass
         # Prefer the smoothed signal if present (Option A)
         drop = _safe_float(info.get("drop_on_smooth", info.get("drop_on", 0.0)))
         thr  = _safe_float(info.get("uv_drop_threshold", 0.0))
@@ -121,7 +139,7 @@ class SaveImprovingOverlaysCallback(BaseCallback):
 
 
     def _delete_entry_files(self, entry: Dict[str, Any]):
-        for p in (entry.get("json_path"), entry.get("png_path")):
+        for p in (entry.get("json_path"), entry.get("png_path"), entry.get("overlay_path")):
             if p and os.path.isfile(p):
                 try:
                     os.remove(p)
@@ -144,19 +162,29 @@ class SaveImprovingOverlaysCallback(BaseCallback):
                 print("[Saver] trace write failed:", e)
 
     def _save_record(self, stem: str, info: Dict[str, Any]) -> Dict[str, Any]:
-        meta = {k: v for k, v in info.items() if k != "composited_pil"}
+        meta = {k: v for k, v in info.items() if k not in ("composited_pil", "overlay_pil")}
         meta = _to_py(meta)
         meta["global_step"] = int(self.num_timesteps)
         png_path = None
+        overlay_path = None
         img = info.get("composited_pil")
         if img is not None:
             try:
-                png_path = os.path.join(self.save_dir, f"{stem}.png")
+                png_path = os.path.join(self.save_dir, f"{stem}_full.png")
                 img.save(png_path)
                 meta["png_path"] = png_path
             except Exception as e:
                 if self.verbose:
-                    print(f"[save image failed] {stem}.png: {e}")
+                    print(f"[save image failed] {stem}_full.png: {e}")
+        overlay = info.get("overlay_pil")
+        if overlay is not None:
+            try:
+                overlay_path = os.path.join(self.save_dir, f"{stem}_overlay.png")
+                overlay.save(overlay_path)
+                meta["overlay_path"] = overlay_path
+            except Exception as e:
+                if self.verbose:
+                    print(f"[save overlay failed] {stem}_overlay.png: {e}")
         json_path = os.path.join(self.save_dir, f"{stem}.json")
         try:
             with open(json_path, "w", encoding="utf-8") as f:
@@ -167,7 +195,13 @@ class SaveImprovingOverlaysCallback(BaseCallback):
         mode = self._resolve_mode(info)
         _, after_conf, area_frac, count = self._extract_metrics(info)
         key = self._make_key(mode, after_conf, area_frac, count)
-        return {"json_path": json_path, "png_path": png_path, "key": key, "meta": meta}
+        return {
+            "json_path": json_path,
+            "png_path": png_path,
+            "overlay_path": overlay_path,
+            "key": key,
+            "meta": meta,
+        }
 
     # ---------- SB3 hook ----------
     def _on_step(self) -> bool:
@@ -175,10 +209,14 @@ class SaveImprovingOverlaysCallback(BaseCallback):
         if not infos:
             return True
         dones = self.locals.get("dones", None)
-
-
         for env_idx, info in enumerate(infos):
             if not isinstance(info, dict):
+                continue
+
+            done = bool(dones[env_idx]) if isinstance(dones, (list, tuple, np.ndarray)) else False
+            if not done:
+                continue
+            if not self._is_success(info):
                 continue
 
             mode = self._resolve_mode(info)
@@ -188,26 +226,19 @@ class SaveImprovingOverlaysCallback(BaseCallback):
 
             if not self._passes_threshold(delta, mode):
                 continue
-            # ---- NEW: save final overlay when an episode ends AND it met the env threshold ----
-            done = bool(dones[env_idx]) if isinstance(dones, (list, tuple, np.ndarray)) else False
-            if done and isinstance(info, dict) and self._is_success(info):
-                stem = f"success_step{self.num_timesteps:09d}_env{env_idx:02d}"
-                rec = self._save_record(stem, info)
-                if self.verbose:
-                    print(f"[SUCCESS saved] {stem} -> {rec.get('png_path')}")
-                # also write a trace line (optional)
-                base_conf, after_conf, _, _ = self._extract_metrics(info)
-                score = base_conf - after_conf  # adversary score style
-                self._write_trace_line(info, score)
 
-                # optional: also TB log it
-                if self.tb_callback is not None:
-                    try:
-                        self.tb_callback.log_overlay_record(rec["meta"], global_step=self.num_timesteps)
-                    except Exception:
-                        pass
+            key = self._make_key(mode, after_conf, area_frac, count)
+            worst_idx = self._find_worst_index(mode)
+            worst = self._top[worst_idx] if worst_idx >= 0 else None
+            should_save = (len(self._top) < self.max_saved) or (
+                worst is not None and self._is_better(mode, key, worst["key"])
+            )
+            if not should_save:
+                continue
 
-            stem = f"{mode}_step{self.num_timesteps:09d}_env{env_idx:02d}"
+            area_val = _safe_float(area_frac, 0.0)
+            area_tag = f"{area_val:.4f}".replace(".", "p")
+            stem = f"area{area_tag}_step{self.num_timesteps:09d}_env{env_idx:02d}"
             new_entry = self._save_record(stem, info)
 
             if len(self._top) < self.max_saved:
@@ -215,15 +246,10 @@ class SaveImprovingOverlaysCallback(BaseCallback):
                 if self.verbose:
                     print(f"[saved {len(self._top)}/{self.max_saved}] {stem}")
             else:
-                worst_idx = self._find_worst_index(mode)
-                worst = self._top[worst_idx]
-                if self._is_better(mode, new_entry["key"], worst["key"]):
-                    self._delete_entry_files(worst)
-                    self._top[worst_idx] = new_entry
-                    if self.verbose:
-                        print(f"[replaced worst] {stem}")
-                else:
-                    self._delete_entry_files(new_entry)
+                self._delete_entry_files(worst)
+                self._top[worst_idx] = new_entry
+                if self.verbose:
+                    print(f"[replaced worst] {stem}")
 
             # --- trace-only line ---
             self._write_trace_line(info, score)

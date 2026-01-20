@@ -1,47 +1,179 @@
-# UV-Adversarial Stop Sign Training Environment (YOLOv11 + PPO)
+# Stop Sign Grid UV Adversarial Training (YOLO + PPO)
 
-This project trains a PPO agent to **generate UV-reactive blob patterns** on a stop sign that remain
-undetectable under daylight but cause YOLOv11’s stop-sign confidence to drop significantly when
-the UV paint is *activated*.
+This project trains a PPO agent to place small grid-cell overlays on a stop sign so that
+YOLO confidence drops under UV activation while staying high in daylight. The environment
+renders a sign-on-pole against randomized backgrounds with matched transforms, and uses
+UV paint pairs (day vs UV-on) to model activation.
 
-The system now supports two-phase training (attack-only and UV-paint), realistic compositing with
-poles and backgrounds, per-phase rewards, multi-color UV paints, and full TensorBoard + trace
-logging.
-
-> **Ethics Notice:** This project is solely for **academic adversarial robustness research**. Do not use
-to cause harm, confusion, or safety risks.
+Ethics notice: this repository is for research and robustness testing only. Do not use it
+to cause harm or unsafe behavior.
 
 ---
 
-## Table of Contents
-- [Project Overview](#project-overview)
-- [Directory Structure](#directory-structure)
-- [Installation](#installation)
-- [Data Setup](#data-setup)
-- [Training Phases](#training-phases)
-- [Logging & Output](#logging--output)
-- [Replaying Traces](#replaying-traces)
-- [Customization](#customization)
-- [License](#license)
+## Overview
+
+Core ideas:
+- Grid-cell action space on a stop sign octagon mask (discrete actions).
+- UV paint pair: daylight color/alpha vs UV-on color/alpha.
+- Matched transforms and backgrounds across daylight/UV variants for fair comparison.
+- Reward that targets UV confidence drop while penalizing daylight drop and patch area.
+- Early termination on success or area cap.
 
 ---
 
-## Project Overview
+## Requirements
 
-This environment simulates physical stop-sign attacks under two stages:
+- Python 3.10+ recommended.
+- PyTorch and stable-baselines3 (via requirements).
+- YOLO weights in `weights/` (see below).
 
-1. **Phase A – Attack-only:** The model learns blob patterns that lower YOLOv11 confidence
-   when painted directly on the sign (no UV activation yet).
-2. **Phase B – UV Paint Phase:** Uses realistic *UV paint pairs* (daylight vs UV-activated colors)
-   to learn patterns that preserve high confidence before UV light but reduce it once activated.
+---
 
-Each training sample is rendered with:
-- Realistic **pole + stop sign ratio**
-- **Random backgrounds** (10–20 available)
-- Controlled **camera transforms** (angle, blur, brightness, noise)
-- UV paint color pairs defined in `utils/uv_paint.py`
-- TensorBoard visual previews
-- Per-step `trace` metadata for exact reproduction
+## Setup
+
+Create a virtual environment and install dependencies:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Alternate: `enviornment.yml` is included if you prefer conda.
+
+---
+
+## Data and Weights
+
+Required files in `data/`:
+- `stop_sign.png` (RGBA, transparent background).
+- `pole.png` (RGBA).
+- `backgrounds/` (folder with scene images; 640x640 recommended).
+
+Optional:
+- `stop_sign_uv.png` (RGBA UV-lit version of the sign; if missing, the base sign is reused).
+
+YOLO weights go in `weights/`:
+- `weights/yolo11n.pt` (default)
+- `weights/yolo8n.pt` (optional if you switch versions)
+
+---
+
+## Quick Start
+
+Minimal run:
+
+```bash
+python train_single_stop_sign.py --data ./data --bgdir ./data/backgrounds
+```
+
+Resume from latest checkpoint:
+
+```bash
+python train_single_stop_sign.py --resume
+```
+
+Use a specific YOLO version/weights:
+
+```bash
+python train_single_stop_sign.py --yolo-version 11 --yolo-weights ./weights/yolo11n.pt
+```
+
+---
+
+## Key Training Flags
+
+From `train_single_stop_sign.py`:
+
+- `--num-envs` (default 8) and `--vec` (`dummy` or `subproc`)
+- `--n-steps`, `--batch-size`, `--total-steps` (PPO training control)
+- `--episode-steps` (max steps per episode)
+- `--grid-cell` (2, 4, 8, 16, 32) grid size in pixels
+- `--uv-threshold` UV drop threshold for success
+- `--lambda-area` area penalty strength (encourages minimal patches)
+- `--area-cap-frac` cap on total patch area (<= 0 disables)
+- `--area-cap-penalty` reward penalty when cap would be exceeded
+- `--detector-device` (e.g., `cpu`, `cuda`, or `auto`)
+- `--ckpt`, `--overlays`, `--tb` output paths
+- `--save-freq-steps` or `--save-freq-updates` checkpoint cadence
+
+---
+
+## Environment Details
+
+The environment is implemented in `envs/stop_sign_grid_env.py`.
+
+Highlights:
+- Discrete action space over valid grid cells inside the sign octagon.
+- UV-on reward uses smoothed UV drop (`drop_on_smooth`) to reduce noise.
+- Area cap is enforced before a cell is added, so patches cannot exceed the cap.
+- Minimum UV alpha (`uv_min_alpha`) ensures patches are visible under UV even with
+  very low paint alpha.
+
+If you need to change rendering or physics:
+- `_transform_sign()` controls camera jitter, blur, color, and noise.
+- `_compose_sign_and_pole()` controls pole ratio and placement.
+- `_place_group_on_background()` controls scale and background placement.
+
+---
+
+## Logging and Metrics
+
+TensorBoard logs:
+
+```bash
+tensorboard --logdir runs/tb --port 6006
+```
+
+Callbacks log:
+- `TensorboardOverlayCallback` (overlay images and metadata)
+- `EpisodeMetricsCallback` (episode-end scalars)
+
+Episode metrics currently include:
+- `episode/area_frac_final`, `episode/length_steps`
+- `episode/drop_on_final`, `episode/drop_on_smooth_final`
+- `episode/base_conf_final`, `episode/after_conf_final`
+- `episode/reward_final`, `episode/selected_cells_final`
+- `episode/eval_K_used_final`
+- `episode/uv_success_final`, `episode/area_cap_exceeded_final`
+
+---
+
+## Output Artifacts
+
+Generated files:
+- `runs/checkpoints/` PPO checkpoints.
+- `runs/overlays/` best overlays (PNG + JSON) and `traces.ndjson`.
+- `runs/tb/` TensorBoard event files.
+
+Overlay saver:
+- `utils/save_callbacks.py` keeps the best N overlays and appends trace metadata.
+- Current training config keeps the top 1000 minimal-area successes.
+- Files are named by area fraction and step, for example:
+  - `area0p1234_step000000123_env00_full.png`
+  - `area0p1234_step000000123_env00_overlay.png`
+  - `area0p1234_step000000123_env00.json`
+
+Trace replay:
+- `trace_replay.py` can rebuild a mask or full composite from trace rows.
+
+---
+
+## Debugging and Tools
+
+- `tools/debug_grid_env.py` runs the env step-by-step and saves UV-on previews.
+- `tools/cleanup_runs.py` removes old run outputs (dry-run by default).
+- `preview_stop_sign_3d.sh` renders a quick 3D preview (if your setup includes it).
+- `setup_env.sh` contains a helper for local setup.
+
+Cleanup usage:
+```bash
+# Dry-run
+python tools/cleanup_runs.py
+
+# Delete
+python tools/cleanup_runs.py --yes
+```
 
 ---
 
@@ -49,223 +181,53 @@ Each training sample is rendered with:
 
 ```
 .
-├─ data/
-│  ├─ stop_sign.png          # Base RGBA stop sign (transparent background)
-│  ├─ stop_sign_uv.png       # Optional UV-reactive version of sign
-│  ├─ pole.png               # Pole image (~81x960)
-│  └─ backgrounds/           # 10–20 random driving scene backgrounds
-│
-├─ weights/
-│  └─ yolo11n.pt             # YOLOv11 weights
-│
-├─ envs/
-│  ├─ stop_sign_env.py       # PPO Gym environment (sign, pole, backgrounds, UV logic)
-│  └─ random_blobs.py        # Blob geometry generator
-│
-├─ utils/
-│  ├─ uv_paint.py            # Defines UV paint color pairs (day vs activated)
-│  ├─ save_callbacks.py      # Top-50 saver + trace logging (replaces old saver)
-│  ├─ tb_callbacks.py        # TensorBoard logging of scalars & overlays
-│  └─ ...                    # Helper utilities
-│
-├─ runs/
-│  ├─ checkpoints/           # PPO model saves
-│  ├─ overlays/              # Top-50 best overlays (PNG + JSON)
-│  ├─ overlays/traces.ndjson # Lightweight trace-only log
-│  └─ tb/                    # TensorBoard event files
-│
-├─ train_single_stop_sign.py  # Main trainer with --mode attack/uv/both
-├─ trace_replay.py            # Recreates blob masks or full composites from traces
-└─ requirements.txt
+|-- data/
+|   |-- stop_sign.png
+|   |-- stop_sign_uv.png
+|   |-- pole.png
+|   |-- backgrounds/
+|
+|-- detectors/
+|   |-- yolo_wrapper.py
+|
+|-- envs/
+|   |-- stop_sign_grid_env.py
+|
+|-- tools/
+|   |-- debug_grid_env.py
+|   |-- cleanup_runs.py
+|
+|-- utils/
+|   |-- save_callbacks.py
+|   |-- tb_callbacks.py
+|   |-- uv_paint.py
+|
+|-- weights/
+|   |-- yolo11n.pt
+|   |-- yolo8n.pt
+|
+|-- runs/
+|   |-- checkpoints/
+|   |-- overlays/
+|   |-- tb/
+|
+|-- train_single_stop_sign.py
+|-- train.sh
+|-- trace_replay.py
+|-- requirements.txt
+|-- enviornment.yml
 ```
 
 ---
 
-## Installation
+## Tips
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate      # or source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-If you’re on Linux or macOS, change the backslashes to `/`.
-
----
-
-## Blender 3D Scene Preview
-
-This repo includes a Blender scene script that builds a realistic road, pole, and stop sign with
-asset hooks for a real-world background or HDRI. You can open it interactively or render a still.
-
-### Requirements
-- Install Blender (3.x recommended).
-
-### Open the scene in Blender (interactive)
-PowerShell:
-```powershell
-$env:MODE="gui"
-.\tools\blender_render.ps1
-```
-
-Bash:
-```bash
-MODE=gui bash tools/blender_render.sh
-```
-
-### Render a still image (headless)
-PowerShell:
-```powershell
-$env:OUTPUT_PATH="_renders\stop_sign.png"
-.\tools\blender_render.ps1
-```
-
-Bash:
-```bash
-OUTPUT_PATH=_renders/stop_sign.png bash tools/blender_render.sh
-```
-
-### Optional assets (realistic textures)
-Set these env vars to use your own CC0 textures/HDRIs:
-- `ROAD_TEX` (asphalt texture)
-- `SIGN_TEX` (photo of a stop sign)
-- `POLE_TEX` (galvanized steel texture)
-- `HDRI_PATH` (outdoor HDRI)
-
-Example (PowerShell):
-```powershell
-$env:ROAD_TEX="data\textures\asphalt.jpg"
-$env:HDRI_PATH="data\hdris\road_01.hdr"
-.\tools\blender_render.ps1
-```
-
-The Blender script lives at `tools/blender_stop_sign_scene.py`.
-
----
-
-## Data Setup
-
-Place the following in `/data`:
-
-| File | Description |
-|------|--------------|
-| `stop_sign.png` | Transparent RGBA stop sign |
-| `stop_sign_uv.png` | (Optional) Version photographed under UV light |
-| `pole.png` | Narrow pole image (~81×960) |
-| `backgrounds/` | Folder with 10–20 random backgrounds (640×640 recommended) |
-
----
-
-## Training Phases
-
-You can run each phase separately or both sequentially:
-
-```bash
-# Phase A: attack-only (no UV logic yet)
-python train_single_stop_sign.py --mode attack
-
-# Phase B: UV paint phase (requires defined UV paint pairs)
-python train_single_stop_sign.py --mode uv
-
-# Full curriculum (Phase A then Phase B)
-python train_single_stop_sign.py --mode both
-```
-
-### Phase A
-Learns blob geometry that reduces YOLO confidence directly.
-
-### Phase B
-Learns how to retain confidence in daylight (UV off) while lowering it under UV light.
-
----
-
-## Logging & Output
-
-### TensorBoard
-
-```bash
-tensorboard --logdir runs/tb --port 6006
-```
-
-Shows:
-- **Scalars**: base_conf, after_conf, reward, step speed, etc.
-- **Images**: recent composite overlays (sign + pole + background)
-
-### Overlay Saver (`utils/save_callbacks.py`)
-- Keeps **top 50** best overlays based on performance.
-- Evicts the worst result once full.
-- Writes `.png` (composite image) + `.json` (full info) + appends to `traces.ndjson` (compact trace-only row).
-
-Example saved structure:
-```
-runs/overlays/
- ├─ adversary_step000123456_env00.png
- ├─ adversary_step000123456_env00.json
- ├─ traces.ndjson
-```
-
-Each JSON/trace row includes:
-```json
-{
-  "phase": "B",
-  "pattern_seed": 18239474,
-  "transform_seed": 55612312,
-  "place_seed": 88122,
-  "count": 12,
-  "size_scale": 1.1,
-  "alpha_day": 0.4,
-  "alpha_on": 0.8,
-  "color_idx": 2
-}
-```
-
----
-
-## Replaying Traces
-
-Recreate the exact blob mask or composite from saved seeds:
-
-```bash
-# Mask only (just blob trace, pre-transform)
-python trace_replay.py --just-mask
-
-# Choose by index or step number
-python trace_replay.py --index 12 --variant day
-python trace_replay.py --step 250000 --variant on
-```
-
-Outputs:
-```
-replay_out/
- ├─ trace_mask_pre_B_step250000.png   # Blob mask (white blobs, black background)
- ├─ replay_B_day_sign_rgba.png        # Optional full sign variant
- ├─ replay_B_day_final.png            # Full scene composite (if not --just-mask)
-```
-
----
-
-## Customization
-
-- **UV Paint Colors** → define multiple `UVPaint` pairs in `utils/uv_paint.py`, e.g.:
-  ```python
-  GREEN_GLOW = UVPaint("#5aff6e", "#cfff5a", translucent=True)
-  BLUE_GLOW  = UVPaint("#0066ff", "#00ffff", translucent=True)
-  ```
-  and pass them in `train_single_stop_sign.py`:
-  ```python
-  UV_PAINTS = [VIOLET_GLOW, GREEN_GLOW, BLUE_GLOW]
-  ```
-
-- **Pole ratio & placement** handled automatically in `_compose_sign_and_pole()`  
-  Adjust `pole_width_ratio` or `bottom_len_factor` in that function if needed.
-
-- **Blob realism**: edit `_random_transform_sign()` for angle/blur/noise strength.
-
-- **Trace limit**: change `max_saved` in `SaveImprovingOverlaysCallback` to control how many
-  top results are retained.
+- If you run on CUDA, `--vec dummy` is safer with YOLO inference.
+- Lower `grid-cell` and higher `lambda-area` tend to produce smaller patches.
+- If you are not seeing UV drop, increase `eval-K` to reduce variance.
 
 ---
 
 ## License
 
-MIT — use for research and educational purposes only.
+MIT for research and educational use.

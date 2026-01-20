@@ -74,6 +74,7 @@ def make_env_factory(
     eval_K: int,
     grid_cell_px: int,
     uv_drop_threshold: float,
+    lambda_area: float,
     area_cap_frac: Optional[float],
     area_cap_penalty: float,
     yolo_wts: str,
@@ -105,6 +106,7 @@ def make_env_factory(
                 uv_drop_threshold=uv_drop_threshold,
                 day_tolerance=0.05,
                 lambda_day=1.0,
+                lambda_area=float(lambda_area),
                 area_cap_frac=area_cap_frac,
                 area_cap_penalty=area_cap_penalty,
             )
@@ -133,6 +135,7 @@ def parse_args():
     ap.add_argument("--eval-K", type=int, default=10)
     ap.add_argument("--grid-cell", type=int, default=2, choices=[2, 4, 8, 16, 32])
     ap.add_argument("--uv-threshold", type=float, default=0.70)
+    ap.add_argument("--lambda-area", type=float, default=0.30)
     ap.add_argument("--area-cap-frac", type=float, default=0.30,
                     help="Fraction of sign grid allowed for patches; <=0 disables cap.")
     ap.add_argument("--area-cap-penalty", type=float, default=-0.20,
@@ -192,6 +195,7 @@ if __name__ == "__main__":
                 eval_K=args.eval_K,
                 grid_cell_px=args.grid_cell,
                 uv_drop_threshold=args.uv_threshold,
+                lambda_area=float(args.lambda_area),
                 area_cap_frac=area_cap_frac,
                 area_cap_penalty=float(args.area_cap_penalty),
                 yolo_wts=yolo_weights,
@@ -238,8 +242,8 @@ if __name__ == "__main__":
     ep_cb = EpisodeMetricsCallback(args.tb, verbose=1)
     
     saver = SaveImprovingOverlaysCallback(
-        save_dir=args.overlays, threshold=0.0, mode="adversary",
-        max_saved=50, verbose=1, tb_callback=tb_cb
+        save_dir=args.overlays, threshold=0.0, mode="minimal",
+        max_saved=1000, verbose=1, tb_callback=tb_cb
     )
 
     # checkpoint cadence
