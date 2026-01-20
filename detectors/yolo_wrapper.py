@@ -1,9 +1,10 @@
-# detectors/yolo_wrapper.py
+"""Thin wrapper around Ultralytics YOLO for stop-sign confidence queries."""
 from typing import Union
 import re
 import torch
 
 def _norm(s: str) -> str:
+    """Normalize class names for comparison."""
     return re.sub(r"[\s\-_]+", "", s.strip().lower())
 
 class DetectorWrapper:
@@ -16,6 +17,14 @@ class DetectorWrapper:
         iou: float = 0.45,
         debug: bool = False,    # NEW: print errors once if something goes wrong
     ):
+        """
+        @param model_path: Path to YOLO weights.
+        @param target_class: Target class name or id.
+        @param device: Device string (cpu/cuda/auto).
+        @param conf: Confidence threshold.
+        @param iou: IoU threshold.
+        @param debug: Enable debug logging.
+        """
         from ultralytics import YOLO
 
         dev = str(device).lower().strip()
@@ -63,6 +72,7 @@ class DetectorWrapper:
             self.target_id = int(target_class)
 
     def infer_confidence(self, pil_image) -> float:
+        """Return max confidence for the target class in a single image."""
         try:
             # Important: do NOT pass half=...; let Ultralytics decide. Always pass device explicitly.
             res = self.model.predict(

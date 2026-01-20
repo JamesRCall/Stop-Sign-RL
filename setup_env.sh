@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Create a venv and install requirements.
 set -euo pipefail
 
 VENV_DIR="${VENV_DIR:-.venv}"

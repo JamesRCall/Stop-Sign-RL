@@ -1,3 +1,5 @@
+"""Simple TCP detector server for shared YOLO inference."""
+
 import argparse
 import io
 import socket
@@ -16,6 +18,12 @@ from detectors.yolo_wrapper import DetectorWrapper
 
 
 def _bytes_to_images(blob_list: List[bytes]) -> List[Image.Image]:
+    """
+    Decode a list of PNG byte blobs into PIL images.
+
+    @param blob_list: List of PNG-encoded byte strings.
+    @return: List of decoded PIL images.
+    """
     imgs = []
     for b in blob_list:
         try:
@@ -27,6 +35,12 @@ def _bytes_to_images(blob_list: List[bytes]) -> List[Image.Image]:
 
 
 def handle_client(conn, det: DetectorWrapper):
+    """
+    Serve a single client connection until it closes.
+
+    @param conn: Multiprocessing connection object.
+    @param det: Detector wrapper instance.
+    """
     while True:
         try:
             msg = conn.recv()
@@ -51,6 +65,11 @@ def handle_client(conn, det: DetectorWrapper):
 
 
 def main() -> int:
+    """
+    Run a blocking detector server loop.
+
+    @return: Exit code.
+    """
     ap = argparse.ArgumentParser(description="YOLO detector server for multi-env training.")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=5009)

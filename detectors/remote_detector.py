@@ -1,3 +1,5 @@
+"""Client wrapper for a remote YOLO detector server."""
+
 from __future__ import annotations
 
 import io
@@ -23,6 +25,13 @@ class RemoteDetectorWrapper:
         debug: bool = False,
         timeout_s: float = 30.0,
     ):
+        """
+        @param server_addr: server://host:port address string.
+        @param conf: Confidence threshold.
+        @param iou: IoU threshold.
+        @param debug: Enable debug logging.
+        @param timeout_s: Socket timeout in seconds.
+        """
         self.server_addr = str(server_addr)
         self.conf = float(conf)
         self.iou = float(iou)
@@ -34,6 +43,7 @@ class RemoteDetectorWrapper:
         self._conn: Optional[Client] = None
 
     def _parse_addr(self, addr: str) -> tuple[str, int]:
+        """Parse server://host:port into (host, port)."""
         if not addr.lower().startswith("server://"):
             raise ValueError("server_addr must start with server://")
         host_port = addr[len("server://") :]
@@ -43,6 +53,7 @@ class RemoteDetectorWrapper:
         return host, int(port_s)
 
     def _connect(self) -> Client:
+        """Create or reuse a Client connection."""
         if self._conn is not None:
             return self._conn
         conn = Client(self._address, family="AF_INET")
@@ -71,9 +82,11 @@ class RemoteDetectorWrapper:
             return [0.0 for _ in pil_images]
 
     def infer_confidence(self, pil_image) -> float:
+        """Return the target-class confidence for a single image."""
         return float(self.infer_confidence_batch([pil_image])[0])
 
     def infer_confidence_batch(self, pil_images) -> list[float]:
+        """Return confidences for a list of images."""
         if not pil_images:
             return []
         return self._send_images(pil_images)

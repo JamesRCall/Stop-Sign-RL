@@ -1,3 +1,5 @@
+"""Train PPO on the stop-sign grid environment with optional curricula."""
+
 import os, glob, time, argparse
 from typing import List, Optional
 from PIL import Image
@@ -18,6 +20,13 @@ from utils.tb_callbacks import TensorboardOverlayCallback, EpisodeMetricsCallbac
 
 # ----------------- progress logger -----------------
 class ProgressETACallback(BaseCallback):
+    """
+    Log steps-per-second and ETA at a fixed wall-clock interval.
+
+    @param total_timesteps: Total training steps for ETA calculation.
+    @param log_every_sec: Wall-clock logging interval in seconds.
+    @param verbose: Verbosity level.
+    """
     def __init__(self, total_timesteps: int, log_every_sec: float = 10.0, verbose: int = 1):
         super().__init__(verbose)
         self.total_timesteps = int(total_timesteps)
@@ -43,6 +52,15 @@ class ProgressETACallback(BaseCallback):
 
 
 class LinearRampCallback(BaseCallback):
+    """
+    Linearly ramp a scalar env attribute over a fixed number of steps.
+
+    @param attr_name: Env method name to call for updates.
+    @param start: Starting value.
+    @param end: Ending value.
+    @param steps: Number of steps to reach the end value.
+    @param verbose: Verbosity level.
+    """
     def __init__(self, attr_name: str, start: float, end: float, steps: int, verbose: int = 0):
         super().__init__(verbose)
         self.attr_name = str(attr_name)
@@ -61,6 +79,12 @@ class LinearRampCallback(BaseCallback):
 
 
 def load_backgrounds(folder: str) -> List[Image.Image]:
+    """
+    Load a small set of background images from a folder.
+
+    @param folder: Background image directory.
+    @return: List of PIL images.
+    """
     paths = sorted(glob.glob(os.path.join(folder, "*.*")))
     imgs = []
     for p in paths:
@@ -74,6 +98,12 @@ def load_backgrounds(folder: str) -> List[Image.Image]:
 
 
 def find_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
+    """
+    Return the newest checkpoint path in a directory, or None.
+
+    @param ckpt_dir: Checkpoint directory.
+    @return: Newest checkpoint path or None.
+    """
     if not os.path.isdir(ckpt_dir):
         return None
     cands = glob.glob(os.path.join(ckpt_dir, "*.zip"))
@@ -99,6 +129,25 @@ def make_env_factory(
     yolo_wts: str,
     yolo_device: str,
 ):
+    """
+    Create a factory function for VecEnv construction.
+
+    @param stop_plain: Base stop-sign image.
+    @param stop_uv: UV variant of the stop sign.
+    @param pole_rgba: Pole image with alpha.
+    @param backgrounds: Background image list.
+    @param steps_per_episode: Max steps per episode.
+    @param eval_K: Number of transforms per evaluation.
+    @param grid_cell_px: Grid cell size in pixels.
+    @param uv_drop_threshold: UV drop threshold for success.
+    @param lambda_area: Area penalty weight.
+    @param area_cap_frac: Area cap fraction (or None).
+    @param area_cap_penalty: Penalty when cap exceeded.
+    @param area_cap_mode: "soft" or "hard" cap mode.
+    @param yolo_wts: YOLO weights path.
+    @param yolo_device: YOLO device spec.
+    @return: Callable that builds a monitored env.
+    """
     def _init():
         return Monitor(
             StopSignGridEnv(
@@ -135,6 +184,11 @@ def make_env_factory(
 
 
 def parse_args():
+    """
+    Parse CLI arguments for training.
+
+    @return: Parsed argparse namespace.
+    """
     ap = argparse.ArgumentParser("Train PPO on grid-square UV attack over stop sign")
     ap.add_argument("--data", default="./data")
     ap.add_argument("--bgdir", default="./data/backgrounds")
@@ -189,6 +243,13 @@ def parse_args():
 
 
 def resolve_yolo_weights(yolo_version: str, yolo_weights: Optional[str]) -> str:
+    """
+    Resolve default YOLO weights when no path is provided.
+
+    @param yolo_version: YOLO version string.
+    @param yolo_weights: Optional explicit weights path.
+    @return: Weights path.
+    """
     if yolo_weights:
         return yolo_weights
     defaults = {
@@ -207,7 +268,7 @@ if __name__ == "__main__":
     args = parse_args()
     dev_lower = str(args.detector_device).lower()
     if "cuda" in dev_lower and args.vec == "subproc":
-        print("⚠️ CUDA detector + SubprocVecEnv is risky. Switching vec to dummy.")
+        print("WARN: CUDA detector + SubprocVecEnv is risky. Switching vec to dummy.")
         args.vec = "dummy"
     print("torch.cuda.is_available():", torch.cuda.is_available())
     if torch.cuda.is_available():
@@ -284,13 +345,13 @@ if __name__ == "__main__":
     if args.resume:
         ckpt = find_latest_checkpoint(args.ckpt)
         if ckpt:
-            print(f"🔄 Resuming from: {ckpt}")
+            print(f" Resuming from: {ckpt}")
             model = PPO.load(ckpt, env=env, device="auto")
             model.n_steps = int(args.n_steps)
             model.batch_size = int(args.batch_size)
 
     # callbacks
-    # Save “best” (lowest after_conf) UV-on examples, keep top-50, log to TB
+    # Save top minimal-area successes, keep top-1000, log to TB
     tb_cb = TensorboardOverlayCallback(args.tb, tag_prefix="grid_uv", max_images=25, verbose=1)
     
     ep_cb = EpisodeMetricsCallback(args.tb, verbose=1)
@@ -337,4 +398,4 @@ if __name__ == "__main__":
 
     final = os.path.join(args.ckpt, "ppo_grid_uv_final")
     model.save(final)
-    print(f"✅ Saved final model to {final}")
+    print(f" Saved final model to {final}")

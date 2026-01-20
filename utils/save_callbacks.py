@@ -1,4 +1,4 @@
-# utils/save_callbacks.py
+"""Overlay saver callback and trace logging utilities."""
 import os, json
 from typing import Optional, Dict, Any, Tuple, List
 from stable_baselines3.common.callbacks import BaseCallback
@@ -6,7 +6,12 @@ import numpy as np
 
 
 def _to_py(obj):
-    """Recursively convert numpy / tensors / exotic types into JSON-serializable Python types."""
+    """
+    Recursively convert numpy / tensors / exotic types into JSON-serializable Python types.
+
+    @param obj: Object to convert.
+    @return: JSON-serializable Python type.
+    """
     if isinstance(obj, (np.generic,)):
         return obj.item()
     if isinstance(obj, np.ndarray):
@@ -26,6 +31,13 @@ def _to_py(obj):
 
 
 def _safe_float(x, default=0.0) -> float:
+    """
+    Coerce a value to float, falling back to a default on failure.
+
+    @param x: Value to convert.
+    @param default: Fallback if conversion fails.
+    @return: Float value.
+    """
     try:
         return float(x)
     except Exception:
@@ -38,8 +50,9 @@ class SaveImprovingOverlaysCallback(BaseCallback):
     When full, evict the current worst and insert the new better one.
 
     Scoring:
-      • mode == "adversary": smaller after_conf is better
-      • mode == "helper":    larger after_conf is better
+      - mode == "adversary": smaller after_conf is better
+      - mode == "helper":    larger after_conf is better
+      - mode == "minimal":   smaller area_frac is better
     """
 
     def __init__(
@@ -51,6 +64,14 @@ class SaveImprovingOverlaysCallback(BaseCallback):
         verbose: int = 0,
         tb_callback: Optional[object] = None,
     ):
+        """
+        @param save_dir: Output directory for overlays.
+        @param threshold: Delta threshold for saving.
+        @param mode: Scoring mode.
+        @param max_saved: Max number of saved entries.
+        @param verbose: Verbosity level.
+        @param tb_callback: Optional TensorBoard callback.
+        """
         super().__init__(verbose)
         self.save_dir = os.path.abspath(save_dir)
         os.makedirs(self.save_dir, exist_ok=True)
@@ -132,7 +153,7 @@ class SaveImprovingOverlaysCallback(BaseCallback):
                 return bool(info.get("uv_success"))
             except Exception:
                 pass
-        # Prefer the smoothed signal if present (Option A)
+        # Prefer the smoothed signal if present (smoothed signal)
         drop = _safe_float(info.get("drop_on_smooth", info.get("drop_on", 0.0)))
         thr  = _safe_float(info.get("uv_drop_threshold", 0.0))
         return drop >= thr and thr > 0.0

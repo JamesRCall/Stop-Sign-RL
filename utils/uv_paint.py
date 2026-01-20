@@ -1,8 +1,14 @@
-# utils/uv_paint.py
+"""UV paint definitions and color helpers."""
 from dataclasses import dataclass
 from typing import Tuple
 
 def hex_to_rgb(h: str) -> Tuple[int, int, int]:
+    """
+    Convert a hex color string to an RGB tuple.
+
+    @param h: Hex color string.
+    @return: (r, g, b) tuple.
+    """
     h = h.strip().lstrip("#")
     if len(h) == 3:
         h = "".join(ch * 2 for ch in h)
@@ -10,6 +16,7 @@ def hex_to_rgb(h: str) -> Tuple[int, int, int]:
 
 @dataclass(frozen=True)
 class UVPaint:
+    """Paired daylight vs UV-on paint definition."""
     name: str
     day_hex: str            # how it looks in daylight (pre-activation)
     active_hex: str         # how it looks under UV (activated)
@@ -25,7 +32,7 @@ class UVPaint:
     def active_rgb(self) -> Tuple[int, int, int]:
         return hex_to_rgb(self.active_hex)
 
-# Existing examples
+# Example paint definitions
 VIOLET_GLOW = UVPaint(
     "VioletGlow",
     day_hex="#C9C9C9",      # neutral gray (subtle before activation)
@@ -44,7 +51,7 @@ GREEN_GLOW = UVPaint(
     active_alpha=1.0,
 )
 
-# New: BLUE_GLOW and YELLOW_GLOW
+# Additional variants
 BLUE_GLOW = UVPaint(
     "BlueGlow",
     day_hex="#D5D5D5",      # faint gray pre-activation

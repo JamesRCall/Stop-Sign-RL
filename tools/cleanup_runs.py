@@ -1,3 +1,5 @@
+"""Cleanup helper for run/output folders."""
+
 import argparse
 import os
 import shutil
@@ -13,6 +15,12 @@ DEFAULT_TARGETS = [
 
 
 def _dir_stats(path: Path) -> tuple[int, int]:
+    """
+    Return total bytes and file count for a directory tree.
+
+    @param path: Directory path.
+    @return: (total_bytes, total_files)
+    """
     total_bytes = 0
     total_files = 0
     for root, _, files in os.walk(path):
@@ -27,6 +35,12 @@ def _dir_stats(path: Path) -> tuple[int, int]:
 
 
 def _human_bytes(n: int) -> str:
+    """
+    Format bytes as a human-readable string.
+
+    @param n: Byte count.
+    @return: Human-readable size string.
+    """
     unit = ["B", "KB", "MB", "GB", "TB"]
     size = float(n)
     for u in unit:
@@ -37,6 +51,11 @@ def _human_bytes(n: int) -> str:
 
 
 def main() -> int:
+    """
+    Parse args and delete selected folders.
+
+    @return: Exit code.
+    """
     ap = argparse.ArgumentParser(description="Cleanup run artifacts and large output folders.")
     ap.add_argument("--yes", action="store_true", help="Actually delete files and folders.")
     ap.add_argument("--targets", nargs="*", default=DEFAULT_TARGETS, help="Folders to remove.")

@@ -1,12 +1,18 @@
-# trace_replay.py
+"""Replay saved traces to regenerate legacy blob masks."""
 import os, json, argparse
 import numpy as np
 from PIL import Image
 
-# uses the same blob drawer as training
+# Legacy blob-trace replay (for older random-blob traces)
 from envs.random_blobs import draw_randomized_blobs_set
 
 def load_traces(ndjson_path: str):
+    """
+    Load NDJSON trace rows into a list.
+
+    @param ndjson_path: Path to NDJSON file.
+    @return: List of trace rows.
+    """
     rows = []
     with open(ndjson_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -18,6 +24,14 @@ def load_traces(ndjson_path: str):
     return rows
 
 def pick_trace(rows, index=None, step=None):
+    """
+    Pick a trace by index or step; default to last row.
+
+    @param rows: Trace rows.
+    @param index: Optional row index.
+    @param step: Optional step id.
+    @return: Selected trace row.
+    """
     if index is not None:
         if not (0 <= index < len(rows)):
             raise IndexError(f"--index {index} out of range (0..{len(rows)-1})")
@@ -30,6 +44,11 @@ def pick_trace(rows, index=None, step=None):
     return rows[-1]  # default: last row
 
 def main():
+    """
+    CLI entrypoint for exporting a replay mask.
+
+    @return: None
+    """
     ap = argparse.ArgumentParser(description="Export just the blob pattern (mask only, pre-transform) from a saved trace.")
     ap.add_argument("--traces", default="runs/overlays/traces.ndjson", help="Path to traces.ndjson")
     ap.add_argument("--index", type=int, default=None, help="Row index in NDJSON (0-based)")
@@ -101,7 +120,7 @@ def main():
     step  = tr.get("step", "NA")
     out_path = os.path.join(args.outdir, f"trace_mask_pre_{phase}_step{step}.png")
     blob_mask_img.save(out_path)
-    print(f"✅ Saved pre-transform blob mask => {out_path}")
+    print(f" Saved pre-transform blob mask => {out_path}")
 
 if __name__ == "__main__":
     main()

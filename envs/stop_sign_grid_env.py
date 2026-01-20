@@ -16,24 +16,24 @@ class StopSignGridEnv(gym.Env):
     """
     Grid-square adversarial overlay over a stop sign (octagon mask only).
 
-    Action (continuous -> discrete):
-      a[0], a[1] in [-1, 1]  ->  (row, col) index into sign grid
-      (cell size = 4x4 px by default; configurable via grid_cell_px)
+    Action:
+      Discrete index into valid grid cells within the sign octagon.
+      (cell size = grid_cell_px; configurable)
 
     Per step:
-      • Add 1 new grid cell (2x2 / 4x4 square) to a running episode mask.
-      • Duplicate cells are disallowed: we remap to nearest free cell.
-      • Render THREE matched variants on the SAME background/pole/placement/transforms:
-          0) Plain (no overlay) – baseline for day and UV-on
+      - Add 1 new grid cell (grid_cell_px square) to a running episode mask.
+      - Duplicate cells are disallowed: remap to a free cell.
+      - Render three matched variants on the same background/pole/placement/transforms:
+          0) Plain (no overlay) baseline for day and UV-on
           1) Daylight overlay (pre-activation color/alpha)
           2) UV-on overlay (activated color/alpha)
-      • For robustness, evaluate each variant across K matched SIGN-only transforms,
-        same placement and background for all three.
-      • Compute mean confidences over K runs:
+      - For robustness, evaluate each variant across K matched sign-only transforms
+        with identical placement and background.
+      - Compute mean confidences over K runs:
           c0_day, c_day, c0_on, c_on
-        Primary objective is drop_on = c0_on - c_on (we want ≥ threshold).
-        Secondary: keep day confidence high (penalize drop if it exceeds tolerance).
-      • Episode terminates early when drop_on_mean ≥ uv_drop_threshold.
+        Primary objective is drop_on = c0_on - c_on (target threshold).
+        Secondary objective keeps day confidence high (penalize if drop exceeds tolerance).
+      - Episode terminates early when drop_on_mean meets uv_drop_threshold.
 
     Observation:
       RGB image of the *daylight* composite for the first transform (H,W,3) uint8.
@@ -45,7 +45,7 @@ class StopSignGridEnv(gym.Env):
       success bonus once drop_on >= uv_drop_threshold, then squash:
 
           raw_total = raw_core + shaping + success_bonus
-          reward    = tanh(2 * raw_total)    ∈ (-1, 1)
+          reward    = tanh(2 * raw_total)    (-1, 1)
 
       so PPO always sees a bounded per-step reward.
     """
@@ -71,7 +71,7 @@ class StopSignGridEnv(gym.Env):
         eval_K_ramp_threshold: Optional[float] = None,
 
         # Grid config
-        grid_cell_px: int = 16,               # 🔴 default 4x4 now
+        grid_cell_px: int = 16,               # default grid size in pixels
         max_cells: Optional[int] = None,
         area_cap_frac: Optional[float] = None,
 
@@ -97,7 +97,7 @@ class StopSignGridEnv(gym.Env):
         iou_thresh: float = 0.45,
         info_image_every: int = 50,
 
-        # Reward smoothing (Option A)
+        # Reward smoothing
         reward_smooth_n: int = 10,
         use_ema: bool = True,
         ema_beta: float = 0.90,
@@ -364,7 +364,7 @@ class StopSignGridEnv(gym.Env):
         # (Baseline gating)
         if c0_on < self.min_base_conf:
             reward = -0.05
-            # keep termination from max_cells if you want; I’m leaving it as-is:
+            # keep termination from max_cells if you want; I'm leaving it as-is:
             truncated = (self._step >= self.steps_per_episode)
 
             obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
@@ -548,6 +548,11 @@ class StopSignGridEnv(gym.Env):
         return img
 
     def set_area_cap_frac(self, value: Optional[float]) -> None:
+        """
+        Update area cap and derived max_cells at runtime.
+
+        @param value: New cap fraction (None or <=0 disables).
+        """
         if value is None or float(value) <= 0.0:
             self.area_cap_frac = None
             if self._derived_max_cells:
@@ -566,6 +571,11 @@ class StopSignGridEnv(gym.Env):
                 self.max_cells = 0
 
     def set_lambda_area(self, value: float) -> None:
+        """
+        Update area penalty weight at runtime.
+
+        @param value: New lambda_area value.
+        """
         self.lambda_area = float(value)
 
     def _eval_over_K(self) -> Tuple[float, float, float, float]:
@@ -781,7 +791,9 @@ class StopSignGridEnv(gym.Env):
             x = int(rng.integers(margin, left_max + 1))
         else:
             x = int(rng.integers(right_min, max_x + 1))
-        y = int(rng.integers(margin, max_y + 1))
+        # Avoid placing the sign too high in the frame.
+        min_y = max(margin, int(0.12 * H))
+        y = int(rng.integers(min_y, max_y + 1))
 
         canvas = bg_rgba.copy()
         canvas.alpha_composite(group, (x, y))

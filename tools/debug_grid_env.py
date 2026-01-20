@@ -1,4 +1,4 @@
-# tools/debug_grid_env.py
+"""Manual step-through of the grid env with image dumps for debugging."""
 import os, glob, argparse
 from PIL import Image, ImageDraw
 import numpy as np
@@ -7,10 +7,21 @@ from envs.stop_sign_grid_env import StopSignGridEnv
 from utils.uv_paint import VIOLET_GLOW
 
 def load_bgs(folder):
+    """
+    Load a small set of background images for debugging.
+
+    @param folder: Background folder.
+    @return: List of PIL images.
+    """
     paths = sorted(glob.glob(os.path.join(folder, "*.*")))
     return [Image.open(p).convert("RGB") for p in paths][:20]
 
 def main():
+    """
+    Run a short random policy roll-out and save intermediate frames.
+
+    @return: None
+    """
     p = argparse.ArgumentParser()
     p.add_argument("--data", default="./data")
     p.add_argument("--bgdir", default="./data/backgrounds")

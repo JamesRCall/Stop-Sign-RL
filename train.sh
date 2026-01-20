@@ -171,17 +171,17 @@ if [[ "${YOLO_DEVICE}" == server://* ]]; then
 fi
 
 # ==============================
-# Safety: CUDA + subproc is a trap here
+# Safety: CUDA + subproc is unstable for in-process YOLO inference
 # ==============================
 if [[ "${YOLO_DEVICE}" == cuda* ]] && [[ "${VEC}" == "subproc" ]]; then
-  echo "⚠️ CUDA YOLO + SubprocVecEnv is unstable in current design. Forcing --vec dummy."
+  echo "WARN: CUDA YOLO + SubprocVecEnv is unstable in current design. Forcing --vec dummy."
   VEC="dummy"
 fi
 
 # PPO constraint: batch_size must be <= n_steps * num_envs
 ROLLOUT=$(( N_STEPS * NUM_ENVS ))
 if (( BATCH > ROLLOUT )); then
-  echo "⚠️ batch (${BATCH}) > rollout (${ROLLOUT}). Clamping batch -> ${ROLLOUT}."
+  echo "WARN: batch (${BATCH}) > rollout (${ROLLOUT}). Clamping batch -> ${ROLLOUT}."
   BATCH="${ROLLOUT}"
 fi
 
@@ -212,7 +212,7 @@ start_tensorboard() {
 
 start_monitor() {
   [[ "${ENABLE_MON}" != "1" ]] && { echo "[MON] Monitor disabled"; return; }
-  echo "[MON] Starting resource monitor @ ${MON_INTERVAL}s → ${MON_LOG}"
+  echo "[MON] Starting resource monitor @ ${MON_INTERVAL}s -> ${MON_LOG}"
   {
     echo "=== Resource monitor started: $(date) ==="
     echo "interval=${MON_INTERVAL}s"

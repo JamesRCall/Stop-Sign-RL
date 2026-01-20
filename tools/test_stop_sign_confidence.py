@@ -2,7 +2,7 @@
 """
 test_stop_sign_confidence.py
 
-Quick visual + numerical check for how your YOLOv11 model scores a stop sign in a given image.
+Quick visual + numerical check for how your YOLO model scores a stop sign in a given image.
 
 - Prints all detected stop-sign boxes with confidence values.
 - Shows (and optionally saves) an annotated image with labeled confidence.
@@ -26,7 +26,12 @@ except Exception as e:
 # ---------- helper functions ----------
 
 def pick_stop_sign_class_ids(names: dict) -> List[int]:
-    """Return list of class IDs that look like 'stop sign'."""
+    """
+    Return list of class IDs that look like "stop sign".
+
+    @param names: Class id-to-name mapping.
+    @return: Sorted list of stop-sign class ids.
+    """
     ids = []
     for k, v in names.items():
         name = str(v).strip().lower()
@@ -36,7 +41,16 @@ def pick_stop_sign_class_ids(names: dict) -> List[int]:
 
 
 def draw_boxes_with_conf(pil_img: Image.Image, boxes, confs, names, clses) -> Image.Image:
-    """Draw boxes and confidence text directly on the image (compatible with all Pillow versions)."""
+    """
+    Draw boxes and confidence text directly on the image.
+
+    @param pil_img: Source image.
+    @param boxes: Array of bounding boxes.
+    @param confs: Array of confidences.
+    @param names: Class name mapping.
+    @param clses: Array of class ids.
+    @return: Annotated image.
+    """
     img = pil_img.convert("RGB").copy()
     draw = ImageDraw.Draw(img)
     try:
@@ -71,6 +85,11 @@ def draw_boxes_with_conf(pil_img: Image.Image, boxes, confs, names, clses) -> Im
 # ---------- main ----------
 
 def main():
+    """
+    Run a single-image confidence check and optional annotated export.
+
+    @return: None
+    """
     ap = argparse.ArgumentParser(description="Test YOLOv11 stop-sign confidence on a single image")
     ap.add_argument("--weights", default="./weights/yolo11n.pt", help="Path to YOLOv11 weights (.pt)")
     ap.add_argument("--image", required=True, help="Path to input image")
@@ -82,9 +101,9 @@ def main():
     args = ap.parse_args()
 
     if not os.path.isfile(args.weights):
-        sys.exit(f"❌ weights not found: {args.weights}")
+        sys.exit(f"ERROR: weights not found: {args.weights}")
     if not os.path.isfile(args.image):
-        sys.exit(f"❌ image not found: {args.image}")
+        sys.exit(f"ERROR: image not found: {args.image}")
 
     # pick device
     device = "cuda" if (args.device == "auto" and torch.cuda.is_available()) else args.device
@@ -93,7 +112,7 @@ def main():
     stop_ids = pick_stop_sign_class_ids(names)
 
     if not stop_ids:
-        print("⚠️  No 'stop sign' class found in model.names; detections may be empty.")
+        print("WARN:  No 'stop sign' class found in model.names; detections may be empty.")
 
     # run inference
     results = model.predict(
@@ -118,17 +137,17 @@ def main():
     stop_boxes, stop_confs, stop_clses = boxes[stop_mask], confs[stop_mask], clses[stop_mask]
 
     if stop_boxes.shape[0] == 0:
-        print("❌ No STOP SIGN detected above threshold.")
+        print("ERROR: No STOP SIGN detected above threshold.")
         return
 
     # Print detections
-    print("✅ Detected STOP SIGN(s):")
+    print(" Detected STOP SIGN(s):")
     for i, (b, c) in enumerate(zip(stop_boxes, stop_confs), 1):
         x1, y1, x2, y2 = [float(v) for v in b]
         print(f"  #{i}: conf={c:.4f} ({c*100:.1f}%)  box=[{x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f}]")
 
     top_idx = int(np.argmax(stop_confs))
-    print(f"\n⭐ TOP STOP SIGN confidence: {stop_confs[top_idx]*100:.2f}%")
+    print(f"\n TOP STOP SIGN confidence: {stop_confs[top_idx]*100:.2f}%")
 
     # Draw and save annotated image
     if args.save or args.out:
@@ -136,7 +155,7 @@ def main():
         ann = draw_boxes_with_conf(pil_img, stop_boxes, stop_confs, names, stop_clses)
         out_path = args.out or f"{os.path.splitext(args.image)[0]}_annotated.jpg"
         ann.save(out_path)
-        print(f"💾 Saved annotated image → {out_path}")
+        print(f" Saved annotated image -> {out_path}")
 
 
 if __name__ == "__main__":

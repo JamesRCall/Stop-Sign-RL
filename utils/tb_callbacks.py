@@ -1,4 +1,4 @@
-# utils/tb_callbacks.py
+"""TensorBoard callbacks for overlay images and training metrics."""
 import os
 import numpy as np
 from PIL import Image
@@ -9,7 +9,12 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 def pil_to_chw_uint8(pil: Image.Image) -> np.ndarray:
-    """Convert PIL RGB -> CHW uint8 numpy (C,H,W)."""
+    """
+    Convert PIL RGB -> CHW uint8 numpy (C,H,W).
+
+    @param pil: Input PIL image.
+    @return: CHW uint8 numpy array.
+    """
     arr = np.array(pil.convert("RGB"), dtype=np.uint8)  # H,W,C
     return np.transpose(arr, (2, 0, 1))                 # C,H,W
 
@@ -26,6 +31,12 @@ class TensorboardOverlayCallback(BaseCallback):
     """
 
     def __init__(self, log_dir: str, tag_prefix: str = "overlay", max_images: int = 100, verbose: int = 0):
+        """
+        @param log_dir: Base log directory.
+        @param tag_prefix: TensorBoard tag prefix.
+        @param max_images: Max overlay images to log.
+        @param verbose: Verbosity level.
+        """
         super().__init__(verbose)
         self.log_dir = os.path.abspath(log_dir)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -112,7 +123,7 @@ class TensorboardOverlayCallback(BaseCallback):
             if self.verbose:
                 print("[TB] overlay writer closed")
             self.writer = None
-# --- NEW: Episode summary metrics callback ---
+# Episode summary metrics callback
 from typing import List
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
@@ -135,6 +146,10 @@ class EpisodeMetricsCallback(BaseCallback):
     """
 
     def __init__(self, log_dir: str, verbose: int = 0):
+        """
+        @param log_dir: Base log directory.
+        @param verbose: Verbosity level.
+        """
         super().__init__(verbose)
         self.log_dir = os.path.abspath(log_dir)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -210,7 +225,7 @@ class EpisodeMetricsCallback(BaseCallback):
             uv_success_val = float(uv_success) if uv_success is not None else float("nan")
             area_cap_exceeded_val = float(area_cap_exceeded) if area_cap_exceeded is not None else float("nan")
 
-            # log vs EPISODE INDEX (best for “is it improving?”)
+            # log vs EPISODE INDEX (best for tracking improvement)
             if self.writer is not None:
                 self.writer.add_scalar("episode/length_steps", ep_len, self._ep_count)
                 self.writer.add_scalar("episode/area_frac_final", area_val, self._ep_count)
@@ -262,6 +277,13 @@ class StepMetricsCallback(BaseCallback):
         log_every_500: int = 500,
         verbose: int = 0,
     ):
+        """
+        @param log_dir: Base log directory.
+        @param every_n_steps: Log cadence in steps.
+        @param keep_last_n: Keep last N rows (0 = append forever).
+        @param log_every_500: Secondary cadence for snapshot logging.
+        @param verbose: Verbosity level.
+        """
         super().__init__(verbose)
         self.log_dir = os.path.abspath(log_dir)
         os.makedirs(self.log_dir, exist_ok=True)
