@@ -109,7 +109,8 @@ def parse_args():
     ap = argparse.ArgumentParser("Train PPO on grid-square UV attack over stop sign")
     ap.add_argument("--data", default="./data")
     ap.add_argument("--bgdir", default="./data/backgrounds")
-    ap.add_argument("--yolo", default="./weights/yolo11n.pt")
+    ap.add_argument("--yolo", "--yolo-weights", dest="yolo_weights", default=None)
+    ap.add_argument("--yolo-version", choices=["8", "11"], default="11")
     ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "auto"))
     ap.add_argument("--tb", default="./runs/tb")
     ap.add_argument("--ckpt", default="./runs/checkpoints")
@@ -133,6 +134,16 @@ def parse_args():
     return ap.parse_args()
 
 
+def resolve_yolo_weights(yolo_version: str, yolo_weights: Optional[str]) -> str:
+    if yolo_weights:
+        return yolo_weights
+    defaults = {
+        "8": "./weights/yolo8n.pt",
+        "11": "./weights/yolo11n.pt",
+    }
+    return defaults[str(yolo_version)]
+
+
 if __name__ == "__main__":
     # allocator knobs
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
@@ -147,7 +158,8 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         print("Using cuda device")
 
-    
+    yolo_weights = resolve_yolo_weights(args.yolo_version, args.yolo_weights)
+    print(f"YOLO version={args.yolo_version} weights={yolo_weights}")
 
     # paths
     STOP_PLAIN = os.path.join(args.data, "stop_sign.png")
@@ -168,7 +180,7 @@ if __name__ == "__main__":
                 eval_K=args.eval_K,
                 grid_cell_px=args.grid_cell,
                 uv_drop_threshold=args.uv_threshold,
-                yolo_wts=args.yolo,
+                yolo_wts=yolo_weights,
                 yolo_device=args.detector_device,
             ) for _ in range(args.num_envs)
         ]

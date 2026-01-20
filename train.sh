@@ -23,6 +23,9 @@ VEC="${VEC:-dummy}"                 # must be dummy for CUDA+YOLO in current arc
 EVAL_K="${EVAL_K:-3}"
 GRID_CELL="${GRID_CELL:-16}"
 
+YOLO_VERSION="${YOLO_VERSION:-11}"
+YOLO_WEIGHTS="${YOLO_WEIGHTS:-}"
+
 N_STEPS="${N_STEPS:-512}"
 BATCH="${BATCH:-1024}"              # safe default; will be clamped below
 TOTAL_STEPS="${TOTAL_STEPS:-400000}"
@@ -54,6 +57,9 @@ Options:
   --eval-k K                  (default: $EVAL_K)
   --grid-cell {2|4|8|16|32}           (default: $GRID_CELL)
 
+  --yolo-version {8|11}        (default: $YOLO_VERSION)
+  --yolo-weights PATH          (default: $YOLO_WEIGHTS)
+
   --n-steps N                 (default: $N_STEPS)
   --batch N                   (default: $BATCH)
   --total-steps N             (default: $TOTAL_STEPS)
@@ -77,6 +83,9 @@ while [[ $# -gt 0 ]]; do
 
     --eval-k) EVAL_K="$2"; shift 2;;
     --grid-cell) GRID_CELL="$2"; shift 2;;
+
+    --yolo-version) YOLO_VERSION="$2"; shift 2;;
+    --yolo-weights) YOLO_WEIGHTS="$2"; shift 2;;
 
     --n-steps) N_STEPS="$2"; shift 2;;
     --batch) BATCH="$2"; shift 2;;
@@ -172,8 +181,14 @@ start_monitor
 # ==============================
 # Run training
 # ==============================
+EXTRA_ARGS=()
+if [[ -n "${YOLO_WEIGHTS}" ]]; then
+  EXTRA_ARGS+=(--yolo-weights "${YOLO_WEIGHTS}")
+fi
+
 echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
+echo "        yolo-version=${YOLO_VERSION} yolo-weights=${YOLO_WEIGHTS:-<default>}"
 echo "        num-envs=${NUM_ENVS} vec=${VEC} eval_K=${EVAL_K} grid=${GRID_CELL}"
 echo "        n-steps=${N_STEPS} batch=${BATCH} total-steps=${TOTAL_STEPS}"
 echo "        tb=${TB_DIR} ckpt=${CKPT_DIR} overlays=${OVR_DIR}"
@@ -181,6 +196,7 @@ echo ""
 
 python "${PY_MAIN}" \
   --detector-device "${YOLO_DEVICE}" \
+  --yolo-version "${YOLO_VERSION}" \
   --num-envs "${NUM_ENVS}" \
   --vec "${VEC}" \
   --n-steps "${N_STEPS}" \
@@ -191,4 +207,5 @@ python "${PY_MAIN}" \
   --save-freq-updates "${SAVE_FREQ_UPDATES}" \
   --tb "${TB_DIR}" \
   --ckpt "${CKPT_DIR}" \
-  --overlays "${OVR_DIR}"
+  --overlays "${OVR_DIR}" \
+  "${EXTRA_ARGS[@]}"
