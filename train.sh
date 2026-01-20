@@ -35,6 +35,10 @@ LAMBDA_AREA_STEPS="${LAMBDA_AREA_STEPS:-200000}"
 
 YOLO_VERSION="${YOLO_VERSION:-8}"
 YOLO_WEIGHTS="${YOLO_WEIGHTS:-}"
+START_DET_SERVER="${START_DET_SERVER:-0}"
+DET_SERVER_PORT="${DET_SERVER_PORT:-5009}"
+DET_SERVER_DEVICE="${DET_SERVER_DEVICE:-cuda:0}"
+DET_SERVER_MODEL="${DET_SERVER_MODEL:-}"
 
 N_STEPS="${N_STEPS:-512}"
 BATCH="${BATCH:-512}"              # default to rollout size for num_envs=1
@@ -80,6 +84,10 @@ Options:
 
   --yolo-version {8|11}        (default: $YOLO_VERSION)
   --yolo-weights PATH          (default: $YOLO_WEIGHTS)
+  --start-detector-server      (start local detector server)
+  --detector-port P            (default: $DET_SERVER_PORT)
+  --detector-device DEV        (default: $DET_SERVER_DEVICE)
+  --detector-model PATH        (default: $DET_SERVER_MODEL)
 
   --n-steps N                 (default: $N_STEPS)
   --batch N                   (default: $BATCH)
@@ -123,6 +131,10 @@ while [[ $# -gt 0 ]]; do
 
     --yolo-version) YOLO_VERSION="$2"; shift 2;;
     --yolo-weights) YOLO_WEIGHTS="$2"; shift 2;;
+    --start-detector-server) START_DET_SERVER="1"; shift 1;;
+    --detector-port) DET_SERVER_PORT="$2"; shift 2;;
+    --detector-device) DET_SERVER_DEVICE="$2"; shift 2;;
+    --detector-model) DET_SERVER_MODEL="$2"; shift 2;;
 
     --n-steps) N_STEPS="$2"; N_STEPS_SET=1; shift 2;;
     --batch) BATCH="$2"; BATCH_SET=1; shift 2;;
@@ -172,12 +184,14 @@ fi
 # ==============================
 TB_PID=""
 MON_PID=""
+DET_PID=""
 
 cleanup() {
   echo ""
   echo "[CLEANUP] Stopping background services..."
   [[ -n "${TB_PID}" ]] && kill "$TB_PID" 2>/dev/null || true
   [[ -n "${MON_PID}" ]] && kill "$MON_PID" 2>/dev/null || true
+  [[ -n "${DET_PID}" ]] && kill "$DET_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -219,8 +233,32 @@ start_monitor() {
 }
 
 # ==============================
+# Optional: start local detector server
+# ==============================
+start_detector_server() {
+  [[ "${START_DET_SERVER}" != "1" ]] && return
+  if [[ -z "${DET_SERVER_MODEL}" ]]; then
+    DET_SERVER_MODEL="${YOLO_WEIGHTS}"
+  fi
+  if [[ -z "${DET_SERVER_MODEL}" ]]; then
+    echo "[DET] detector model not set. Use --detector-model or --yolo-weights."
+    exit 1
+  fi
+  echo "[DET] Starting detector server on port ${DET_SERVER_PORT}"
+  python tools/detector_server.py \
+    --model "${DET_SERVER_MODEL}" \
+    --device "${DET_SERVER_DEVICE}" \
+    --port "${DET_SERVER_PORT}" > ./_runs/detector_server.log 2>&1 &
+  DET_PID=$!
+  sleep 2
+  echo "[DET] PID=${DET_PID} | log: ./_runs/detector_server.log"
+  export YOLO_DEVICE="server://127.0.0.1:${DET_SERVER_PORT}"
+}
+
+# ==============================
 # Start services
 # ==============================
+start_detector_server
 start_tensorboard
 start_monitor
 
