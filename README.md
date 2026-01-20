@@ -54,8 +54,8 @@ Optional:
 - `stop_sign_uv.png` (RGBA UV-lit version of the sign; if missing, the base sign is reused).
 
 YOLO weights go in `weights/`:
-- `weights/yolo11n.pt` (default)
-- `weights/yolo8n.pt` (optional if you switch versions)
+- `weights/yolo8n.pt` (default)
+- `weights/yolo11n.pt` (optional if you switch versions)
 
 ---
 
@@ -76,7 +76,7 @@ python train_single_stop_sign.py --resume
 Use a specific YOLO version/weights:
 
 ```bash
-python train_single_stop_sign.py --yolo-version 11 --yolo-weights ./weights/yolo11n.pt
+python train_single_stop_sign.py --yolo-version 8 --yolo-weights ./weights/yolo8n.pt
 ```
 
 ---
@@ -91,9 +91,13 @@ From `train_single_stop_sign.py`:
 - `--grid-cell` (2, 4, 8, 16, 32) grid size in pixels
 - `--uv-threshold` UV drop threshold for success
 - `--lambda-area` area penalty strength (encourages minimal patches)
+- `--lambda-area-start`, `--lambda-area-end`, `--lambda-area-steps` (curriculum)
 - `--area-cap-frac` cap on total patch area (<= 0 disables)
 - `--area-cap-penalty` reward penalty when cap would be exceeded
+- `--area-cap-mode` (`soft` or `hard`)
+- `--area-cap-start`, `--area-cap-end`, `--area-cap-steps` (curriculum)
 - `--detector-device` (e.g., `cpu`, `cuda`, or `auto`)
+- `--step-log-every`, `--step-log-keep`, `--step-log-500` (step logging control)
 - `--ckpt`, `--overlays`, `--tb` output paths
 - `--save-freq-steps` or `--save-freq-updates` checkpoint cadence
 
@@ -128,6 +132,7 @@ tensorboard --logdir runs/tb --port 6006
 Callbacks log:
 - `TensorboardOverlayCallback` (overlay images and metadata)
 - `EpisodeMetricsCallback` (episode-end scalars)
+- `StepMetricsCallback` (rolling step metrics)
 
 Episode metrics currently include:
 - `episode/area_frac_final`, `episode/length_steps`
@@ -137,6 +142,10 @@ Episode metrics currently include:
 - `episode/eval_K_used_final`
 - `episode/uv_success_final`, `episode/area_cap_exceeded_final`
 
+Step metrics:
+- Rolling window of per-step rows in `runs/tb/tb_step_metrics/step_metrics.ndjson`
+- 500-step snapshots in `runs/tb/tb_step_metrics/step_metrics_500.ndjson`
+
 ---
 
 ## Output Artifacts
@@ -145,6 +154,7 @@ Generated files:
 - `runs/checkpoints/` PPO checkpoints.
 - `runs/overlays/` best overlays (PNG + JSON) and `traces.ndjson`.
 - `runs/tb/` TensorBoard event files.
+- If you use `train.sh` defaults, outputs go to `_runs/` instead of `runs/`.
 
 Overlay saver:
 - `utils/save_callbacks.py` keeps the best N overlays and appends trace metadata.
@@ -182,6 +192,11 @@ python tools/detector_server.py --model ./weights/yolo8n.pt --device cuda:0 --po
 
 # In training, point the detector device to the server:
 # --detector-device server://HOST:5009
+```
+
+Single-command server + training (from `train.sh`):
+```bash
+bash train.sh --yolo-version 8 --yolo-weights ./weights/yolo8n.pt --start-detector-server
 ```
 
 ---
