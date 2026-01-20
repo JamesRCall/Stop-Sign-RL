@@ -88,6 +88,7 @@ class StopSignGridEnv(gym.Env):
         min_base_conf: float = 0.20,
         cell_cover_thresh: float = 0.60,
         area_cap_penalty: float = -0.20,
+        area_cap_mode: str = "soft",
 
 
         # YOLO
@@ -135,9 +136,10 @@ class StopSignGridEnv(gym.Env):
 
         self.max_cells = int(max_cells) if max_cells is not None else None
         self.area_cap_frac = float(area_cap_frac) if area_cap_frac is not None else None
+        self._derived_max_cells = (self.max_cells is None and self.area_cap_frac is not None)
         if self.area_cap_frac is not None and not (0.0 < self.area_cap_frac <= 1.0):
             raise ValueError("area_cap_frac must be in (0, 1]")
-        if self.max_cells is None and self.area_cap_frac is not None:
+        if self._derived_max_cells:
             valid_total = int(self._valid_cells.sum())
             if valid_total > 0:
                 derived = int(math.ceil(self.area_cap_frac * valid_total))
@@ -158,6 +160,9 @@ class StopSignGridEnv(gym.Env):
         self.min_base_conf = float(min_base_conf)
         self.info_image_every = int(info_image_every)
         self.area_cap_penalty = float(area_cap_penalty)
+        self.area_cap_mode = str(area_cap_mode).lower().strip()
+        if self.area_cap_mode not in ("soft", "hard"):
+            raise ValueError("area_cap_mode must be 'soft' or 'hard'")
 
 
         # Reward smoothing state (Option A)
@@ -289,7 +294,7 @@ class StopSignGridEnv(gym.Env):
 
         selected_cells = int(self._episode_cells.sum())
         valid_total = int(self._valid_cells.sum())
-        if self.area_cap_frac is not None and valid_total > 0:
+        if self.area_cap_frac is not None and valid_total > 0 and self.area_cap_mode == "hard":
             next_area_frac = float(selected_cells + 1) / float(valid_total)
             if next_area_frac > self.area_cap_frac:
                 terminated = True
@@ -311,6 +316,7 @@ class StopSignGridEnv(gym.Env):
         self._episode_cells[r, c] = True
 
         area_frac = self._area_frac_selected()
+        cap_exceeded = self.area_cap_frac is not None and area_frac > self.area_cap_frac
 
         terminated = False
         max_cells_reached = False
@@ -378,6 +384,8 @@ class StopSignGridEnv(gym.Env):
         success_bonus = 0.5 if uv_success else 0.0
 
         raw_total = raw_core + shaping + success_bonus
+        if cap_exceeded and self.area_cap_mode == "soft":
+            raw_total += float(self.area_cap_penalty)
         reward = math.tanh(2.0 * raw_total)
 
         if drop_on_s >= thr:
@@ -528,6 +536,27 @@ class StopSignGridEnv(gym.Env):
         sign_t = self._transform_sign(sign, transform_seed)
         img = self._compose_on_bg(sign_t, self._place_seed)
         return img
+
+    def set_area_cap_frac(self, value: Optional[float]) -> None:
+        if value is None or float(value) <= 0.0:
+            self.area_cap_frac = None
+            if self._derived_max_cells:
+                self.max_cells = None
+            return
+        v = float(value)
+        if not (0.0 < v <= 1.0):
+            raise ValueError("area_cap_frac must be in (0, 1]")
+        self.area_cap_frac = v
+        if self._derived_max_cells:
+            valid_total = int(self._valid_cells.sum())
+            if valid_total > 0:
+                derived = int(math.ceil(self.area_cap_frac * valid_total))
+                self.max_cells = max(1, min(valid_total, derived))
+            else:
+                self.max_cells = 0
+
+    def set_lambda_area(self, value: float) -> None:
+        self.lambda_area = float(value)
 
     def _eval_over_K(self) -> Tuple[float, float, float, float]:
         imgs_plain_day = []

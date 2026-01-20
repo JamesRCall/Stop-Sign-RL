@@ -106,7 +106,7 @@ The environment is implemented in `envs/stop_sign_grid_env.py`.
 Highlights:
 - Discrete action space over valid grid cells inside the sign octagon.
 - UV-on reward uses smoothed UV drop (`drop_on_smooth`) to reduce noise.
-- Area cap is enforced before a cell is added, so patches cannot exceed the cap.
+- Area cap supports soft (penalty) or hard (terminate) modes.
 - Minimum UV alpha (`uv_min_alpha`) ensures patches are visible under UV even with
   very low paint alpha.
 

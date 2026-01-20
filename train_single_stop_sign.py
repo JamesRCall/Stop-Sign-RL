@@ -42,6 +42,24 @@ class ProgressETACallback(BaseCallback):
         return True
 
 
+class LinearRampCallback(BaseCallback):
+    def __init__(self, attr_name: str, start: float, end: float, steps: int, verbose: int = 0):
+        super().__init__(verbose)
+        self.attr_name = str(attr_name)
+        self.start = float(start)
+        self.end = float(end)
+        self.steps = max(int(steps), 1)
+
+    def _on_training_start(self) -> None:
+        self.training_env.env_method(self.attr_name, self.start)
+
+    def _on_step(self) -> bool:
+        t = min(float(self.num_timesteps) / float(self.steps), 1.0)
+        value = self.start + t * (self.end - self.start)
+        self.training_env.env_method(self.attr_name, value)
+        return True
+
+
 def load_backgrounds(folder: str) -> List[Image.Image]:
     paths = sorted(glob.glob(os.path.join(folder, "*.*")))
     imgs = []
@@ -77,6 +95,7 @@ def make_env_factory(
     lambda_area: float,
     area_cap_frac: Optional[float],
     area_cap_penalty: float,
+    area_cap_mode: str,
     yolo_wts: str,
     yolo_device: str,
 ):
@@ -109,6 +128,7 @@ def make_env_factory(
                 lambda_area=float(lambda_area),
                 area_cap_frac=area_cap_frac,
                 area_cap_penalty=area_cap_penalty,
+                area_cap_mode=area_cap_mode,
             )
         )
     return _init
@@ -140,6 +160,20 @@ def parse_args():
                     help="Fraction of sign grid allowed for patches; <=0 disables cap.")
     ap.add_argument("--area-cap-penalty", type=float, default=-0.20,
                     help="Reward penalty when area cap is exceeded.")
+    ap.add_argument("--area-cap-mode", choices=["soft", "hard"], default="soft",
+                    help="Soft applies a penalty when exceeded; hard terminates.")
+    ap.add_argument("--area-cap-start", type=float, default=None,
+                    help="Start value for area cap curriculum; overrides --area-cap-frac when set.")
+    ap.add_argument("--area-cap-end", type=float, default=None,
+                    help="End value for area cap curriculum; overrides --area-cap-frac when set.")
+    ap.add_argument("--area-cap-steps", type=int, default=0,
+                    help="Steps over which to ramp area cap; <=0 uses total-steps.")
+    ap.add_argument("--lambda-area-start", type=float, default=None,
+                    help="Start value for lambda-area curriculum.")
+    ap.add_argument("--lambda-area-end", type=float, default=None,
+                    help="End value for lambda-area curriculum.")
+    ap.add_argument("--lambda-area-steps", type=int, default=0,
+                    help="Steps over which to ramp lambda-area; <=0 uses total-steps.")
 
     ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint in --ckpt")
 
@@ -187,7 +221,19 @@ if __name__ == "__main__":
     bgs        = load_backgrounds(BG_DIR)
 
     def build_env():
-        area_cap_frac = None if args.area_cap_frac <= 0 else float(args.area_cap_frac)
+        use_cap_ramp = (args.area_cap_start is not None) or (args.area_cap_end is not None)
+        if use_cap_ramp:
+            start = args.area_cap_start if args.area_cap_start is not None else float(args.area_cap_frac)
+            area_cap_frac = None if float(start) <= 0 else float(start)
+        else:
+            area_cap_frac = None if args.area_cap_frac <= 0 else float(args.area_cap_frac)
+
+        use_lambda_ramp = (args.lambda_area_start is not None) or (args.lambda_area_end is not None)
+        if use_lambda_ramp:
+            lambda_area = float(args.lambda_area_start if args.lambda_area_start is not None else args.lambda_area)
+        else:
+            lambda_area = float(args.lambda_area)
+
         fns = [
             make_env_factory(
                 stop_plain, stop_uv, pole_rgba, bgs,
@@ -195,9 +241,10 @@ if __name__ == "__main__":
                 eval_K=args.eval_K,
                 grid_cell_px=args.grid_cell,
                 uv_drop_threshold=args.uv_threshold,
-                lambda_area=float(args.lambda_area),
+                lambda_area=lambda_area,
                 area_cap_frac=area_cap_frac,
                 area_cap_penalty=float(args.area_cap_penalty),
+                area_cap_mode=str(args.area_cap_mode),
                 yolo_wts=yolo_weights,
                 yolo_device=args.detector_device,
             ) for _ in range(args.num_envs)
@@ -255,9 +302,22 @@ if __name__ == "__main__":
 
     progress = ProgressETACallback(total_timesteps=int(args.total_steps), log_every_sec=15, verbose=1)
 
+    ramp_callbacks = []
+    if (args.area_cap_start is not None) or (args.area_cap_end is not None):
+        cap_start = float(args.area_cap_start if args.area_cap_start is not None else args.area_cap_frac)
+        cap_end = float(args.area_cap_end if args.area_cap_end is not None else args.area_cap_frac)
+        cap_steps = int(args.area_cap_steps) if int(args.area_cap_steps) > 0 else int(args.total_steps)
+        ramp_callbacks.append(LinearRampCallback("set_area_cap_frac", cap_start, cap_end, cap_steps, verbose=0))
+
+    if (args.lambda_area_start is not None) or (args.lambda_area_end is not None):
+        la_start = float(args.lambda_area_start if args.lambda_area_start is not None else args.lambda_area)
+        la_end = float(args.lambda_area_end if args.lambda_area_end is not None else args.lambda_area)
+        la_steps = int(args.lambda_area_steps) if int(args.lambda_area_steps) > 0 else int(args.total_steps)
+        ramp_callbacks.append(LinearRampCallback("set_lambda_area", la_start, la_end, la_steps, verbose=0))
+
     model.learn(
         total_timesteps=int(args.total_steps),
-        callback=CallbackList([tb_cb, ep_cb, saver, ckpt_cb, progress]),
+        callback=CallbackList([tb_cb, ep_cb, saver, ckpt_cb, progress] + ramp_callbacks),
         tb_log_name="grid_uv",
     )
 
