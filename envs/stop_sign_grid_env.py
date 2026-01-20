@@ -756,14 +756,21 @@ class StopSignGridEnv(gym.Env):
         W, H = self.img_size
         bg_rgba = bg_rgb.resize((W, H), Image.BILINEAR).convert("RGBA")
 
-        target_w = int(rng.uniform(0.30 * W, 0.55 * W))
+        # Wider distance variance: allow sign to appear smaller (farther) or larger (closer).
+        target_w = int(rng.uniform(0.18 * W, 0.60 * W))
         scale = target_w / max(1, group_rgba.width)
         group = group_rgba.resize((target_w, int(group_rgba.height * scale)), Image.BILINEAR)
 
         margin = int(0.04 * W)
         max_x = max(margin, W - group.width - margin)
         max_y = max(margin, H - group.height - margin)
-        x = int(rng.integers(margin, max_x + 1))
+        # Bias placement to left/right thirds so the sign isn't centered.
+        left_max = max(margin, min(max_x, int(0.35 * W)))
+        right_min = max(margin, min(max_x, int(0.65 * W)))
+        if rng.random() < 0.5:
+            x = int(rng.integers(margin, left_max + 1))
+        else:
+            x = int(rng.integers(right_min, max_x + 1))
         y = int(rng.integers(margin, max_y + 1))
 
         canvas = bg_rgba.copy()
