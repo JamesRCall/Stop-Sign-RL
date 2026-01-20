@@ -46,6 +46,7 @@ OVR_DIR="${OVR_DIR:-./_runs/overlays}"
 PORT="${PORT:-6006}"
 
 SAVE_FREQ_UPDATES="${SAVE_FREQ_UPDATES:-2}"
+STEP_LOG_EVERY="${STEP_LOG_EVERY:-1000}"
 PY_MAIN="${PY_MAIN:-train_single_stop_sign.py}"
 
 # Monitoring
@@ -83,6 +84,7 @@ Options:
   --n-steps N                 (default: $N_STEPS)
   --batch N                   (default: $BATCH)
   --total-steps N             (default: $TOTAL_STEPS)
+  --step-log-every N          (default: $STEP_LOG_EVERY)
 
   --tb DIR                    (default: $TB_DIR)
   --ckpt DIR                  (default: $CKPT_DIR)
@@ -96,10 +98,15 @@ Options:
 EOF
 }
 
+NUM_ENVS_SET=0
+VEC_SET=0
+N_STEPS_SET=0
+BATCH_SET=0
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --num-envs) NUM_ENVS="$2"; shift 2;;
-    --vec) VEC="$2"; shift 2;;
+    --num-envs) NUM_ENVS="$2"; NUM_ENVS_SET=1; shift 2;;
+    --vec) VEC="$2"; VEC_SET=1; shift 2;;
 
     --eval-k) EVAL_K="$2"; shift 2;;
     --grid-cell) GRID_CELL="$2"; shift 2;;
@@ -117,9 +124,10 @@ while [[ $# -gt 0 ]]; do
     --yolo-version) YOLO_VERSION="$2"; shift 2;;
     --yolo-weights) YOLO_WEIGHTS="$2"; shift 2;;
 
-    --n-steps) N_STEPS="$2"; shift 2;;
-    --batch) BATCH="$2"; shift 2;;
+    --n-steps) N_STEPS="$2"; N_STEPS_SET=1; shift 2;;
+    --batch) BATCH="$2"; BATCH_SET=1; shift 2;;
     --total-steps) TOTAL_STEPS="$2"; shift 2;;
+    --step-log-every) STEP_LOG_EVERY="$2"; shift 2;;
 
     --tb) TB_DIR="$2"; shift 2;;
     --ckpt) CKPT_DIR="$2"; shift 2;;
@@ -135,6 +143,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "$TB_DIR" "$CKPT_DIR" "$OVR_DIR" ./_runs
+
+# If using remote detector server, prefer multi-env defaults unless user overrides.
+if [[ "${YOLO_DEVICE}" == server://* ]]; then
+  [[ "${VEC_SET}" -eq 0 ]] && VEC="subproc"
+  [[ "${NUM_ENVS_SET}" -eq 0 ]] && NUM_ENVS="4"
+  [[ "${N_STEPS_SET}" -eq 0 ]] && N_STEPS="256"
+  [[ "${BATCH_SET}" -eq 0 ]] && BATCH="1024"
+fi
 
 # ==============================
 # Safety: CUDA + subproc is a trap here
@@ -247,6 +263,7 @@ python "${PY_MAIN}" \
   --lambda-area-start "${LAMBDA_AREA_START}" \
   --lambda-area-end "${LAMBDA_AREA_END}" \
   --lambda-area-steps "${LAMBDA_AREA_STEPS}" \
+  --step-log-every "${STEP_LOG_EVERY}" \
   --save-freq-updates "${SAVE_FREQ_UPDATES}" \
   --tb "${TB_DIR}" \
   --ckpt "${CKPT_DIR}" \

@@ -247,3 +247,92 @@ class EpisodeMetricsCallback(BaseCallback):
             self.writer.close()
             self.writer = None
 
+
+class StepMetricsCallback(BaseCallback):
+    """
+    Logs step-level metrics every N steps to a lightweight ndjson file and TB scalars.
+    Intended for quick sanity checks without saving every frame.
+    """
+
+    def __init__(self, log_dir: str, every_n_steps: int = 1000, verbose: int = 0):
+        super().__init__(verbose)
+        self.log_dir = os.path.abspath(log_dir)
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.tb_dir = os.path.join(self.log_dir, "tb_step_metrics")
+        os.makedirs(self.tb_dir, exist_ok=True)
+        self.every_n_steps = max(int(every_n_steps), 1)
+        self.writer: SummaryWriter | None = None
+        self._last_logged = 0
+        self._ndjson_path = os.path.join(self.tb_dir, "step_metrics.ndjson")
+
+    def _on_training_start(self) -> None:
+        if self.writer is None:
+            self.writer = SummaryWriter(log_dir=self.tb_dir)
+        if self.verbose:
+            print(f"[TB] step metrics -> {self.tb_dir} (every {self.every_n_steps} steps)")
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps - self._last_logged < self.every_n_steps:
+            return True
+
+        infos = self.locals.get("infos", None)
+        if not infos:
+            return True
+
+        info = None
+        for it in infos:
+            if isinstance(it, dict):
+                info = it
+                break
+        if info is None:
+            return True
+
+        base_conf = info.get("base_conf", info.get("c0_on", None))
+        after_conf = info.get("after_conf", info.get("c_on", None))
+        delta_conf = info.get("delta_conf", None)
+        if delta_conf is None and (base_conf is not None and after_conf is not None):
+            delta_conf = float(after_conf) - float(base_conf)
+
+        area_frac = info.get("total_area_mask_frac", None)
+        drop_on = info.get("drop_on", None)
+        drop_on_s = info.get("drop_on_smooth", None)
+
+        row = {
+            "step": int(self.num_timesteps),
+            "base_conf": float(base_conf) if base_conf is not None else None,
+            "after_conf": float(after_conf) if after_conf is not None else None,
+            "delta_conf": float(delta_conf) if delta_conf is not None else None,
+            "area_frac": float(area_frac) if area_frac is not None else None,
+            "drop_on": float(drop_on) if drop_on is not None else None,
+            "drop_on_smooth": float(drop_on_s) if drop_on_s is not None else None,
+        }
+
+        if self.writer is not None:
+            if row["after_conf"] is not None:
+                self.writer.add_scalar("step/after_conf", row["after_conf"], self.num_timesteps)
+            if row["delta_conf"] is not None:
+                self.writer.add_scalar("step/delta_conf", row["delta_conf"], self.num_timesteps)
+            if row["area_frac"] is not None:
+                self.writer.add_scalar("step/area_frac", row["area_frac"], self.num_timesteps)
+            if row["drop_on"] is not None:
+                self.writer.add_scalar("step/drop_on", row["drop_on"], self.num_timesteps)
+            if row["drop_on_smooth"] is not None:
+                self.writer.add_scalar("step/drop_on_smooth", row["drop_on_smooth"], self.num_timesteps)
+            self.writer.flush()
+
+        try:
+            import json
+            with open(self._ndjson_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+        self._last_logged = int(self.num_timesteps)
+        return True
+
+    def _on_training_end(self) -> None:
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+            self.writer = None
+

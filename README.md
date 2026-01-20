@@ -163,6 +163,7 @@ Trace replay:
 
 - `tools/debug_grid_env.py` runs the env step-by-step and saves UV-on previews.
 - `tools/cleanup_runs.py` removes old run outputs (dry-run by default).
+- `tools/detector_server.py` runs a shared YOLO detector for multi-process training.
 - `preview_stop_sign_3d.sh` renders a quick 3D preview (if your setup includes it).
 - `setup_env.sh` contains a helper for local setup.
 
@@ -173,6 +174,14 @@ python tools/cleanup_runs.py
 
 # Delete
 python tools/cleanup_runs.py --yes
+```
+
+Detector server usage:
+```bash
+python tools/detector_server.py --model ./weights/yolo8n.pt --device cuda:0 --port 5009
+
+# In training, point the detector device to the server:
+# --detector-device server://HOST:5009
 ```
 
 ---
@@ -196,6 +205,7 @@ python tools/cleanup_runs.py --yes
 |-- tools/
 |   |-- debug_grid_env.py
 |   |-- cleanup_runs.py
+|   |-- detector_server.py
 |
 |-- utils/
 |   |-- save_callbacks.py

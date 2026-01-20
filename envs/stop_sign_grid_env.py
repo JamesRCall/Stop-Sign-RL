@@ -173,9 +173,19 @@ class StopSignGridEnv(gym.Env):
         self._drop_ema = None
 
         # detector
-        self.det = DetectorWrapper(
-            yolo_weights, device=yolo_device, conf=conf_thresh, iou=iou_thresh, debug=detector_debug
-        )
+        dev_str = str(yolo_device)
+        if dev_str.lower().startswith("server://"):
+            from detectors.remote_detector import RemoteDetectorWrapper
+            self.det = RemoteDetectorWrapper(
+                server_addr=dev_str,
+                conf=conf_thresh,
+                iou=iou_thresh,
+                debug=detector_debug,
+            )
+        else:
+            self.det = DetectorWrapper(
+                yolo_weights, device=yolo_device, conf=conf_thresh, iou=iou_thresh, debug=detector_debug
+            )
 
 
         # action/obs spaces

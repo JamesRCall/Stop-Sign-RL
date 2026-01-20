@@ -12,7 +12,7 @@ from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback,
 from envs.stop_sign_grid_env import StopSignGridEnv
 from utils.uv_paint import GREEN_GLOW  # single pair; swap here if you want another
 from utils.save_callbacks import SaveImprovingOverlaysCallback
-from utils.tb_callbacks import TensorboardOverlayCallback, EpisodeMetricsCallback
+from utils.tb_callbacks import TensorboardOverlayCallback, EpisodeMetricsCallback, StepMetricsCallback
 
 
 
@@ -179,6 +179,8 @@ def parse_args():
 
     ap.add_argument("--save-freq-steps", type=int, default=0)
     ap.add_argument("--save-freq-updates", type=int, default=2)
+    ap.add_argument("--step-log-every", type=int, default=1000,
+                    help="Log step metrics every N steps to TB/ndjson.")
     return ap.parse_args()
 
 
@@ -199,7 +201,8 @@ if __name__ == "__main__":
     os.environ.setdefault("MKL_NUM_THREADS", "1")
 
     args = parse_args()
-    if "cuda" in str(args.detector_device).lower() and args.vec == "subproc":
+    dev_lower = str(args.detector_device).lower()
+    if "cuda" in dev_lower and args.vec == "subproc":
         print("⚠️ CUDA detector + SubprocVecEnv is risky. Switching vec to dummy.")
         args.vec = "dummy"
     print("torch.cuda.is_available():", torch.cuda.is_available())
@@ -287,6 +290,7 @@ if __name__ == "__main__":
     tb_cb = TensorboardOverlayCallback(args.tb, tag_prefix="grid_uv", max_images=25, verbose=1)
     
     ep_cb = EpisodeMetricsCallback(args.tb, verbose=1)
+    step_cb = StepMetricsCallback(args.tb, every_n_steps=int(args.step_log_every), verbose=0)
     
     saver = SaveImprovingOverlaysCallback(
         save_dir=args.overlays, threshold=0.0, mode="minimal",
@@ -317,7 +321,7 @@ if __name__ == "__main__":
 
     model.learn(
         total_timesteps=int(args.total_steps),
-        callback=CallbackList([tb_cb, ep_cb, saver, ckpt_cb, progress] + ramp_callbacks),
+        callback=CallbackList([tb_cb, ep_cb, step_cb, saver, ckpt_cb, progress] + ramp_callbacks),
         tb_log_name="grid_uv",
     )
 
