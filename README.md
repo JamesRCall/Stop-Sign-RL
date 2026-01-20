@@ -93,6 +93,56 @@ If you’re on Linux or macOS, change the backslashes to `/`.
 
 ---
 
+## Blender 3D Scene Preview
+
+This repo includes a Blender scene script that builds a realistic road, pole, and stop sign with
+asset hooks for a real-world background or HDRI. You can open it interactively or render a still.
+
+### Requirements
+- Install Blender (3.x recommended).
+
+### Open the scene in Blender (interactive)
+PowerShell:
+```powershell
+$env:MODE="gui"
+.\tools\blender_render.ps1
+```
+
+Bash:
+```bash
+MODE=gui bash tools/blender_render.sh
+```
+
+### Render a still image (headless)
+PowerShell:
+```powershell
+$env:OUTPUT_PATH="_renders\stop_sign.png"
+.\tools\blender_render.ps1
+```
+
+Bash:
+```bash
+OUTPUT_PATH=_renders/stop_sign.png bash tools/blender_render.sh
+```
+
+### Optional assets (realistic textures)
+Set these env vars to use your own CC0 textures/HDRIs:
+- `ROAD_TEX` (asphalt texture)
+- `SIGN_TEX` (photo of a stop sign)
+- `POLE_TEX` (galvanized steel texture)
+- `HDRI_PATH` (outdoor HDRI)
+
+Example (PowerShell):
+```powershell
+$env:ROAD_TEX="data\textures\asphalt.jpg"
+$env:HDRI_PATH="data\hdris\road_01.hdr"
+.\tools\blender_render.ps1
+```
+
+The Blender script lives at `tools/blender_stop_sign_scene.py`.
+
+---
+
 ## Data Setup
 
 Place the following in `/data`:

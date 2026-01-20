@@ -74,6 +74,7 @@ def make_env_factory(
     eval_K: int,
     grid_cell_px: int,
     uv_drop_threshold: float,
+    lambda_area: float,
     yolo_wts: str,
     yolo_device: str,
 ):
@@ -93,13 +94,17 @@ def make_env_factory(
                 detector_debug=True,
 
                 grid_cell_px=grid_cell_px,
-                max_cells=None,  # optional cap; leave None because we terminate by threshold
+                # Optional cap: if area_cap_frac is set and max_cells is None, the env derives
+                # max_cells = ceil(area_cap_frac * valid_total) and terminates with
+                # info["note"]="max_cells_reached" once selected_cells hits that cap.
+                max_cells=None,  # leave None because we terminate by threshold
                 uv_paint=GREEN_GLOW,  # single color pair for this project
                 use_single_color=True,
 
                 uv_drop_threshold=uv_drop_threshold,
                 day_tolerance=0.05,
                 lambda_day=1.0,
+                lambda_area=lambda_area,
             )
         )
     return _init
@@ -126,6 +131,7 @@ def parse_args():
     ap.add_argument("--eval-K", type=int, default=10)
     ap.add_argument("--grid-cell", type=int, default=2, choices=[2, 4, 8, 16, 32])
     ap.add_argument("--uv-threshold", type=float, default=0.70)
+    ap.add_argument("--lambda-area", type=float, default=0.3)
 
     ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint in --ckpt")
 
@@ -180,6 +186,7 @@ if __name__ == "__main__":
                 eval_K=args.eval_K,
                 grid_cell_px=args.grid_cell,
                 uv_drop_threshold=args.uv_threshold,
+                lambda_area=args.lambda_area,
                 yolo_wts=yolo_weights,
                 yolo_device=args.detector_device,
             ) for _ in range(args.num_envs)

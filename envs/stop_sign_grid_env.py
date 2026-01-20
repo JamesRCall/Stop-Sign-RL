@@ -39,7 +39,8 @@ class StopSignGridEnv(gym.Env):
       RGB image of the *daylight* composite for the first transform (H,W,3) uint8.
 
     Reward (per step, normalized):
-      Let raw_core = drop_on - lambda_day * max(0, drop_day - day_tolerance).
+      Let raw_core = drop_on - lambda_day * max(0, drop_day - day_tolerance)
+                              - lambda_area * area_frac.
       Add a smooth shaping bonus as drop_on approaches threshold, plus a small
       success bonus once drop_on >= uv_drop_threshold, then squash:
 
@@ -65,10 +66,14 @@ class StopSignGridEnv(gym.Env):
         # Episodes
         steps_per_episode: int = 7000,
         eval_K: int = 3,
+        eval_K_min: Optional[int] = None,
+        eval_K_max: Optional[int] = None,
+        eval_K_ramp_threshold: Optional[float] = None,
 
         # Grid config
         grid_cell_px: int = 16,               # 🔴 default 4x4 now
         max_cells: Optional[int] = None,
+        area_cap_frac: Optional[float] = None,
 
         # Paint (single pair)
         uv_paint: UVPaint = VIOLET_GLOW,
@@ -78,6 +83,7 @@ class StopSignGridEnv(gym.Env):
         uv_drop_threshold: float = 0.70,
         day_tolerance: float = 0.05,
         lambda_day: float = 1.0,
+        lambda_area: float = 0.3,
         min_base_conf: float = 0.20,
         cell_cover_thresh: float = 0.60,
 
@@ -98,7 +104,17 @@ class StopSignGridEnv(gym.Env):
         super().__init__()
         self.img_size = tuple(img_size)
         self.steps_per_episode = int(steps_per_episode)
-        self.eval_K = int(eval_K)
+        self.eval_K_min = int(eval_K if eval_K_min is None else eval_K_min)
+        self.eval_K_max = int(eval_K if eval_K_max is None else eval_K_max)
+        if self.eval_K_min < 1:
+            raise ValueError("eval_K_min must be >= 1")
+        if self.eval_K_max < self.eval_K_min:
+            raise ValueError("eval_K_max must be >= eval_K_min")
+        self.eval_K_ramp_threshold = (
+            float(eval_K_ramp_threshold)
+            if eval_K_ramp_threshold is not None
+            else 0.5 * float(uv_drop_threshold)
+        )
 
         self.sign_rgba_day = stop_sign_image.convert("RGBA")
         self.sign_rgba_on  = (stop_sign_uv_image or stop_sign_image).convert("RGBA")
@@ -116,6 +132,16 @@ class StopSignGridEnv(gym.Env):
         self._build_grid_index()
 
         self.max_cells = int(max_cells) if max_cells is not None else None
+        self.area_cap_frac = float(area_cap_frac) if area_cap_frac is not None else None
+        if self.area_cap_frac is not None and not (0.0 < self.area_cap_frac <= 1.0):
+            raise ValueError("area_cap_frac must be in (0, 1]")
+        if self.max_cells is None and self.area_cap_frac is not None:
+            valid_total = int(self._valid_cells.sum())
+            if valid_total > 0:
+                derived = int(math.ceil(self.area_cap_frac * valid_total))
+                self.max_cells = max(1, min(valid_total, derived))
+            else:
+                self.max_cells = 0
 
         # UV paint pair (single)
         self.paint = uv_paint
@@ -125,6 +151,7 @@ class StopSignGridEnv(gym.Env):
         self.uv_drop_threshold = float(uv_drop_threshold)
         self.day_tolerance = float(day_tolerance)
         self.lambda_day = float(lambda_day)
+        self.lambda_area = float(lambda_area)
         self.min_base_conf = float(min_base_conf)
         self.info_image_every = int(info_image_every)
 
@@ -156,6 +183,9 @@ class StopSignGridEnv(gym.Env):
         self._episode_cells: np.ndarray = None  # bool mask [Gh, Gw] of selected cells
         self._place_seed = None
         self._transform_seeds: List[int] = []
+        self._baseline_c0_day_list: List[float] = []
+        self._baseline_c0_on_list: List[float] = []
+        self._last_drop_on_s = 0.0
 
     # ----------------------------- grid build --------------------------------
 
@@ -197,18 +227,21 @@ class StopSignGridEnv(gym.Env):
 
         self._bg_rgb = self._choose_bg_rgb()
         self._place_seed = int(self.rng.integers(0, 2**31 - 1))
-        self._transform_seeds = [int(self.rng.integers(0, 2**31 - 1)) for _ in range(self.eval_K)]
+        self._transform_seeds = [
+            int(self.rng.integers(0, 2**31 - 1)) for _ in range(self.eval_K_max)
+        ]
 
         obs = self._render_variant(kind="day", use_overlay=False, transform_seed=self._transform_seeds[0])
 
         # Cache plain baseline confidences (same throughout episode)
-        c0_day, c0_on = self._eval_plain_over_K()
-        self._baseline_c0_day = c0_day
-        self._baseline_c0_on  = c0_on
+        self._baseline_c0_day_list, self._baseline_c0_on_list = self._eval_plain_over_K(
+            self._transform_seeds
+        )
 
         # Reset reward smoothing buffers (Option A)
         self._drop_hist.clear()
         self._drop_ema = None
+        self._last_drop_on_s = 0.0
 
         return np.array(obs, dtype=np.uint8), {}
 
@@ -234,7 +267,17 @@ class StopSignGridEnv(gym.Env):
 
                 obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
                 obs = np.array(obs_img, dtype=np.uint8)
-                info = {"objective": "grid_uv", "note": "no_free_cells"}
+                area_frac = self._area_frac_selected()
+                cap_exceeded = self.area_cap_frac is not None and area_frac > self.area_cap_frac
+                info = {
+                    "objective": "grid_uv",
+                    "note": "no_free_cells",
+                    "lambda_area": float(self.lambda_area),
+                    "total_area_mask_frac": area_frac,
+                    "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else 0.0,
+                    "uv_success": False,
+                    "area_cap_exceeded": cap_exceeded,
+                }
                 return obs, 0.0, bool(terminated), bool(truncated), info
 
             pick = coords[int(self.rng.integers(0, coords.shape[0]))]
@@ -243,13 +286,18 @@ class StopSignGridEnv(gym.Env):
         self._episode_cells[r, c] = True
 
         terminated = False
+        max_cells_reached = False
         if self.max_cells is not None:
             if int(self._episode_cells.sum()) >= self.max_cells:
                 terminated = True
+                max_cells_reached = True
 
         # 2) Evaluate overlay vs baseline
-        c_day, c_on = self._eval_overlay_over_K()
-        c0_day, c0_on = self._baseline_c0_day, self._baseline_c0_on
+        eval_K = self._current_eval_K(self._last_drop_on_s)
+        eval_seeds = self._transform_seeds[:eval_K]
+        c_day, c_on = self._eval_overlay_over_K(eval_seeds)
+        c0_day = self._mean_over_K(self._baseline_c0_day_list, eval_K)
+        c0_on = self._mean_over_K(self._baseline_c0_on_list, eval_K)
 
         drop_day = float(c0_day - c_day)
         drop_on  = float(c0_on - c_on)
@@ -265,6 +313,10 @@ class StopSignGridEnv(gym.Env):
             drop_on_s = float(self._drop_ema)
         else:
             drop_on_s = float(np.mean(self._drop_hist)) if len(self._drop_hist) else float(drop_on)
+        self._last_drop_on_s = drop_on_s
+
+        area_frac = self._area_frac_selected()
+        cap_exceeded = self.area_cap_frac is not None and area_frac > self.area_cap_frac
 
         # (Baseline gating)
         if c0_on < self.min_base_conf:
@@ -279,24 +331,34 @@ class StopSignGridEnv(gym.Env):
                 "c0_day": c0_day, "c_day": c_day,
                 "c0_on": c0_on,   "c_on": c_on,
                 "drop_day": drop_day, "drop_on": drop_on, "drop_on_smooth": float(drop_on_s),
-                "note": "baseline_conf_too_low",
+                "note": "max_cells_reached" if max_cells_reached else "baseline_conf_too_low",
                 "min_base_conf": float(self.min_base_conf),
+                "lambda_area": float(self.lambda_area),
+                "total_area_mask_frac": area_frac,
+                "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else 0.0,
+                "uv_success": False,
+                "area_cap_exceeded": cap_exceeded,
             }
             return obs, float(reward), bool(terminated), bool(truncated), info
 
         # 3) Reward using smoothed UV drop
         pen_day = max(0.0, drop_day - self.day_tolerance)
-        raw_core = drop_on_s - self.lambda_day * pen_day
+        area_frac = self._area_frac_selected()
+        raw_core = drop_on_s - self.lambda_day * pen_day - self.lambda_area * area_frac
 
         thr = self.uv_drop_threshold
         shaping = 0.25 * math.tanh(4.0 * (drop_on_s - 0.5 * thr))
-        success_bonus = 0.5 if drop_on_s >= thr else 0.0
+        uv_success = drop_on_s >= thr and (self.area_cap_frac is None or area_frac <= self.area_cap_frac)
+        success_bonus = 0.5 if uv_success else 0.0
 
         raw_total = raw_core + shaping + success_bonus
         reward = math.tanh(2.0 * raw_total)
 
         if drop_on_s >= thr:
             terminated = True
+            if self.area_cap_frac is not None and area_frac > self.area_cap_frac:
+                uv_success = False
+                cap_exceeded = True
 
         truncated = (self._step >= self.steps_per_episode)
 
@@ -315,11 +377,18 @@ class StopSignGridEnv(gym.Env):
             "reward": float(reward),
             "selected_cells": int(self._episode_cells.sum()),
             "grid_cell_px": int(self.grid_cell_px),
+            "eval_K_used": int(eval_K),
+            "eval_K_min": int(self.eval_K_min),
+            "eval_K_max": int(self.eval_K_max),
             "uv_drop_threshold": float(self.uv_drop_threshold),
             "day_tolerance": float(self.day_tolerance),
+            "lambda_area": float(self.lambda_area),
             "base_conf": float(c0_on),
             "after_conf": float(c_on),
-            "total_area_mask_frac": self._area_frac_selected(),
+            "total_area_mask_frac": area_frac,
+            "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else 0.0,
+            "uv_success": uv_success,
+            "area_cap_exceeded": cap_exceeded,
             "trace": {
                 "phase": "grid_uv",
                 "grid_cell_px": int(self.grid_cell_px),
@@ -328,9 +397,11 @@ class StopSignGridEnv(gym.Env):
                 "transform_seeds": [int(s) for s in self._transform_seeds],
             },
         }
+        if max_cells_reached:
+            info["note"] = "max_cells_reached"
 
         # Always attach the final image if we succeeded (hit threshold), so it can be saved reliably.
-        if terminated and (drop_on_s >= self.uv_drop_threshold):
+        if terminated and uv_success:
             info["composited_pil"] = preview_on
         # Otherwise only attach occasionally to reduce overhead
         elif (self._step % self.info_image_every) == 0:
@@ -342,17 +413,38 @@ class StopSignGridEnv(gym.Env):
 
     # ----------------------------- helpers -----------------------------------
 
-    def _eval_plain_over_K(self) -> Tuple[float, float]:
+    def _eval_plain_over_K(self, seeds: List[int]) -> Tuple[List[float], List[float]]:
         imgs_plain_day, imgs_plain_on = [], []
-        for t_seed in self._transform_seeds:
+        for t_seed in seeds:
             plain_day = self._compose_on_bg(self._transform_sign(self.sign_rgba_day, t_seed), self._place_seed)
             plain_on  = self._compose_on_bg(self._transform_sign(self.sign_rgba_on,  t_seed), self._place_seed)
             imgs_plain_day.append(plain_day)
             imgs_plain_on.append(plain_on)
         c0_day_list = self.det.infer_confidence_batch(imgs_plain_day)
         c0_on_list  = self.det.infer_confidence_batch(imgs_plain_on)
-        mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
-        return mean(c0_day_list), mean(c0_on_list)
+        return list(c0_day_list), list(c0_on_list)
+
+    def _mean_over_K(self, values: List[float], K: int) -> float:
+        if K <= 0:
+            return 0.0
+        return float(np.mean(values[:K])) if values else 0.0
+
+    def _current_eval_K(self, drop_on_s: float) -> int:
+        if self.eval_K_min == self.eval_K_max:
+            return int(self.eval_K_max)
+
+        ramp_start = float(self.eval_K_ramp_threshold)
+        ramp_end = float(self.uv_drop_threshold)
+        if drop_on_s <= ramp_start:
+            return int(self.eval_K_min)
+        if ramp_end <= ramp_start:
+            return int(self.eval_K_max)
+        if drop_on_s >= ramp_end:
+            return int(self.eval_K_max)
+
+        t = (drop_on_s - ramp_start) / (ramp_end - ramp_start)
+        k = self.eval_K_min + t * (self.eval_K_max - self.eval_K_min)
+        return int(max(self.eval_K_min, min(self.eval_K_max, math.ceil(k))))
 
 
     def _selected_indices_list(self) -> List[int]:
@@ -440,14 +532,14 @@ class StopSignGridEnv(gym.Env):
         mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
         return mean(c0_day_list), mean(c_day_list), mean(c0_on_list), mean(c_on_list)
 
-    def _eval_overlay_over_K(self) -> Tuple[float, float]:
+    def _eval_overlay_over_K(self, seeds: List[int]) -> Tuple[float, float]:
         imgs_over_day, imgs_over_on = [], []
 
         # Precompute overlays once per step
         over_sign_day = self._apply_grid_overlay(self.sign_rgba_day, mode="day")
         over_sign_on  = self._apply_grid_overlay(self.sign_rgba_on,  mode="on")
 
-        for t_seed in self._transform_seeds:
+        for t_seed in seeds:
             over_day = self._compose_on_bg(self._transform_sign(over_sign_day, t_seed), self._place_seed)
             over_on  = self._compose_on_bg(self._transform_sign(over_sign_on,  t_seed), self._place_seed)
             imgs_over_day.append(over_day)
