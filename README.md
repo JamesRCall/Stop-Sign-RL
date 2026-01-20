@@ -199,6 +199,21 @@ Single-command server + training (from `train.sh`):
 bash train.sh --yolo-version 8 --yolo-weights ./weights/yolo8n.pt --start-detector-server
 ```
 
+Common single-machine training (no server):
+```bash
+bash train.sh --yolo-version 8 --yolo-weights ./weights/yolo8n.pt
+```
+
+Important `train.sh` knobs:
+- `--num-envs`, `--vec`: number of envs and vectorization mode; use `--vec dummy` with GPU YOLO.
+- `--n-steps`, `--batch`, `--total-steps`: PPO rollout size, batch size, and total training steps.
+- `--grid-cell`: patch grid size in pixels (2, 4, 8, 16, 32).
+- `--uv-threshold`: UV drop threshold for success.
+- `--lambda-area`, `--lambda-area-start/end/steps`: area penalty and optional ramp.
+- `--area-cap-frac`, `--area-cap-mode`: patch area cap and soft/hard behavior.
+- `--area-cap-start/end/steps`: cap curriculum from larger to smaller.
+- `--step-log-every`, `--step-log-keep`, `--step-log-500`: step metrics logging controls.
+
 ---
 
 ## Directory Structure
