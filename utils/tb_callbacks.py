@@ -250,20 +250,32 @@ class EpisodeMetricsCallback(BaseCallback):
 
 class StepMetricsCallback(BaseCallback):
     """
-    Logs step-level metrics every N steps to a lightweight ndjson file and TB scalars.
-    Intended for quick sanity checks without saving every frame.
+    Logs step-level metrics to a lightweight ndjson file and TB scalars.
+    Keeps a rolling window if keep_last_n > 0.
     """
 
-    def __init__(self, log_dir: str, every_n_steps: int = 1000, verbose: int = 0):
+    def __init__(
+        self,
+        log_dir: str,
+        every_n_steps: int = 1,
+        keep_last_n: int = 1000,
+        log_every_500: int = 500,
+        verbose: int = 0,
+    ):
         super().__init__(verbose)
         self.log_dir = os.path.abspath(log_dir)
         os.makedirs(self.log_dir, exist_ok=True)
         self.tb_dir = os.path.join(self.log_dir, "tb_step_metrics")
         os.makedirs(self.tb_dir, exist_ok=True)
         self.every_n_steps = max(int(every_n_steps), 1)
+        self.keep_last_n = max(int(keep_last_n), 0)
+        self.log_every_500 = max(int(log_every_500), 0)
         self.writer: SummaryWriter | None = None
         self._last_logged = 0
         self._ndjson_path = os.path.join(self.tb_dir, "step_metrics.ndjson")
+        self._ndjson_500_path = os.path.join(self.tb_dir, "step_metrics_500.ndjson")
+        self._last_logged_500 = 0
+        self._ring = []
 
     def _on_training_start(self) -> None:
         if self.writer is None:
@@ -309,25 +321,49 @@ class StepMetricsCallback(BaseCallback):
 
         if self.writer is not None:
             if row["after_conf"] is not None:
-                self.writer.add_scalar("step/after_conf", row["after_conf"], self.num_timesteps)
+                self.writer.add_scalar("step_range/after_conf", row["after_conf"], self.num_timesteps)
             if row["delta_conf"] is not None:
-                self.writer.add_scalar("step/delta_conf", row["delta_conf"], self.num_timesteps)
+                self.writer.add_scalar("step_range/delta_conf", row["delta_conf"], self.num_timesteps)
             if row["area_frac"] is not None:
-                self.writer.add_scalar("step/area_frac", row["area_frac"], self.num_timesteps)
+                self.writer.add_scalar("step_range/area_frac", row["area_frac"], self.num_timesteps)
             if row["drop_on"] is not None:
-                self.writer.add_scalar("step/drop_on", row["drop_on"], self.num_timesteps)
+                self.writer.add_scalar("step_range/drop_on", row["drop_on"], self.num_timesteps)
             if row["drop_on_smooth"] is not None:
-                self.writer.add_scalar("step/drop_on_smooth", row["drop_on_smooth"], self.num_timesteps)
+                self.writer.add_scalar("step_range/drop_on_smooth", row["drop_on_smooth"], self.num_timesteps)
             self.writer.flush()
 
         try:
             import json
-            with open(self._ndjson_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            if self.keep_last_n > 0:
+                self._ring.append(row)
+                if len(self._ring) > self.keep_last_n:
+                    self._ring = self._ring[-self.keep_last_n :]
+                with open(self._ndjson_path, "w", encoding="utf-8") as f:
+                    for r in self._ring:
+                        f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            else:
+                with open(self._ndjson_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
         except Exception:
             pass
 
         self._last_logged = int(self.num_timesteps)
+
+        if self.log_every_500 > 0 and (self.num_timesteps - self._last_logged_500) >= self.log_every_500:
+            if self.writer is not None:
+                if row["after_conf"] is not None:
+                    self.writer.add_scalar("step_500/after_conf", row["after_conf"], self.num_timesteps)
+                if row["delta_conf"] is not None:
+                    self.writer.add_scalar("step_500/delta_conf", row["delta_conf"], self.num_timesteps)
+                self.writer.flush()
+            try:
+                import json
+                with open(self._ndjson_500_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+            self._last_logged_500 = int(self.num_timesteps)
+
         return True
 
     def _on_training_end(self) -> None:

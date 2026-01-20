@@ -179,8 +179,12 @@ def parse_args():
 
     ap.add_argument("--save-freq-steps", type=int, default=0)
     ap.add_argument("--save-freq-updates", type=int, default=2)
-    ap.add_argument("--step-log-every", type=int, default=1000,
+    ap.add_argument("--step-log-every", type=int, default=1,
                     help="Log step metrics every N steps to TB/ndjson.")
+    ap.add_argument("--step-log-keep", type=int, default=1000,
+                    help="Keep last N step rows (0 = append forever).")
+    ap.add_argument("--step-log-500", type=int, default=500,
+                    help="Log confidence every N steps to a separate metric/log.")
     return ap.parse_args()
 
 
@@ -290,7 +294,13 @@ if __name__ == "__main__":
     tb_cb = TensorboardOverlayCallback(args.tb, tag_prefix="grid_uv", max_images=25, verbose=1)
     
     ep_cb = EpisodeMetricsCallback(args.tb, verbose=1)
-    step_cb = StepMetricsCallback(args.tb, every_n_steps=int(args.step_log_every), verbose=0)
+    step_cb = StepMetricsCallback(
+        args.tb,
+        every_n_steps=int(args.step_log_every),
+        keep_last_n=int(args.step_log_keep),
+        log_every_500=int(args.step_log_500),
+        verbose=0,
+    )
     
     saver = SaveImprovingOverlaysCallback(
         save_dir=args.overlays, threshold=0.0, mode="minimal",

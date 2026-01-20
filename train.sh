@@ -50,7 +50,9 @@ OVR_DIR="${OVR_DIR:-./_runs/overlays}"
 PORT="${PORT:-6006}"
 
 SAVE_FREQ_UPDATES="${SAVE_FREQ_UPDATES:-2}"
-STEP_LOG_EVERY="${STEP_LOG_EVERY:-1000}"
+STEP_LOG_EVERY="${STEP_LOG_EVERY:-1}"
+STEP_LOG_KEEP="${STEP_LOG_KEEP:-1000}"
+STEP_LOG_500="${STEP_LOG_500:-500}"
 PY_MAIN="${PY_MAIN:-train_single_stop_sign.py}"
 
 # Monitoring
@@ -93,6 +95,8 @@ Options:
   --batch N                   (default: $BATCH)
   --total-steps N             (default: $TOTAL_STEPS)
   --step-log-every N          (default: $STEP_LOG_EVERY)
+  --step-log-keep N           (default: $STEP_LOG_KEEP)
+  --step-log-500 N            (default: $STEP_LOG_500)
 
   --tb DIR                    (default: $TB_DIR)
   --ckpt DIR                  (default: $CKPT_DIR)
@@ -140,6 +144,8 @@ while [[ $# -gt 0 ]]; do
     --batch) BATCH="$2"; BATCH_SET=1; shift 2;;
     --total-steps) TOTAL_STEPS="$2"; shift 2;;
     --step-log-every) STEP_LOG_EVERY="$2"; shift 2;;
+    --step-log-keep) STEP_LOG_KEEP="$2"; shift 2;;
+    --step-log-500) STEP_LOG_500="$2"; shift 2;;
 
     --tb) TB_DIR="$2"; shift 2;;
     --ckpt) CKPT_DIR="$2"; shift 2;;
@@ -302,6 +308,8 @@ python "${PY_MAIN}" \
   --lambda-area-end "${LAMBDA_AREA_END}" \
   --lambda-area-steps "${LAMBDA_AREA_STEPS}" \
   --step-log-every "${STEP_LOG_EVERY}" \
+  --step-log-keep "${STEP_LOG_KEEP}" \
+  --step-log-500 "${STEP_LOG_500}" \
   --save-freq-updates "${SAVE_FREQ_UPDATES}" \
   --tb "${TB_DIR}" \
   --ckpt "${CKPT_DIR}" \
