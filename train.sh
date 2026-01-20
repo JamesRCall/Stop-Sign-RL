@@ -22,7 +22,8 @@ VEC="${VEC:-dummy}"                 # must be dummy for CUDA+YOLO in current arc
 
 EVAL_K="${EVAL_K:-3}"
 GRID_CELL="${GRID_CELL:-16}"
-LAMBDA_AREA="${LAMBDA_AREA:-0.3}"
+AREA_CAP_FRAC="${AREA_CAP_FRAC:-0.30}"
+AREA_CAP_PENALTY="${AREA_CAP_PENALTY:--0.20}"
 
 YOLO_VERSION="${YOLO_VERSION:-11}"
 YOLO_WEIGHTS="${YOLO_WEIGHTS:-}"
@@ -57,10 +58,8 @@ Options:
 
   --eval-k K                  (default: $EVAL_K)
   --grid-cell {2|4|8|16|32}           (default: $GRID_CELL)
-                             (note: StopSignGridEnv can derive max_cells from
-                              area_cap_frac * valid_total and will terminate
-                              with info["note"]="max_cells_reached" when hit)
-  --lambda-area L            (default: $LAMBDA_AREA)
+  --area-cap-frac F           (default: $AREA_CAP_FRAC)
+  --area-cap-penalty P        (default: $AREA_CAP_PENALTY)
 
   --yolo-version {8|11}        (default: $YOLO_VERSION)
   --yolo-weights PATH          (default: $YOLO_WEIGHTS)
@@ -88,7 +87,8 @@ while [[ $# -gt 0 ]]; do
 
     --eval-k) EVAL_K="$2"; shift 2;;
     --grid-cell) GRID_CELL="$2"; shift 2;;
-    --lambda-area) LAMBDA_AREA="$2"; shift 2;;
+    --area-cap-frac) AREA_CAP_FRAC="$2"; shift 2;;
+    --area-cap-penalty) AREA_CAP_PENALTY="$2"; shift 2;;
 
     --yolo-version) YOLO_VERSION="$2"; shift 2;;
     --yolo-weights) YOLO_WEIGHTS="$2"; shift 2;;
@@ -195,7 +195,8 @@ fi
 echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
 echo "        yolo-version=${YOLO_VERSION} yolo-weights=${YOLO_WEIGHTS:-<default>}"
-echo "        num-envs=${NUM_ENVS} vec=${VEC} eval_K=${EVAL_K} grid=${GRID_CELL} lambda_area=${LAMBDA_AREA}"
+echo "        num-envs=${NUM_ENVS} vec=${VEC} eval_K=${EVAL_K} grid=${GRID_CELL}"
+echo "        area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY}"
 echo "        n-steps=${N_STEPS} batch=${BATCH} total-steps=${TOTAL_STEPS}"
 echo "        tb=${TB_DIR} ckpt=${CKPT_DIR} overlays=${OVR_DIR}"
 echo ""
@@ -210,7 +211,8 @@ python "${PY_MAIN}" \
   --total-steps "${TOTAL_STEPS}" \
   --eval-K "${EVAL_K}" \
   --grid-cell "${GRID_CELL}" \
-  --lambda-area "${LAMBDA_AREA}" \
+  --area-cap-frac "${AREA_CAP_FRAC}" \
+  --area-cap-penalty "${AREA_CAP_PENALTY}" \
   --save-freq-updates "${SAVE_FREQ_UPDATES}" \
   --tb "${TB_DIR}" \
   --ckpt "${CKPT_DIR}" \

@@ -86,6 +86,8 @@ class StopSignGridEnv(gym.Env):
         lambda_area: float = 0.3,
         min_base_conf: float = 0.20,
         cell_cover_thresh: float = 0.60,
+        area_cap_frac: Optional[float] = None,
+        area_cap_penalty: float = -0.20,
 
 
         # YOLO
@@ -154,6 +156,8 @@ class StopSignGridEnv(gym.Env):
         self.lambda_area = float(lambda_area)
         self.min_base_conf = float(min_base_conf)
         self.info_image_every = int(info_image_every)
+        self.area_cap_frac = float(area_cap_frac) if area_cap_frac is not None else None
+        self.area_cap_penalty = float(area_cap_penalty)
 
 
         # Reward smoothing state (Option A)
@@ -285,6 +289,21 @@ class StopSignGridEnv(gym.Env):
 
         self._episode_cells[r, c] = True
 
+        area_frac = self._area_frac_selected()
+        if self.area_cap_frac is not None and area_frac >= self.area_cap_frac:
+            terminated = True
+            truncated = (self._step >= self.steps_per_episode)
+            obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
+            obs = np.array(obs_img, dtype=np.uint8)
+            info = {
+                "objective": "grid_uv",
+                "note": "area_cap_exceeded",
+                "selected_cells": int(self._episode_cells.sum()),
+                "total_area_mask_frac": float(area_frac),
+                "area_cap": float(self.area_cap_frac),
+            }
+            return obs, float(self.area_cap_penalty), bool(terminated), bool(truncated), info
+
         terminated = False
         max_cells_reached = False
         if self.max_cells is not None:
@@ -333,11 +352,8 @@ class StopSignGridEnv(gym.Env):
                 "drop_day": drop_day, "drop_on": drop_on, "drop_on_smooth": float(drop_on_s),
                 "note": "max_cells_reached" if max_cells_reached else "baseline_conf_too_low",
                 "min_base_conf": float(self.min_base_conf),
-                "lambda_area": float(self.lambda_area),
-                "total_area_mask_frac": area_frac,
-                "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else 0.0,
-                "uv_success": False,
-                "area_cap_exceeded": cap_exceeded,
+                "total_area_mask_frac": float(area_frac),
+                "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
             }
             return obs, float(reward), bool(terminated), bool(truncated), info
 
@@ -385,10 +401,8 @@ class StopSignGridEnv(gym.Env):
             "lambda_area": float(self.lambda_area),
             "base_conf": float(c0_on),
             "after_conf": float(c_on),
-            "total_area_mask_frac": area_frac,
-            "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else 0.0,
-            "uv_success": uv_success,
-            "area_cap_exceeded": cap_exceeded,
+            "total_area_mask_frac": float(area_frac),
+            "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
             "trace": {
                 "phase": "grid_uv",
                 "grid_cell_px": int(self.grid_cell_px),
