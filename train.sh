@@ -38,7 +38,7 @@ YOLO_WEIGHTS="${YOLO_WEIGHTS:-}"
 
 N_STEPS="${N_STEPS:-512}"
 BATCH="${BATCH:-512}"              # default to rollout size for num_envs=1
-TOTAL_STEPS="${TOTAL_STEPS:-400000}"
+TOTAL_STEPS="${TOTAL_STEPS:-800000}"
 
 TB_DIR="${TB_DIR:-./_runs/tb}"
 CKPT_DIR="${CKPT_DIR:-./_runs/checkpoints}"

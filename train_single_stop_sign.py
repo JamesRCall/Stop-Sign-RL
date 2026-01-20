@@ -149,7 +149,7 @@ def parse_args():
     ap.add_argument("--vec", choices=["dummy", "subproc"], default="subproc")
     ap.add_argument("--n-steps", type=int, default=256)
     ap.add_argument("--batch-size", type=int, default=1024)
-    ap.add_argument("--total-steps", type=int, default=400_000)
+    ap.add_argument("--total-steps", type=int, default=800_000)
 
     ap.add_argument("--episode-steps", type=int, default=7000)
     ap.add_argument("--eval-K", type=int, default=10)
