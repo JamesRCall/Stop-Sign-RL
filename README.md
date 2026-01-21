@@ -136,7 +136,10 @@ If you need to change rendering or physics:
 TensorBoard logs:
 
 ```bash
+# train_single_stop_sign.py
 tensorboard --logdir runs/tb --port 6006
+# train.sh (defaults)
+tensorboard --logdir _runs/tb --port 6006
 ```
 
 Callbacks log:
@@ -153,8 +156,10 @@ Episode metrics currently include:
 - `episode/uv_success_final`, `episode/area_cap_exceeded_final`
 
 Step metrics:
-- Rolling window of per-step rows in `runs/tb/tb_step_metrics/step_metrics.ndjson`
-- 500-step snapshots in `runs/tb/tb_step_metrics/step_metrics_500.ndjson`
+- Rolling window of per-step rows in
+  `runs/tb/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics.ndjson`
+- 500-step snapshots in
+  `runs/tb/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics_500.ndjson`
 
 ---
 
@@ -163,8 +168,9 @@ Step metrics:
 Generated files:
 - `runs/checkpoints/` PPO checkpoints.
 - `runs/overlays/` best overlays (PNG + JSON) and `traces.ndjson`.
-- `runs/tb/` TensorBoard event files.
+- `runs/tb/` TensorBoard event files (grouped under `grid_uv_yolo<ver>/<phase>`).
 - If you use `train.sh` defaults, outputs go to `_runs/` instead of `runs/`.
+  TensorBoard logs are grouped under `_runs/tb/grid_uv_yolo<ver>/<phase>`.
 
 Overlay saver:
 - `utils/save_callbacks.py` keeps the best N overlays and appends trace metadata.
@@ -222,7 +228,17 @@ Important `train.sh` knobs:
 - `--lambda-area`, `--lambda-area-start/end/steps`: area penalty and optional ramp.
 - `--area-cap-frac`, `--area-cap-mode`: patch area cap and soft/hard behavior.
 - `--area-cap-start/end/steps`: cap curriculum from larger to smaller.
+- `--obs-size`, `--obs-margin`, `--obs-include-mask`: observation crop and mask channel.
+- `--ent-coef`, `--ent-coef-start/end/steps`: entropy coefficient schedule.
 - `--step-log-every`, `--step-log-keep`, `--step-log-500`: step metrics logging controls.
+
+---
+
+## Commenting Guidelines
+
+- Keep comments sparse and focused on *why* a block exists or what it protects against.
+- Avoid restating obvious code; prefer naming and structure to make intent clear.
+- When behavior is non-obvious (curriculum logic, reward shaping), add a short note.
 
 ---
 
