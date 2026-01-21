@@ -393,21 +393,21 @@ class StopSignGridEnv(gym.Env):
             }
             return obs, float(reward), bool(terminated), bool(truncated), info
 
-        # 3) Reward using smoothed UV drop
+        # 3) Reward using raw UV drop (no smoothing for core objective)
         pen_day = max(0.0, drop_day - self.day_tolerance)
         area_frac = self._area_frac_selected()
-        drop_blend = 0.7 * drop_on_s + 0.3 * drop_on
+        drop_blend = float(drop_on)
         raw_core = (
             drop_blend
             - self.lambda_day * pen_day
             - self.lambda_area * area_frac
-            + self.lambda_iou * mean_iou
+            + self.lambda_iou * (1.0 - mean_iou)
             + self.lambda_misclass * misclass_rate
         )
 
         thr = self.uv_drop_threshold
-        shaping = 0.35 * math.tanh(3.0 * (drop_on_s - 0.5 * thr))
-        uv_success = self._is_episode_success(drop_on_s, mean_iou, misclass_rate, area_frac, thr)
+        shaping = 0.35 * math.tanh(3.0 * (drop_on - 0.5 * thr))
+        uv_success = self._is_episode_success(drop_on, mean_iou, misclass_rate, area_frac, thr)
         success_bonus = 0.2 if uv_success else 0.0
 
         raw_total = raw_core + shaping + success_bonus
