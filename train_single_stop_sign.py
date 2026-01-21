@@ -1,7 +1,7 @@
 """Train PPO on the stop-sign grid environment with optional curricula."""
 
 import os, glob, time, argparse
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from PIL import Image
 import torch
 import numpy as np
@@ -10,6 +10,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecTransposeImage
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 from envs.stop_sign_grid_env import StopSignGridEnv
 from utils.uv_paint import GREEN_GLOW  # single pair; swap here if you want another
@@ -97,6 +98,33 @@ def load_backgrounds(folder: str) -> List[Image.Image]:
     return imgs[:20]
 
 
+def build_solid_backgrounds(img_size: Tuple[int, int]) -> List[Image.Image]:
+    """
+    Build a small set of solid-color backgrounds for curriculum phases.
+
+    @param img_size: (W, H) image size.
+    @return: List of PIL images.
+    """
+    colors = [(200, 200, 200), (120, 120, 120), (30, 30, 30)]
+    W, H = int(img_size[0]), int(img_size[1])
+    return [Image.new("RGB", (W, H), c) for c in colors]
+
+
+def build_backgrounds(bg_mode: str, folder: str, img_size: Tuple[int, int]) -> List[Image.Image]:
+    """
+    Build backgrounds for training.
+
+    @param bg_mode: "dataset" or "solid".
+    @param folder: Background image directory.
+    @param img_size: (W, H) image size.
+    @return: List of PIL images.
+    """
+    mode = str(bg_mode or "dataset").lower().strip()
+    if mode == "solid":
+        return build_solid_backgrounds(img_size)
+    return load_backgrounds(folder)
+
+
 def find_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
     """
     Return the newest checkpoint path in a directory, or None.
@@ -116,7 +144,7 @@ def find_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
 def make_env_factory(
     stop_plain: Image.Image,
     stop_uv: Image.Image,
-    pole_rgba: Image.Image,
+    pole_rgba: Optional[Image.Image],
     backgrounds: List[Image.Image],
     steps_per_episode: int,
     eval_K: int,
@@ -130,13 +158,16 @@ def make_env_factory(
     area_cap_mode: str,
     yolo_wts: str,
     yolo_device: str,
+    obs_size: Tuple[int, int],
+    obs_margin: float,
+    obs_include_mask: bool,
 ):
     """
     Create a factory function for VecEnv construction.
 
     @param stop_plain: Base stop-sign image.
     @param stop_uv: UV variant of the stop sign.
-    @param pole_rgba: Pole image with alpha.
+    @param pole_rgba: Pole image with alpha (or None to disable).
     @param backgrounds: Background image list.
     @param steps_per_episode: Max steps per episode.
     @param eval_K: Number of transforms per evaluation.
@@ -150,6 +181,9 @@ def make_env_factory(
     @param area_cap_mode: "soft" or "hard" cap mode.
     @param yolo_wts: YOLO weights path.
     @param yolo_device: YOLO device spec.
+    @param obs_size: Cropped observation size.
+    @param obs_margin: Crop margin around sign bbox.
+    @param obs_include_mask: Include overlay mask channel.
     @return: Callable that builds a monitored env.
     """
     def _init():
@@ -162,6 +196,9 @@ def make_env_factory(
                 yolo_weights=yolo_wts,
                 yolo_device=yolo_device,
                 img_size=(640, 640),
+                obs_size=(int(obs_size[0]), int(obs_size[1])),
+                obs_margin=float(obs_margin),
+                obs_include_mask=bool(obs_include_mask),
 
                 steps_per_episode=steps_per_episode,
                 eval_K=eval_K,
@@ -204,6 +241,10 @@ def parse_args():
     ap.add_argument("--tb", default="./runs/tb")
     ap.add_argument("--ckpt", default="./runs/checkpoints")
     ap.add_argument("--overlays", default="./runs/overlays")
+    ap.add_argument("--bg-mode", choices=["dataset", "solid"], default="dataset",
+                    help="Background mode for single-phase training.")
+    ap.add_argument("--no-pole", action="store_true",
+                    help="Disable pole for single-phase training.")
 
     ap.add_argument("--num-envs", type=int, default=8)
     ap.add_argument("--vec", choices=["dummy", "subproc"], default="subproc")
@@ -224,6 +265,12 @@ def parse_args():
                     help="Reward penalty when area cap is exceeded.")
     ap.add_argument("--area-cap-mode", choices=["soft", "hard"], default="soft",
                     help="Soft applies a penalty when exceeded; hard terminates.")
+    ap.add_argument("--obs-size", type=int, default=224,
+                    help="Cropped observation size (square).")
+    ap.add_argument("--obs-margin", type=float, default=0.10,
+                    help="Crop margin around sign bbox (fraction of bbox size).")
+    ap.add_argument("--obs-include-mask", type=int, default=1,
+                    help="Include overlay mask channel in observations (1/0).")
     ap.add_argument("--area-cap-start", type=float, default=None,
                     help="Start value for area cap curriculum; overrides --area-cap-frac when set.")
     ap.add_argument("--area-cap-end", type=float, default=None,
@@ -236,6 +283,21 @@ def parse_args():
                     help="End value for lambda-area curriculum.")
     ap.add_argument("--lambda-area-steps", type=int, default=0,
                     help="Steps over which to ramp lambda-area; <=0 uses total-steps.")
+
+    ap.add_argument("--multiphase", action="store_true",
+                    help="Enable 3-phase curriculum (solid/no pole -> dataset + pole).")
+    ap.add_argument("--phase1-steps", type=int, default=0,
+                    help="Phase 1 steps (0 = auto split).")
+    ap.add_argument("--phase2-steps", type=int, default=0,
+                    help="Phase 2 steps (0 = auto split).")
+    ap.add_argument("--phase3-steps", type=int, default=0,
+                    help="Phase 3 steps (0 = auto split).")
+    ap.add_argument("--phase1-eval-K", type=int, default=None,
+                    help="Phase 1 eval_K override (default 1).")
+    ap.add_argument("--phase2-eval-K", type=int, default=None,
+                    help="Phase 2 eval_K override (default 3).")
+    ap.add_argument("--phase3-eval-K", type=int, default=None,
+                    help="Phase 3 eval_K override (default 5 or --eval-K if smaller).")
 
     ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint in --ckpt")
 
@@ -293,10 +355,14 @@ if __name__ == "__main__":
 
     stop_plain = Image.open(STOP_PLAIN).convert("RGBA")
     stop_uv    = Image.open(STOP_UV).convert("RGBA") if os.path.exists(STOP_UV) else stop_plain.copy()
-    pole_rgba  = Image.open(POLE_PNG).convert("RGBA")
-    bgs        = load_backgrounds(BG_DIR)
+    pole_rgba  = Image.open(POLE_PNG).convert("RGBA") if os.path.exists(POLE_PNG) else None
 
-    def build_env():
+    img_size = (640, 640)
+
+    def build_env(eval_K: int, bg_mode: str, use_pole: bool):
+        backgrounds = build_backgrounds(bg_mode, BG_DIR, img_size)
+        pole_use = pole_rgba if use_pole else None
+
         use_cap_ramp = (args.area_cap_start is not None) or (args.area_cap_end is not None)
         if use_cap_ramp:
             start = args.area_cap_start if args.area_cap_start is not None else float(args.area_cap_frac)
@@ -312,9 +378,9 @@ if __name__ == "__main__":
 
         fns = [
             make_env_factory(
-                stop_plain, stop_uv, pole_rgba, bgs,
+                stop_plain, stop_uv, pole_use, backgrounds,
                 steps_per_episode=args.episode_steps,
-                eval_K=args.eval_K,
+                eval_K=eval_K,
                 grid_cell_px=args.grid_cell,
                 uv_drop_threshold=args.uv_threshold,
                 lambda_area=lambda_area,
@@ -325,50 +391,45 @@ if __name__ == "__main__":
                 area_cap_mode=str(args.area_cap_mode),
                 yolo_wts=yolo_weights,
                 yolo_device=args.detector_device,
+                obs_size=(int(args.obs_size), int(args.obs_size)),
+                obs_margin=float(args.obs_margin),
+                obs_include_mask=bool(int(args.obs_include_mask)),
             ) for _ in range(args.num_envs)
         ]
         v = SubprocVecEnv(fns) if args.vec == "subproc" else DummyVecEnv(fns)
         return VecTransposeImage(v)
 
-    env = build_env()
+    def resolve_phase_steps(total: int) -> Tuple[int, int, int]:
+        p1 = int(args.phase1_steps) if int(args.phase1_steps) > 0 else int(0.4 * total)
+        p2 = int(args.phase2_steps) if int(args.phase2_steps) > 0 else int(0.3 * total)
+        p3 = int(args.phase3_steps) if int(args.phase3_steps) > 0 else int(total - p1 - p2)
+        if p3 < 0:
+            p3 = 0
+        if (p1 + p2 + p3) <= 0:
+            p1, p2, p3 = int(total), 0, 0
+        return p1, p2, p3
+
+    total_steps = int(args.total_steps)
+    if args.multiphase:
+        total_steps = sum(resolve_phase_steps(total_steps))
+
+    run_tag = f"grid_uv_yolo{args.yolo_version}"
+    tb_root = os.path.join(args.tb, run_tag)
 
     # PPO
-    os.makedirs(args.tb, exist_ok=True)
+    os.makedirs(tb_root, exist_ok=True)
     os.makedirs(args.ckpt, exist_ok=True)
     os.makedirs(args.overlays, exist_ok=True)
 
-    model = PPO(
-        "CnnPolicy",
-        env,
-        verbose=2,
-        n_steps=int(args.n_steps),
-        batch_size=int(args.batch_size),
-        learning_rate=2.0e-4,
-        gamma=0.995,
-        gae_lambda=0.95,
-        ent_coef=0.005,
-        vf_coef=0.5,
-        clip_range=0.2,
-        tensorboard_log=args.tb,
-        device="auto",
-    )
-
-    # resume if asked
-    if args.resume:
-        ckpt = find_latest_checkpoint(args.ckpt)
-        if ckpt:
-            print(f" Resuming from: {ckpt}")
-            model = PPO.load(ckpt, env=env, device="auto")
-            model.n_steps = int(args.n_steps)
-            model.batch_size = int(args.batch_size)
+    model = None
 
     # callbacks
     # Save top minimal-area successes, keep top-1000, log to TB
-    tb_cb = TensorboardOverlayCallback(args.tb, tag_prefix="grid_uv", max_images=25, verbose=1)
+    tb_cb = TensorboardOverlayCallback(tb_root, tag_prefix=run_tag, max_images=25, verbose=1)
     
-    ep_cb = EpisodeMetricsCallback(args.tb, verbose=1)
+    ep_cb = EpisodeMetricsCallback(tb_root, verbose=1)
     step_cb = StepMetricsCallback(
-        args.tb,
+        tb_root,
         every_n_steps=int(args.step_log_every),
         keep_last_n=int(args.step_log_keep),
         log_every_500=int(args.step_log_500),
@@ -387,27 +448,162 @@ if __name__ == "__main__":
         SAVE_FREQ = max(int(args.n_steps) * int(args.num_envs) * max(args.save_freq_updates, 1), 1)
     ckpt_cb = CheckpointCallback(save_freq=SAVE_FREQ, save_path=args.ckpt, name_prefix="grid")
 
-    progress = ProgressETACallback(total_timesteps=int(args.total_steps), log_every_sec=15, verbose=1)
+    progress = ProgressETACallback(total_timesteps=int(total_steps), log_every_sec=15, verbose=1)
 
     ramp_callbacks = []
     if (args.area_cap_start is not None) or (args.area_cap_end is not None):
         cap_start = float(args.area_cap_start if args.area_cap_start is not None else args.area_cap_frac)
         cap_end = float(args.area_cap_end if args.area_cap_end is not None else args.area_cap_frac)
-        cap_steps = int(args.area_cap_steps) if int(args.area_cap_steps) > 0 else int(args.total_steps)
+        cap_steps = int(args.area_cap_steps) if int(args.area_cap_steps) > 0 else int(total_steps)
         ramp_callbacks.append(LinearRampCallback("set_area_cap_frac", cap_start, cap_end, cap_steps, verbose=0))
 
     if (args.lambda_area_start is not None) or (args.lambda_area_end is not None):
         la_start = float(args.lambda_area_start if args.lambda_area_start is not None else args.lambda_area)
         la_end = float(args.lambda_area_end if args.lambda_area_end is not None else args.lambda_area)
-        la_steps = int(args.lambda_area_steps) if int(args.lambda_area_steps) > 0 else int(args.total_steps)
+        la_steps = int(args.lambda_area_steps) if int(args.lambda_area_steps) > 0 else int(total_steps)
         ramp_callbacks.append(LinearRampCallback("set_lambda_area", la_start, la_end, la_steps, verbose=0))
 
-    model.learn(
-        total_timesteps=int(args.total_steps),
-        callback=CallbackList([tb_cb, ep_cb, step_cb, saver, ckpt_cb, progress] + ramp_callbacks),
-        tb_log_name="grid_uv",
-    )
+    callback_list = CallbackList([tb_cb, ep_cb, step_cb, saver, ckpt_cb, progress] + ramp_callbacks)
+
+    if not args.multiphase:
+        phase_tag = "single"
+        phase_log_dir = os.path.join(tb_root, phase_tag)
+        tb_cb.set_log_dir(phase_log_dir, tag_prefix=f"{run_tag}/{phase_tag}")
+        ep_cb.set_log_dir(phase_log_dir)
+        step_cb.set_log_dir(phase_log_dir)
+
+        env = build_env(eval_K=int(args.eval_K), bg_mode=args.bg_mode, use_pole=not args.no_pole)
+        policy_kwargs = dict(
+            features_extractor_class=StopSignFeatureExtractor,
+            features_extractor_kwargs=dict(features_dim=512),
+            net_arch=[dict(pi=[256, 256], vf=[256, 256])],
+        )
+        model = PPO(
+            "CnnPolicy",
+            env,
+            verbose=2,
+            n_steps=int(args.n_steps),
+            batch_size=int(args.batch_size),
+            learning_rate=2.0e-4,
+            gamma=0.995,
+            gae_lambda=0.95,
+            ent_coef=0.005,
+            vf_coef=0.5,
+            clip_range=0.2,
+            tensorboard_log=tb_root,
+            device="auto",
+            policy_kwargs=policy_kwargs,
+        )
+
+        # resume if asked
+        if args.resume:
+            ckpt = find_latest_checkpoint(args.ckpt)
+            if ckpt:
+                print(f" Resuming from: {ckpt}")
+                model = PPO.load(ckpt, env=env, device="auto")
+                model.n_steps = int(args.n_steps)
+                model.batch_size = int(args.batch_size)
+
+        model.learn(
+            total_timesteps=int(total_steps),
+            callback=callback_list,
+            tb_log_name=f"{run_tag}_{phase_tag}",
+        )
+    else:
+        p1, p2, p3 = resolve_phase_steps(int(args.total_steps))
+        phase1_eval = int(args.phase1_eval_K) if args.phase1_eval_K is not None else 1
+        phase2_eval = int(args.phase2_eval_K) if args.phase2_eval_K is not None else 3
+        phase3_eval = int(args.phase3_eval_K) if args.phase3_eval_K is not None else min(5, int(args.eval_K))
+        phases = [
+            {"name": "phase1_easy", "steps": p1, "eval_K": phase1_eval, "bg_mode": "solid", "use_pole": False},
+            {"name": "phase2_medium", "steps": p2, "eval_K": phase2_eval, "bg_mode": "dataset", "use_pole": True},
+            {"name": "phase3_full", "steps": p3, "eval_K": phase3_eval, "bg_mode": "dataset", "use_pole": True},
+        ]
+
+        for i, ph in enumerate(phases):
+            if int(ph["steps"]) <= 0:
+                continue
+            print(f"[CURRICULUM] {ph['name']} steps={ph['steps']} eval_K={ph['eval_K']} bg={ph['bg_mode']} pole={ph['use_pole']}")
+            phase_log_dir = os.path.join(tb_root, ph["name"])
+            tb_cb.set_log_dir(phase_log_dir, tag_prefix=f"{run_tag}/{ph['name']}")
+            ep_cb.set_log_dir(phase_log_dir)
+            step_cb.set_log_dir(phase_log_dir)
+
+            env = build_env(eval_K=int(ph["eval_K"]), bg_mode=ph["bg_mode"], use_pole=bool(ph["use_pole"]))
+
+            if model is None:
+                policy_kwargs = dict(
+                    features_extractor_class=StopSignFeatureExtractor,
+                    features_extractor_kwargs=dict(features_dim=512),
+                    net_arch=[dict(pi=[256, 256], vf=[256, 256])],
+                )
+                model = PPO(
+                    "CnnPolicy",
+                    env,
+                    verbose=2,
+                    n_steps=int(args.n_steps),
+                    batch_size=int(args.batch_size),
+                    learning_rate=2.0e-4,
+                    gamma=0.995,
+                    gae_lambda=0.95,
+                    ent_coef=0.005,
+                    vf_coef=0.5,
+                    clip_range=0.2,
+                    tensorboard_log=tb_root,
+                    device="auto",
+                    policy_kwargs=policy_kwargs,
+                )
+
+                if args.resume:
+                    ckpt = find_latest_checkpoint(args.ckpt)
+                    if ckpt:
+                        print(f" Resuming from: {ckpt}")
+                        model = PPO.load(ckpt, env=env, device="auto")
+                        model.n_steps = int(args.n_steps)
+                        model.batch_size = int(args.batch_size)
+            else:
+                model.set_env(env)
+
+            model._total_timesteps = int(total_steps)
+            model.learn(
+                total_timesteps=int(ph["steps"]),
+                reset_num_timesteps=False,
+                callback=callback_list,
+                tb_log_name=f"{run_tag}_{ph['name']}",
+            )
 
     final = os.path.join(args.ckpt, "ppo_grid_uv_final")
     model.save(final)
     print(f" Saved final model to {final}")
+# ----------------- custom CNN extractor -----------------
+class StopSignFeatureExtractor(BaseFeaturesExtractor):
+    """
+    Lightweight CNN for sign-focused crops with optional mask channel.
+    """
+
+    def __init__(self, observation_space, features_dim: int = 512):
+        super().__init__(observation_space, features_dim)
+        n_input_channels = int(observation_space.shape[0])
+        self.cnn = torch.nn.Sequential(
+            torch.nn.Conv2d(n_input_channels, 32, kernel_size=5, stride=2, padding=2),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+            torch.nn.ReLU(),
+        )
+
+        with torch.no_grad():
+            sample = torch.zeros((1, *observation_space.shape), dtype=torch.float32)
+            n_flatten = int(self.cnn(sample).view(1, -1).shape[1])
+
+        self.linear = torch.nn.Sequential(
+            torch.nn.Flatten(),
+            torch.nn.Linear(n_flatten, features_dim),
+            torch.nn.ReLU(),
+        )
+
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        return self.linear(self.cnn(observations))

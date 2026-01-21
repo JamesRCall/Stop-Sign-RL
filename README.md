@@ -96,9 +96,14 @@ From `train_single_stop_sign.py`:
 - `--area-cap-penalty` reward penalty when cap would be exceeded
 - `--area-cap-mode` (`soft` or `hard`)
 - `--area-cap-start`, `--area-cap-end`, `--area-cap-steps` (curriculum)
+- `--multiphase` enable 3-phase curriculum (solid/no pole -> dataset + pole)
+- `--phase1-steps`, `--phase2-steps`, `--phase3-steps` (phase lengths; 0 = auto split)
+- `--phase1-eval-K`, `--phase2-eval-K`, `--phase3-eval-K` (per-phase eval_K overrides)
+- `--bg-mode` (`dataset` or `solid`) and `--no-pole` for single-phase
+- `--obs-size`, `--obs-margin`, `--obs-include-mask` (cropped observation + mask channel)
 - `--detector-device` (e.g., `cpu`, `cuda`, or `auto`)
 - `--step-log-every`, `--step-log-keep`, `--step-log-500` (step logging control)
-- `--ckpt`, `--overlays`, `--tb` output paths
+- `--ckpt`, `--overlays`, `--tb` output paths (TB logs grouped under `grid_uv_yolo<ver>`)
 - `--save-freq-steps` or `--save-freq-updates` checkpoint cadence
 
 ---
@@ -109,8 +114,11 @@ The environment is implemented in `envs/stop_sign_grid_env.py`.
 
 Highlights:
 - Discrete action space over valid grid cells inside the sign octagon.
-- UV-on reward uses smoothed UV drop (`drop_on_smooth`) to reduce noise and is
-  computed as the day baseline confidence minus UV-on overlay confidence.
+- UV-on reward uses raw UV drop (`drop_on`) computed as the day baseline
+  confidence minus UV-on overlay confidence.
+- Observations are cropped around the sign with an optional overlay-mask channel
+  (controlled by `--obs-*` flags).
+- Training uses a lightweight custom CNN extractor tuned for sign crops.
 - Area cap supports soft (penalty) or hard (terminate) modes.
 - Minimum UV alpha (`uv_min_alpha`) ensures patches are visible under UV even with
   very low paint alpha.

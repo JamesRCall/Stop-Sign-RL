@@ -21,7 +21,7 @@ class StopSignGridEnv(gym.Env):
 
     Per step:
       - Add 1 new grid cell (grid_cell_px square) to a running episode mask.
-      - Duplicate cells are disallowed: remap to a free cell.
+      - Duplicate cells are disallowed: action is remapped to a free cell deterministically.
       - Render three matched variants on the same background/pole/placement/transforms:
           0) Plain (no overlay) baseline for day and UV-on
           1) Daylight overlay (pre-activation color/alpha)
@@ -36,10 +36,11 @@ class StopSignGridEnv(gym.Env):
       - Episode terminates early when success criteria are met (drop + misclass/IoU).
 
     Observation:
-      RGB image of the *daylight* composite for the first transform (H,W,3) uint8.
+      Cropped RGB image around the sign (daylight composite) with optional
+      overlay-mask channel (H,W,3 or H,W,4) uint8.
 
     Reward (per step, normalized):
-      Let raw_core = blend(drop_on_s, drop_on) - lambda_day * max(0, drop_day - day_tolerance)
+      Let raw_core = drop_on - lambda_day * max(0, drop_day - day_tolerance)
                               - lambda_area * area_frac.
       Add a smooth shaping bonus as drop_on approaches threshold, plus a small
       success bonus once success criteria are met, then squash:
@@ -98,6 +99,13 @@ class StopSignGridEnv(gym.Env):
         conf_thresh: float = 0.10,
         iou_thresh: float = 0.45,
         info_image_every: int = 50,
+        diag_area_thresh: float = 0.80,
+        diag_conf_thresh: float = 0.70,
+
+        # Observation crop
+        obs_size: Tuple[int, int] = (224, 224),
+        obs_margin: float = 0.10,
+        obs_include_mask: bool = True,
 
         seed: Optional[int] = None,
     ):
@@ -158,6 +166,11 @@ class StopSignGridEnv(gym.Env):
         self.uv_min_alpha = float(uv_min_alpha)
         self.min_base_conf = float(min_base_conf)
         self.info_image_every = int(info_image_every)
+        self.diag_area_thresh = float(diag_area_thresh)
+        self.diag_conf_thresh = float(diag_conf_thresh)
+        self.obs_size = (int(obs_size[0]), int(obs_size[1]))
+        self.obs_margin = float(obs_margin)
+        self.obs_include_mask = bool(obs_include_mask)
         self.area_cap_penalty = float(area_cap_penalty)
         self.area_cap_mode = str(area_cap_mode).lower().strip()
         if self.area_cap_mode not in ("soft", "hard"):
@@ -182,9 +195,10 @@ class StopSignGridEnv(gym.Env):
 
         # action/obs spaces
         self.action_space = spaces.Discrete(self._n_valid)
-        H, W = self.img_size[1], self.img_size[0]
+        H, W = self.obs_size[1], self.obs_size[0]
+        C = 4 if self.obs_include_mask else 3
         self.observation_space = spaces.Box(
-            low=0, high=255, shape=(H, W, 3), dtype=np.uint8
+            low=0, high=255, shape=(H, W, C), dtype=np.uint8
         )
 
         # RNG & episodic state
@@ -197,6 +211,7 @@ class StopSignGridEnv(gym.Env):
         self._baseline_c0_day_list: List[float] = []
         self._baseline_c0_on_list: List[float] = []
         self._last_drop_on_s = 0.0
+        self._diag_saved = False
 
     # ----------------------------- grid build --------------------------------
 
@@ -242,7 +257,7 @@ class StopSignGridEnv(gym.Env):
             int(self.rng.integers(0, 2**31 - 1)) for _ in range(self.eval_K_max)
         ]
 
-        obs = self._render_variant(kind="day", use_overlay=False, transform_seed=self._transform_seeds[0])
+        obs = self._render_observation(kind="day", use_overlay=False, transform_seed=self._transform_seeds[0])
 
         # Cache plain baseline confidences (same throughout episode)
         self._baseline_c0_day_list, self._baseline_c0_on_list = self._eval_plain_over_K(
@@ -250,6 +265,7 @@ class StopSignGridEnv(gym.Env):
         )
 
         self._last_drop_on_s = 0.0
+        self._diag_saved = False
 
         return np.array(obs, dtype=np.uint8), {}
 
@@ -261,35 +277,29 @@ class StopSignGridEnv(gym.Env):
         # 1) Action is an index into valid cells (octagon-aware)
         idx = int(action)
         idx = max(0, min(idx, self._n_valid - 1))
-        r, c = self._valid_coords[idx]
-        r, c = int(r), int(c)
+        free_mask = self._valid_cells & (~self._episode_cells)
+        coords = np.argwhere(free_mask)
+        if coords.size == 0:
+            # no free cells left
+            terminated = True
+            truncated = (self._step >= self.steps_per_episode)
 
-        # Enforce non-duplicate: if already used, sample a random unused valid cell
-        if self._episode_cells[r, c]:
-            free_mask = self._valid_cells & (~self._episode_cells)
-            coords = np.argwhere(free_mask)
-            if coords.size == 0:
-                # no free cells left
-                terminated = True
-                truncated = (self._step >= self.steps_per_episode)
+            obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
+            area_frac = self._area_frac_selected()
+            cap_exceeded = self.area_cap_frac is not None and area_frac > self.area_cap_frac
+            info = {
+                "objective": "grid_uv",
+                "note": "no_free_cells",
+                "lambda_area": float(self.lambda_area),
+                "total_area_mask_frac": area_frac,
+                "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else 0.0,
+                "uv_success": False,
+                "area_cap_exceeded": cap_exceeded,
+            }
+            return obs, 0.0, bool(terminated), bool(truncated), info
 
-                obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
-                obs = np.array(obs_img, dtype=np.uint8)
-                area_frac = self._area_frac_selected()
-                cap_exceeded = self.area_cap_frac is not None and area_frac > self.area_cap_frac
-                info = {
-                    "objective": "grid_uv",
-                    "note": "no_free_cells",
-                    "lambda_area": float(self.lambda_area),
-                    "total_area_mask_frac": area_frac,
-                    "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else 0.0,
-                    "uv_success": False,
-                    "area_cap_exceeded": cap_exceeded,
-                }
-                return obs, 0.0, bool(terminated), bool(truncated), info
-
-            pick = coords[int(self.rng.integers(0, coords.shape[0]))]
-            r, c = int(pick[0]), int(pick[1])
+        pick = coords[idx % coords.shape[0]]
+        r, c = int(pick[0]), int(pick[1])
 
         selected_cells = int(self._episode_cells.sum())
         valid_total = int(self._valid_cells.sum())
@@ -298,8 +308,7 @@ class StopSignGridEnv(gym.Env):
             if next_area_frac > self.area_cap_frac:
                 terminated = True
                 truncated = (self._step >= self.steps_per_episode)
-                obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
-                obs = np.array(obs_img, dtype=np.uint8)
+                obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
                 area_frac = float(selected_cells) / float(valid_total)
                 info = {
                     "objective": "grid_uv",
@@ -332,6 +341,9 @@ class StopSignGridEnv(gym.Env):
         c_on = overlay_metrics["c_on"]
         mean_iou = overlay_metrics["mean_iou"]
         misclass_rate = overlay_metrics["misclass_rate"]
+        mean_target_conf = overlay_metrics.get("mean_target_conf", 0.0)
+        mean_top_conf = overlay_metrics.get("mean_top_conf", 0.0)
+        top_class_counts = overlay_metrics.get("top_class_counts", {})
 
         c0_day = self._mean_over_K(self._baseline_c0_day_list, eval_K)
         c0_on = self._mean_over_K(self._baseline_c0_on_list, eval_K)
@@ -351,8 +363,7 @@ class StopSignGridEnv(gym.Env):
             # keep termination from max_cells if you want; I'm leaving it as-is:
             truncated = (self._step >= self.steps_per_episode)
 
-            obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
-            obs = np.array(obs_img, dtype=np.uint8)
+            obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
             info = {
                 "objective": "grid_uv",
                 "c0_day": c0_day, "c_day": c_day,
@@ -402,9 +413,14 @@ class StopSignGridEnv(gym.Env):
         truncated = (self._step >= self.steps_per_episode)
 
         # 4) Observation and preview
-        obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
-        obs = np.array(obs_img, dtype=np.uint8)
+        obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
         preview_on = self._render_variant(kind="on", use_overlay=True, transform_seed=self._transform_seeds[0])
+
+        target_id = getattr(self.det, "target_id", None)
+        target_name = None
+        id_to_name = getattr(self.det, "id_to_name", None)
+        if target_id is not None and isinstance(id_to_name, dict):
+            target_name = id_to_name.get(int(target_id))
 
         info = {
             "objective": "grid_uv",
@@ -416,6 +432,11 @@ class StopSignGridEnv(gym.Env):
             "reward": float(reward),
             "mean_iou": float(mean_iou),
             "misclass_rate": float(misclass_rate),
+            "mean_target_conf": float(mean_target_conf),
+            "mean_top_conf": float(mean_top_conf),
+            "top_class_counts": dict(top_class_counts),
+            "target_id": int(target_id) if target_id is not None else None,
+            "target_name": str(target_name) if target_name is not None else None,
             "selected_cells": int(self._episode_cells.sum()),
             "grid_cell_px": int(self.grid_cell_px),
             "eval_K_used": int(eval_K),
@@ -443,12 +464,24 @@ class StopSignGridEnv(gym.Env):
         if max_cells_reached:
             info["note"] = "max_cells_reached"
 
+        diagnostic = (
+            (not self._diag_saved)
+            and (area_frac >= self.diag_area_thresh)
+            and (c_on >= self.diag_conf_thresh)
+        )
+        if diagnostic:
+            self._diag_saved = True
+            info["diagnostic"] = True
+            info["diagnostic_reason"] = "high_coverage_high_conf"
+            info["diagnostic_area_thresh"] = float(self.diag_area_thresh)
+            info["diagnostic_conf_thresh"] = float(self.diag_conf_thresh)
+
         # Always attach the final image if we succeeded (hit threshold), so it can be saved reliably.
         if terminated and uv_success:
             info["composited_pil"] = preview_on
             info["overlay_pil"] = self._render_overlay_pattern(mode="on")
         # Otherwise only attach occasionally to reduce overhead
-        elif (self._step % self.info_image_every) == 0:
+        elif diagnostic or (self._step % self.info_image_every) == 0:
             info["composited_pil"] = preview_on
             info["overlay_pil"] = self._render_overlay_pattern(mode="on")
 
@@ -536,15 +569,65 @@ class StopSignGridEnv(gym.Env):
             and (not self._episode_cells[r, c])
         )
 
-    def _render_variant(self, kind: str, use_overlay: bool, transform_seed: int) -> Image.Image:
+    def _render_variant(
+        self,
+        kind: str,
+        use_overlay: bool,
+        transform_seed: int,
+        return_meta: bool = False,
+    ):
         assert kind in ("day", "on")
         sign_src = self.sign_rgba_day if kind == "day" else self.sign_rgba_on
         sign = sign_src if not use_overlay else self._apply_grid_overlay(
             sign_src, mode=("day" if kind == "day" else "on")
         )
         sign_t = self._transform_sign(sign, transform_seed)
-        img = self._compose_on_bg(sign_t, self._place_seed)
-        return img
+        if return_meta:
+            return self._compose_on_bg(sign_t, self._place_seed, return_meta=True)
+        return self._compose_on_bg(sign_t, self._place_seed)
+
+    def _crop_observation(self, img: Image.Image, sign_bbox_bg: Tuple[float, float, float, float], resample):
+        W, H = img.size
+        x1, y1, x2, y2 = [float(v) for v in sign_bbox_bg]
+        if x2 <= x1 or y2 <= y1:
+            crop = img
+        else:
+            pad = int(round(max(x2 - x1, y2 - y1) * self.obs_margin))
+            cx1 = max(0, int(math.floor(x1 - pad)))
+            cy1 = max(0, int(math.floor(y1 - pad)))
+            cx2 = min(W, int(math.ceil(x2 + pad)))
+            cy2 = min(H, int(math.ceil(y2 + pad)))
+            if cx2 <= cx1 or cy2 <= cy1:
+                crop = img
+            else:
+                crop = img.crop((cx1, cy1, cx2, cy2))
+        if crop.size != self.obs_size:
+            crop = crop.resize(self.obs_size, resample=resample)
+        return crop
+
+    def _render_observation(self, kind: str, use_overlay: bool, transform_seed: int) -> np.ndarray:
+        img, meta = self._render_variant(kind=kind, use_overlay=use_overlay, transform_seed=transform_seed, return_meta=True)
+        sign_bbox_bg = meta.get("sign_bbox_bg", (0, 0, img.size[0], img.size[1]))
+        crop = self._crop_observation(img, sign_bbox_bg, resample=Image.BILINEAR)
+
+        if not self.obs_include_mask:
+            return np.array(crop, dtype=np.uint8)
+
+        # Build overlay mask aligned to the sign placement.
+        overlay = self._render_overlay_pattern(mode="on")
+        overlay_t = self._transform_sign(overlay, transform_seed)
+        x1, y1, x2, y2 = [float(v) for v in sign_bbox_bg]
+        mw = max(1, int(round(x2 - x1)))
+        mh = max(1, int(round(y2 - y1)))
+        overlay_t = overlay_t.resize((mw, mh), resample=Image.NEAREST)
+        mask = Image.new("L", self.img_size, 0)
+        alpha = overlay_t.split()[-1]
+        mask.paste(alpha, (int(round(x1)), int(round(y1))))
+        mask_crop = self._crop_observation(mask, sign_bbox_bg, resample=Image.NEAREST)
+
+        rgb = np.array(crop, dtype=np.uint8)
+        m = np.array(mask_crop, dtype=np.uint8)
+        return np.dstack([rgb, m])
 
     def set_area_cap_frac(self, value: Optional[float]) -> None:
         """
@@ -608,7 +691,7 @@ class StopSignGridEnv(gym.Env):
         mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
         return mean(c0_day_list), mean(c_day_list), mean(c0_on_list), mean(c_on_list)
 
-    def _eval_overlay_over_K(self, seeds: List[int]) -> Dict[str, float]:
+    def _eval_overlay_over_K(self, seeds: List[int]) -> Dict[str, Any]:
         imgs_over_day, imgs_over_on = [], []
 
         # Precompute overlays once per step
@@ -627,6 +710,9 @@ class StopSignGridEnv(gym.Env):
         det_on = self.det.infer_detections_batch(imgs_over_on)
         iou_vals = []
         misclass_vals = []
+        target_conf_vals = []
+        top_conf_vals = []
+        top_class_counts: Dict[int, int] = {}
         for det in det_on:
             target_conf = float(det.get("target_conf", 0.0))
             top_conf = float(det.get("top_conf", 0.0))
@@ -635,6 +721,11 @@ class StopSignGridEnv(gym.Env):
             top_box = det.get("top_box", None)
             misclass = (top_class is not None and top_class != self.det.target_id and top_conf > 0.0)
             misclass_vals.append(1.0 if misclass else 0.0)
+            target_conf_vals.append(target_conf)
+            top_conf_vals.append(top_conf)
+            if top_class is not None:
+                cls = int(top_class)
+                top_class_counts[cls] = top_class_counts.get(cls, 0) + 1
 
             iou = 0.0
             if target_box is not None and top_box is not None:
@@ -647,6 +738,9 @@ class StopSignGridEnv(gym.Env):
             "c_on": mean(c_on_list),
             "mean_iou": mean(iou_vals),
             "misclass_rate": mean(misclass_vals),
+            "mean_target_conf": mean(target_conf_vals),
+            "mean_top_conf": mean(top_conf_vals),
+            "top_class_counts": top_class_counts,
         }
 
     def _is_episode_success(
@@ -760,10 +854,27 @@ class StopSignGridEnv(gym.Env):
 
         return Image.merge("RGBA", (*rgb.split(), a))
 
-    def _compose_on_bg(self, sign_rgba_t: Image.Image, place_seed: int) -> Image.Image:
-        group = self._compose_sign_and_pole(sign_rgba_t)
-        img, _ = self._place_group_on_background(group, self._bg_rgb, seed=place_seed)
-        return img
+    def _compose_on_bg(self, sign_rgba_t: Image.Image, place_seed: int, return_meta: bool = False):
+        if return_meta:
+            group, gmeta = self._compose_sign_and_pole(sign_rgba_t, return_meta=True)
+        else:
+            group, gmeta = self._compose_sign_and_pole(sign_rgba_t, return_meta=False), None
+        img, place = self._place_group_on_background(group, self._bg_rgb, seed=place_seed)
+        if not return_meta:
+            return img
+
+        sign_bbox = gmeta.get("sign_bbox", (0, 0, sign_rgba_t.width, sign_rgba_t.height))
+        sx1, sy1, sx2, sy2 = [float(v) for v in sign_bbox]
+        scale = float(place.get("scale", 1.0))
+        x = float(place.get("x", 0.0))
+        y = float(place.get("y", 0.0))
+        sign_bbox_bg = (x + scale * sx1, y + scale * sy1, x + scale * sx2, y + scale * sy2)
+        meta = {
+            **place,
+            "sign_bbox_group": sign_bbox,
+            "sign_bbox_bg": sign_bbox_bg,
+        }
+        return img, meta
 
     def _compose_sign_and_pole(
         self,
@@ -772,8 +883,11 @@ class StopSignGridEnv(gym.Env):
         bottom_len_factor: float = 4.0,
         clearance_px: int = 2,
         side_margin_frac: float = 0.06,
-    ) -> Image.Image:
+        return_meta: bool = False,
+    ):
         if self.pole_rgba is None:
+            if return_meta:
+                return sign_rgba, {"sign_bbox": (0, 0, sign_rgba.width, sign_rgba.height)}
             return sign_rgba
 
         sign = sign_rgba.copy()
@@ -803,6 +917,8 @@ class StopSignGridEnv(gym.Env):
         sx = (GW - SW) // 2
         sy = clearance_px
         group.alpha_composite(sign, (sx, sy))
+        if return_meta:
+            return group, {"sign_bbox": (sx, sy, sx + SW, sy + SH)}
         return group
 
     def _place_group_on_background(self, group_rgba: Image.Image, bg_rgb: Image.Image, seed: int):

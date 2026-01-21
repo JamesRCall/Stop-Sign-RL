@@ -32,6 +32,9 @@ AREA_CAP_STEPS="${AREA_CAP_STEPS:-500000}"
 LAMBDA_AREA_START="${LAMBDA_AREA_START:-0.10}"
 LAMBDA_AREA_END="${LAMBDA_AREA_END:-0.30}"
 LAMBDA_AREA_STEPS="${LAMBDA_AREA_STEPS:-200000}"
+OBS_SIZE="${OBS_SIZE:-224}"
+OBS_MARGIN="${OBS_MARGIN:-0.10}"
+OBS_INCLUDE_MASK="${OBS_INCLUDE_MASK:-1}"
 
 YOLO_VERSION="${YOLO_VERSION:-8}"
 YOLO_WEIGHTS="${YOLO_WEIGHTS:-}"
@@ -54,6 +57,7 @@ STEP_LOG_EVERY="${STEP_LOG_EVERY:-1}"
 STEP_LOG_KEEP="${STEP_LOG_KEEP:-1000}"
 STEP_LOG_500="${STEP_LOG_500:-500}"
 PY_MAIN="${PY_MAIN:-train_single_stop_sign.py}"
+MULTIPHASE="${MULTIPHASE:-0}"
 
 # Monitoring
 MON_INTERVAL="${MON_INTERVAL:-5}"
@@ -83,6 +87,9 @@ Options:
   --lambda-area-start X       (default: $LAMBDA_AREA_START)
   --lambda-area-end X         (default: $LAMBDA_AREA_END)
   --lambda-area-steps N       (default: $LAMBDA_AREA_STEPS)
+  --obs-size N                (default: $OBS_SIZE)
+  --obs-margin X              (default: $OBS_MARGIN)
+  --obs-include-mask {0|1}    (default: $OBS_INCLUDE_MASK)
 
   --yolo-version {8|11}        (default: $YOLO_VERSION)
   --yolo-weights PATH          (default: $YOLO_WEIGHTS)
@@ -101,6 +108,7 @@ Options:
   --tb DIR                    (default: $TB_DIR)
   --ckpt DIR                  (default: $CKPT_DIR)
   --overlays DIR              (default: $OVR_DIR)
+  --multiphase                (enable 3-phase curriculum)
 
   --port P                    (default: $PORT)
   --mon-interval SEC          (default: $MON_INTERVAL)
@@ -132,6 +140,9 @@ while [[ $# -gt 0 ]]; do
     --lambda-area-start) LAMBDA_AREA_START="$2"; shift 2;;
     --lambda-area-end) LAMBDA_AREA_END="$2"; shift 2;;
     --lambda-area-steps) LAMBDA_AREA_STEPS="$2"; shift 2;;
+    --obs-size) OBS_SIZE="$2"; shift 2;;
+    --obs-margin) OBS_MARGIN="$2"; shift 2;;
+    --obs-include-mask) OBS_INCLUDE_MASK="$2"; shift 2;;
 
     --yolo-version) YOLO_VERSION="$2"; shift 2;;
     --yolo-weights) YOLO_WEIGHTS="$2"; shift 2;;
@@ -150,6 +161,7 @@ while [[ $# -gt 0 ]]; do
     --tb) TB_DIR="$2"; shift 2;;
     --ckpt) CKPT_DIR="$2"; shift 2;;
     --overlays) OVR_DIR="$2"; shift 2;;
+    --multiphase) MULTIPHASE="1"; shift 1;;
 
     --port) PORT="$2"; shift 2;;
     --mon-interval) MON_INTERVAL="$2"; shift 2;;
@@ -275,6 +287,9 @@ EXTRA_ARGS=()
 if [[ -n "${YOLO_WEIGHTS}" ]]; then
   EXTRA_ARGS+=(--yolo-weights "${YOLO_WEIGHTS}")
 fi
+if [[ "${MULTIPHASE}" == "1" ]]; then
+  EXTRA_ARGS+=(--multiphase)
+fi
 
 echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
@@ -307,6 +322,9 @@ python "${PY_MAIN}" \
   --lambda-area-start "${LAMBDA_AREA_START}" \
   --lambda-area-end "${LAMBDA_AREA_END}" \
   --lambda-area-steps "${LAMBDA_AREA_STEPS}" \
+  --obs-size "${OBS_SIZE}" \
+  --obs-margin "${OBS_MARGIN}" \
+  --obs-include-mask "${OBS_INCLUDE_MASK}" \
   --step-log-every "${STEP_LOG_EVERY}" \
   --step-log-keep "${STEP_LOG_KEEP}" \
   --step-log-500 "${STEP_LOG_500}" \

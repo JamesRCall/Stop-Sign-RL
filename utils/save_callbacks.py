@@ -61,6 +61,7 @@ class SaveImprovingOverlaysCallback(BaseCallback):
         threshold: float = 0.0,
         mode: str = "auto",  # "adversary" | "helper" | "minimal" | "auto"
         max_saved: int = 50,
+        diagnostic_max: int = 200,
         verbose: int = 0,
         tb_callback: Optional[object] = None,
     ):
@@ -78,8 +79,10 @@ class SaveImprovingOverlaysCallback(BaseCallback):
         self.threshold = float(threshold)
         self.mode = mode
         self.max_saved = int(max_saved)
+        self.diagnostic_max = int(diagnostic_max)
         self.tb_callback = tb_callback
         self._top: List[Dict[str, Any]] = []  # leaderboard
+        self._diagnostic_count = 0
 
         # trace log file (append-only)
         self._trace_path = os.path.join(self.save_dir, "traces.ndjson")
@@ -224,6 +227,17 @@ class SaveImprovingOverlaysCallback(BaseCallback):
             "meta": meta,
         }
 
+    def _save_diagnostic(self, info: Dict[str, Any], env_idx: int) -> None:
+        if self._diagnostic_count >= self.diagnostic_max:
+            return
+        stem = f"diag_{self.num_timesteps}_{env_idx}"
+        try:
+            self._save_record(stem, info)
+            self._diagnostic_count += 1
+        except Exception:
+            if self.verbose:
+                print("[Saver] diagnostic save failed")
+
     # ---------- SB3 hook ----------
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", [])
@@ -233,6 +247,9 @@ class SaveImprovingOverlaysCallback(BaseCallback):
         for env_idx, info in enumerate(infos):
             if not isinstance(info, dict):
                 continue
+
+            if info.get("diagnostic"):
+                self._save_diagnostic(info, env_idx)
 
             done = bool(dones[env_idx]) if isinstance(dones, (list, tuple, np.ndarray)) else False
             if not done:

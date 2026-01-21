@@ -58,6 +58,25 @@ class TensorboardOverlayCallback(BaseCallback):
         # No-op; saver will call `log_overlay_record` explicitly.
         return True
 
+    def set_log_dir(self, log_dir: str, tag_prefix: Optional[str] = None) -> None:
+        """
+        Update log directory for a new phase/run.
+
+        @param log_dir: Base log directory.
+        @param tag_prefix: Optional new TensorBoard tag prefix.
+        """
+        if tag_prefix is not None:
+            self.tag_prefix = str(tag_prefix)
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+            self.writer = None
+        self.log_dir = os.path.abspath(log_dir)
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.tb_dir = os.path.join(self.log_dir, "tb_overlays")
+        os.makedirs(self.tb_dir, exist_ok=True)
+        self._images_written = 0
+
     def log_overlay_record(self, rec: Dict[str, Any], global_step: int) -> None:
         """
         Log one overlay record (the JSON-like dict your saver writes).
@@ -171,6 +190,23 @@ class EpisodeMetricsCallback(BaseCallback):
 
         if self.verbose:
             print(f"[TB] episode metrics -> {self.tb_dir} (n_envs={n_envs})")
+
+    def set_log_dir(self, log_dir: str) -> None:
+        """
+        Update log directory for a new phase/run.
+
+        @param log_dir: Base log directory.
+        """
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+            self.writer = None
+        self.log_dir = os.path.abspath(log_dir)
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.tb_dir = os.path.join(self.log_dir, "tb_episode_metrics")
+        os.makedirs(self.tb_dir, exist_ok=True)
+        self._ep_count = 0
+        self._ep_len = []
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", None)
@@ -316,6 +352,26 @@ class StepMetricsCallback(BaseCallback):
         if self.verbose:
             print(f"[TB] step metrics -> {self.tb_dir} (every {self.every_n_steps} steps)")
 
+    def set_log_dir(self, log_dir: str) -> None:
+        """
+        Update log directory for a new phase/run.
+
+        @param log_dir: Base log directory.
+        """
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+            self.writer = None
+        self.log_dir = os.path.abspath(log_dir)
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.tb_dir = os.path.join(self.log_dir, "tb_step_metrics")
+        os.makedirs(self.tb_dir, exist_ok=True)
+        self._ndjson_path = os.path.join(self.tb_dir, "step_metrics.ndjson")
+        self._ndjson_500_path = os.path.join(self.tb_dir, "step_metrics_500.ndjson")
+        self._last_logged = 0
+        self._last_logged_500 = 0
+        self._ring = []
+
     def _on_step(self) -> bool:
         if self.num_timesteps - self._last_logged < self.every_n_steps:
             return True
@@ -341,6 +397,12 @@ class StepMetricsCallback(BaseCallback):
         area_frac = info.get("total_area_mask_frac", None)
         drop_on = info.get("drop_on", None)
         drop_on_s = info.get("drop_on_smooth", None)
+        mean_iou = info.get("mean_iou", None)
+        misclass_rate = info.get("misclass_rate", None)
+        mean_top_conf = info.get("mean_top_conf", None)
+        mean_target_conf = info.get("mean_target_conf", None)
+        eval_k = info.get("eval_K_used", None)
+        top_class_counts = info.get("top_class_counts", None)
 
         row = {
             "step": int(self.num_timesteps),
@@ -350,6 +412,12 @@ class StepMetricsCallback(BaseCallback):
             "area_frac": float(area_frac) if area_frac is not None else None,
             "drop_on": float(drop_on) if drop_on is not None else None,
             "drop_on_smooth": float(drop_on_s) if drop_on_s is not None else None,
+            "mean_iou": float(mean_iou) if mean_iou is not None else None,
+            "misclass_rate": float(misclass_rate) if misclass_rate is not None else None,
+            "mean_top_conf": float(mean_top_conf) if mean_top_conf is not None else None,
+            "mean_target_conf": float(mean_target_conf) if mean_target_conf is not None else None,
+            "eval_K_used": int(eval_k) if eval_k is not None else None,
+            "top_class_counts": top_class_counts if isinstance(top_class_counts, dict) else None,
         }
 
         if self.writer is not None:
@@ -363,6 +431,14 @@ class StepMetricsCallback(BaseCallback):
                 self.writer.add_scalar("step_range/drop_on", row["drop_on"], self.num_timesteps)
             if row["drop_on_smooth"] is not None:
                 self.writer.add_scalar("step_range/drop_on_smooth", row["drop_on_smooth"], self.num_timesteps)
+            if row["mean_iou"] is not None:
+                self.writer.add_scalar("step_range/mean_iou", row["mean_iou"], self.num_timesteps)
+            if row["misclass_rate"] is not None:
+                self.writer.add_scalar("step_range/misclass_rate", row["misclass_rate"], self.num_timesteps)
+            if row["mean_top_conf"] is not None:
+                self.writer.add_scalar("step_range/mean_top_conf", row["mean_top_conf"], self.num_timesteps)
+            if row["mean_target_conf"] is not None:
+                self.writer.add_scalar("step_range/mean_target_conf", row["mean_target_conf"], self.num_timesteps)
             self.writer.flush()
 
         try:
