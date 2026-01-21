@@ -21,6 +21,40 @@ from utils.tb_callbacks import TensorboardOverlayCallback, EpisodeMetricsCallbac
 
 
 
+# ----------------- custom CNN extractor -----------------
+class StopSignFeatureExtractor(BaseFeaturesExtractor):
+    """
+    Lightweight CNN for sign-focused crops with optional mask channel.
+    """
+
+    def __init__(self, observation_space, features_dim: int = 512):
+        super().__init__(observation_space, features_dim)
+        n_input_channels = int(observation_space.shape[0])
+        self.cnn = torch.nn.Sequential(
+            torch.nn.Conv2d(n_input_channels, 32, kernel_size=5, stride=2, padding=2),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+            torch.nn.ReLU(),
+        )
+
+        with torch.no_grad():
+            sample = torch.zeros((1, *observation_space.shape), dtype=torch.float32)
+            n_flatten = int(self.cnn(sample).view(1, -1).shape[1])
+
+        self.linear = torch.nn.Sequential(
+            torch.nn.Flatten(),
+            torch.nn.Linear(n_flatten, features_dim),
+            torch.nn.ReLU(),
+        )
+
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        return self.linear(self.cnn(observations))
+
+
 # ----------------- progress logger -----------------
 class ProgressETACallback(BaseCallback):
     """
@@ -577,35 +611,3 @@ if __name__ == "__main__":
     final = os.path.join(args.ckpt, "ppo_grid_uv_final")
     model.save(final)
     print(f" Saved final model to {final}")
-# ----------------- custom CNN extractor -----------------
-class StopSignFeatureExtractor(BaseFeaturesExtractor):
-    """
-    Lightweight CNN for sign-focused crops with optional mask channel.
-    """
-
-    def __init__(self, observation_space, features_dim: int = 512):
-        super().__init__(observation_space, features_dim)
-        n_input_channels = int(observation_space.shape[0])
-        self.cnn = torch.nn.Sequential(
-            torch.nn.Conv2d(n_input_channels, 32, kernel_size=5, stride=2, padding=2),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
-            torch.nn.ReLU(),
-        )
-
-        with torch.no_grad():
-            sample = torch.zeros((1, *observation_space.shape), dtype=torch.float32)
-            n_flatten = int(self.cnn(sample).view(1, -1).shape[1])
-
-        self.linear = torch.nn.Sequential(
-            torch.nn.Flatten(),
-            torch.nn.Linear(n_flatten, features_dim),
-            torch.nn.ReLU(),
-        )
-
-    def forward(self, observations: torch.Tensor) -> torch.Tensor:
-        return self.linear(self.cnn(observations))
