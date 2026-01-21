@@ -115,6 +115,33 @@ class LinearRampCallback(BaseCallback):
         return True
 
 
+class LinearRampModelAttrCallback(BaseCallback):
+    """
+    Linearly ramp a model attribute (e.g., ent_coef) over a fixed number of steps.
+
+    @param attr_name: Model attribute name to update.
+    @param start: Starting value.
+    @param end: Ending value.
+    @param steps: Number of steps to reach the end value.
+    @param verbose: Verbosity level.
+    """
+    def __init__(self, attr_name: str, start: float, end: float, steps: int, verbose: int = 0):
+        super().__init__(verbose)
+        self.attr_name = str(attr_name)
+        self.start = float(start)
+        self.end = float(end)
+        self.steps = max(int(steps), 1)
+
+    def _on_training_start(self) -> None:
+        setattr(self.model, self.attr_name, float(self.start))
+
+    def _on_step(self) -> bool:
+        t = min(float(self.num_timesteps) / float(self.steps), 1.0)
+        value = self.start + t * (self.end - self.start)
+        setattr(self.model, self.attr_name, float(value))
+        return True
+
+
 def load_backgrounds(folder: str) -> List[Image.Image]:
     """
     Load a small set of background images from a folder.
@@ -287,6 +314,8 @@ def parse_args():
     ap.add_argument("--n-steps", type=int, default=256)
     ap.add_argument("--batch-size", type=int, default=1024)
     ap.add_argument("--total-steps", type=int, default=800_000)
+    ap.add_argument("--ent-coef", type=float, default=0.005,
+                    help="Entropy coefficient for PPO.")
 
     ap.add_argument("--episode-steps", type=int, default=7000)
     ap.add_argument("--eval-K", type=int, default=10)
@@ -319,6 +348,12 @@ def parse_args():
                     help="End value for lambda-area curriculum.")
     ap.add_argument("--lambda-area-steps", type=int, default=0,
                     help="Steps over which to ramp lambda-area; <=0 uses total-steps.")
+    ap.add_argument("--ent-coef-start", type=float, default=None,
+                    help="Start value for entropy coefficient schedule.")
+    ap.add_argument("--ent-coef-end", type=float, default=None,
+                    help="End value for entropy coefficient schedule.")
+    ap.add_argument("--ent-coef-steps", type=int, default=0,
+                    help="Steps over which to ramp entropy coefficient; <=0 uses total-steps.")
 
     ap.add_argument("--multiphase", action="store_true",
                     help="Enable 3-phase curriculum (solid/no pole -> dataset + pole).")
@@ -499,6 +534,12 @@ if __name__ == "__main__":
         la_steps = int(args.lambda_area_steps) if int(args.lambda_area_steps) > 0 else int(total_steps)
         ramp_callbacks.append(LinearRampCallback("set_lambda_area", la_start, la_end, la_steps, verbose=0))
 
+    if (args.ent_coef_start is not None) or (args.ent_coef_end is not None):
+        ent_start = float(args.ent_coef_start if args.ent_coef_start is not None else args.ent_coef)
+        ent_end = float(args.ent_coef_end if args.ent_coef_end is not None else args.ent_coef)
+        ent_steps = int(args.ent_coef_steps) if int(args.ent_coef_steps) > 0 else int(total_steps)
+        ramp_callbacks.append(LinearRampModelAttrCallback("ent_coef", ent_start, ent_end, ent_steps, verbose=0))
+
     callback_list = CallbackList([tb_cb, ep_cb, step_cb, saver, ckpt_cb, progress] + ramp_callbacks)
 
     if not args.multiphase:
@@ -512,7 +553,7 @@ if __name__ == "__main__":
         policy_kwargs = dict(
             features_extractor_class=StopSignFeatureExtractor,
             features_extractor_kwargs=dict(features_dim=512),
-            net_arch=[dict(pi=[256, 256], vf=[256, 256])],
+            net_arch=dict(pi=[256, 256], vf=[256, 256]),
         )
         model = PPO(
             "CnnPolicy",
@@ -523,7 +564,7 @@ if __name__ == "__main__":
             learning_rate=2.0e-4,
             gamma=0.995,
             gae_lambda=0.95,
-            ent_coef=0.005,
+            ent_coef=float(args.ent_coef),
             vf_coef=0.5,
             clip_range=0.2,
             tensorboard_log=tb_root,
@@ -539,6 +580,7 @@ if __name__ == "__main__":
                 model = PPO.load(ckpt, env=env, device="auto")
                 model.n_steps = int(args.n_steps)
                 model.batch_size = int(args.batch_size)
+                model.ent_coef = float(args.ent_coef)
 
         model.learn(
             total_timesteps=int(total_steps),
@@ -571,7 +613,7 @@ if __name__ == "__main__":
                 policy_kwargs = dict(
                     features_extractor_class=StopSignFeatureExtractor,
                     features_extractor_kwargs=dict(features_dim=512),
-                    net_arch=[dict(pi=[256, 256], vf=[256, 256])],
+                    net_arch=dict(pi=[256, 256], vf=[256, 256]),
                 )
                 model = PPO(
                     "CnnPolicy",
@@ -582,7 +624,7 @@ if __name__ == "__main__":
                     learning_rate=2.0e-4,
                     gamma=0.995,
                     gae_lambda=0.95,
-                    ent_coef=0.005,
+                    ent_coef=float(args.ent_coef),
                     vf_coef=0.5,
                     clip_range=0.2,
                     tensorboard_log=tb_root,
@@ -597,6 +639,7 @@ if __name__ == "__main__":
                         model = PPO.load(ckpt, env=env, device="auto")
                         model.n_steps = int(args.n_steps)
                         model.batch_size = int(args.batch_size)
+                        model.ent_coef = float(args.ent_coef)
             else:
                 model.set_env(env)
 

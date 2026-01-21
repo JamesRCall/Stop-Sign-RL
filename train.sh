@@ -46,6 +46,10 @@ DET_SERVER_MODEL="${DET_SERVER_MODEL:-}"
 N_STEPS="${N_STEPS:-512}"
 BATCH="${BATCH:-512}"              # default to rollout size for num_envs=1
 TOTAL_STEPS="${TOTAL_STEPS:-800000}"
+ENT_COEF="${ENT_COEF:-0.005}"
+ENT_COEF_START="${ENT_COEF_START:-}"
+ENT_COEF_END="${ENT_COEF_END:-}"
+ENT_COEF_STEPS="${ENT_COEF_STEPS:-0}"
 
 TB_DIR="${TB_DIR:-./_runs/tb}"
 CKPT_DIR="${CKPT_DIR:-./_runs/checkpoints}"
@@ -87,6 +91,9 @@ Options:
   --lambda-area-start X       (default: $LAMBDA_AREA_START)
   --lambda-area-end X         (default: $LAMBDA_AREA_END)
   --lambda-area-steps N       (default: $LAMBDA_AREA_STEPS)
+  --ent-coef-start X          (default: $ENT_COEF_START)
+  --ent-coef-end X            (default: $ENT_COEF_END)
+  --ent-coef-steps N          (default: $ENT_COEF_STEPS)
   --obs-size N                (default: $OBS_SIZE)
   --obs-margin X              (default: $OBS_MARGIN)
   --obs-include-mask {0|1}    (default: $OBS_INCLUDE_MASK)
@@ -101,6 +108,7 @@ Options:
   --n-steps N                 (default: $N_STEPS)
   --batch N                   (default: $BATCH)
   --total-steps N             (default: $TOTAL_STEPS)
+  --ent-coef X                (default: $ENT_COEF)
   --step-log-every N          (default: $STEP_LOG_EVERY)
   --step-log-keep N           (default: $STEP_LOG_KEEP)
   --step-log-500 N            (default: $STEP_LOG_500)
@@ -140,6 +148,9 @@ while [[ $# -gt 0 ]]; do
     --lambda-area-start) LAMBDA_AREA_START="$2"; shift 2;;
     --lambda-area-end) LAMBDA_AREA_END="$2"; shift 2;;
     --lambda-area-steps) LAMBDA_AREA_STEPS="$2"; shift 2;;
+    --ent-coef-start) ENT_COEF_START="$2"; shift 2;;
+    --ent-coef-end) ENT_COEF_END="$2"; shift 2;;
+    --ent-coef-steps) ENT_COEF_STEPS="$2"; shift 2;;
     --obs-size) OBS_SIZE="$2"; shift 2;;
     --obs-margin) OBS_MARGIN="$2"; shift 2;;
     --obs-include-mask) OBS_INCLUDE_MASK="$2"; shift 2;;
@@ -154,6 +165,7 @@ while [[ $# -gt 0 ]]; do
     --n-steps) N_STEPS="$2"; N_STEPS_SET=1; shift 2;;
     --batch) BATCH="$2"; BATCH_SET=1; shift 2;;
     --total-steps) TOTAL_STEPS="$2"; shift 2;;
+    --ent-coef) ENT_COEF="$2"; shift 2;;
     --step-log-every) STEP_LOG_EVERY="$2"; shift 2;;
     --step-log-keep) STEP_LOG_KEEP="$2"; shift 2;;
     --step-log-500) STEP_LOG_500="$2"; shift 2;;
@@ -310,6 +322,7 @@ python "${PY_MAIN}" \
   --n-steps "${N_STEPS}" \
   --batch-size "${BATCH}" \
   --total-steps "${TOTAL_STEPS}" \
+  --ent-coef "${ENT_COEF}" \
   --eval-K "${EVAL_K}" \
   --grid-cell "${GRID_CELL}" \
   --lambda-area "${LAMBDA_AREA}" \
@@ -322,6 +335,9 @@ python "${PY_MAIN}" \
   --lambda-area-start "${LAMBDA_AREA_START}" \
   --lambda-area-end "${LAMBDA_AREA_END}" \
   --lambda-area-steps "${LAMBDA_AREA_STEPS}" \
+  --ent-coef-start "${ENT_COEF_START}" \
+  --ent-coef-end "${ENT_COEF_END}" \
+  --ent-coef-steps "${ENT_COEF_STEPS}" \
   --obs-size "${OBS_SIZE}" \
   --obs-margin "${OBS_MARGIN}" \
   --obs-include-mask "${OBS_INCLUDE_MASK}" \

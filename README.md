@@ -101,6 +101,7 @@ From `train_single_stop_sign.py`:
 - `--phase1-eval-K`, `--phase2-eval-K`, `--phase3-eval-K` (per-phase eval_K overrides)
 - `--bg-mode` (`dataset` or `solid`) and `--no-pole` for single-phase
 - `--obs-size`, `--obs-margin`, `--obs-include-mask` (cropped observation + mask channel)
+- `--ent-coef`, `--ent-coef-start`, `--ent-coef-end`, `--ent-coef-steps` (entropy coefficient schedule)
 - `--detector-device` (e.g., `cpu`, `cuda`, or `auto`)
 - `--step-log-every`, `--step-log-keep`, `--step-log-500` (step logging control)
 - `--ckpt`, `--overlays`, `--tb` output paths (TB logs grouped under `grid_uv_yolo<ver>`)
