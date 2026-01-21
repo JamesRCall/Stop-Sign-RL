@@ -165,7 +165,7 @@ Overlay saver:
   - `area0p1234_step000000123_env00.json`
 
 Trace replay:
-- `trace_replay.py` can rebuild a mask or full composite from trace rows.
+- Removed (legacy blob traces no longer apply to the grid environment).
 
 ---
 
@@ -253,7 +253,6 @@ Important `train.sh` knobs:
 |
 |-- train_single_stop_sign.py
 |-- train.sh
-|-- trace_replay.py
 |-- requirements.txt
 |-- enviornment.yml
 ```

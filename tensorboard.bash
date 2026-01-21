@@ -1,2 +1,2 @@
-# Launch TensorBoard for the default log directory.
-tensorboard --logdir runs/ppo_adversary
+# Launch TensorBoard for the current default log directory.
+tensorboard --logdir _runs/tb

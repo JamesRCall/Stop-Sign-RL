@@ -39,13 +39,13 @@ class StopSignGridEnv(gym.Env):
       RGB image of the *daylight* composite for the first transform (H,W,3) uint8.
 
     Reward (per step, normalized):
-      Let raw_core = drop_on - lambda_day * max(0, drop_day - day_tolerance)
+      Let raw_core = blend(drop_on_s, drop_on) - lambda_day * max(0, drop_day - day_tolerance)
                               - lambda_area * area_frac.
       Add a smooth shaping bonus as drop_on approaches threshold, plus a small
       success bonus once drop_on >= uv_drop_threshold, then squash:
 
           raw_total = raw_core + shaping + success_bonus
-          reward    = tanh(2 * raw_total)    (-1, 1)
+          reward    = tanh(1.2 * raw_total)    (-1, 1)
 
       so PPO always sees a bounded per-step reward.
     """
@@ -58,7 +58,7 @@ class StopSignGridEnv(gym.Env):
         stop_sign_uv_image: Optional[Image.Image],
         background_images: List[Image.Image],
         pole_image: Optional[Image.Image],
-        yolo_weights: str = "weights/yolo11n.pt",
+        yolo_weights: str = "weights/yolo8n.pt",
         img_size: Tuple[int, int] = (640, 640),
         detector_debug: bool = False,
 
@@ -386,17 +386,22 @@ class StopSignGridEnv(gym.Env):
         # 3) Reward using smoothed UV drop
         pen_day = max(0.0, drop_day - self.day_tolerance)
         area_frac = self._area_frac_selected()
-        raw_core = drop_on_s - self.lambda_day * pen_day - self.lambda_area * area_frac
+        drop_blend = 0.7 * drop_on_s + 0.3 * drop_on
+        raw_core = drop_blend - self.lambda_day * pen_day - self.lambda_area * area_frac
 
         thr = self.uv_drop_threshold
-        shaping = 0.25 * math.tanh(4.0 * (drop_on_s - 0.5 * thr))
+        shaping = 0.35 * math.tanh(3.0 * (drop_on_s - 0.5 * thr))
         uv_success = drop_on_s >= thr and (self.area_cap_frac is None or area_frac <= self.area_cap_frac)
-        success_bonus = 0.5 if uv_success else 0.0
+        success_bonus = 0.2 if uv_success else 0.0
 
         raw_total = raw_core + shaping + success_bonus
         if cap_exceeded and self.area_cap_mode == "soft":
-            raw_total += float(self.area_cap_penalty)
-        reward = math.tanh(2.0 * raw_total)
+            if self.area_cap_frac and self.area_cap_frac > 0:
+                excess = max(0.0, (area_frac - self.area_cap_frac) / self.area_cap_frac)
+                raw_total += float(self.area_cap_penalty) * (1.0 + 2.0 * excess)
+            else:
+                raw_total += float(self.area_cap_penalty)
+        reward = math.tanh(1.2 * raw_total)
 
         if drop_on_s >= thr:
             terminated = True

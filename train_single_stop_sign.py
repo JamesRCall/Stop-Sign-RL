@@ -193,7 +193,7 @@ def parse_args():
     ap.add_argument("--data", default="./data")
     ap.add_argument("--bgdir", default="./data/backgrounds")
     ap.add_argument("--yolo", "--yolo-weights", dest="yolo_weights", default=None)
-    ap.add_argument("--yolo-version", choices=["8", "11"], default="11")
+    ap.add_argument("--yolo-version", choices=["8", "11"], default="8")
     ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "auto"))
     ap.add_argument("--tb", default="./runs/tb")
     ap.add_argument("--ckpt", default="./runs/checkpoints")
@@ -333,10 +333,12 @@ if __name__ == "__main__":
         verbose=2,
         n_steps=int(args.n_steps),
         batch_size=int(args.batch_size),
-        learning_rate=2.5e-4,
-        ent_coef=0.01,
+        learning_rate=2.0e-4,
+        gamma=0.995,
+        gae_lambda=0.95,
+        ent_coef=0.005,
         vf_coef=0.5,
-        clip_range=0.1,
+        clip_range=0.2,
         tensorboard_log=args.tb,
         device="auto",
     )
