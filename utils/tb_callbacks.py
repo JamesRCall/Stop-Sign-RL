@@ -140,6 +140,7 @@ class EpisodeMetricsCallback(BaseCallback):
       - episode/base_conf_final, episode/after_conf_final
       - episode/reward_final, episode/selected_cells_final
       - episode/eval_K_used_final, episode/uv_success_final, episode/area_cap_exceeded_final
+      - episode/mean_iou_final, episode/misclass_rate_final
 
     X-axis is episode index (so you can see improvement run-to-run).
     Also logs *_vs_timesteps variants so you can align with training time.
@@ -201,6 +202,8 @@ class EpisodeMetricsCallback(BaseCallback):
             eval_k = None
             uv_success = None
             area_cap_exceeded = None
+            mean_iou = None
+            misclass_rate = None
             if isinstance(info, dict):
                 area = info.get("total_area_mask_frac", None)
                 drop_on = info.get("drop_on", None)
@@ -212,6 +215,8 @@ class EpisodeMetricsCallback(BaseCallback):
                 eval_k = info.get("eval_K_used", None)
                 uv_success = info.get("uv_success", None)
                 area_cap_exceeded = info.get("area_cap_exceeded", None)
+                mean_iou = info.get("mean_iou", None)
+                misclass_rate = info.get("misclass_rate", None)
 
             # Fallback: if not present, store NaN (so TB shows gaps instead of crashing)
             area_val = float(area) if area is not None else float("nan")
@@ -224,6 +229,8 @@ class EpisodeMetricsCallback(BaseCallback):
             eval_k_val = float(eval_k) if eval_k is not None else float("nan")
             uv_success_val = float(uv_success) if uv_success is not None else float("nan")
             area_cap_exceeded_val = float(area_cap_exceeded) if area_cap_exceeded is not None else float("nan")
+            mean_iou_val = float(mean_iou) if mean_iou is not None else float("nan")
+            misclass_rate_val = float(misclass_rate) if misclass_rate is not None else float("nan")
 
             # log vs EPISODE INDEX (best for tracking improvement)
             if self.writer is not None:
@@ -238,6 +245,8 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/eval_K_used_final", eval_k_val, self._ep_count)
                 self.writer.add_scalar("episode/uv_success_final", uv_success_val, self._ep_count)
                 self.writer.add_scalar("episode/area_cap_exceeded_final", area_cap_exceeded_val, self._ep_count)
+                self.writer.add_scalar("episode/mean_iou_final", mean_iou_val, self._ep_count)
+                self.writer.add_scalar("episode/misclass_rate_final", misclass_rate_val, self._ep_count)
 
                 # also log vs global timesteps (sometimes useful)
                 self.writer.add_scalar("episode/length_steps_vs_timesteps", ep_len, self.num_timesteps)
@@ -251,6 +260,8 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/eval_K_used_final_vs_timesteps", eval_k_val, self.num_timesteps)
                 self.writer.add_scalar("episode/uv_success_final_vs_timesteps", uv_success_val, self.num_timesteps)
                 self.writer.add_scalar("episode/area_cap_exceeded_final_vs_timesteps", area_cap_exceeded_val, self.num_timesteps)
+                self.writer.add_scalar("episode/mean_iou_final_vs_timesteps", mean_iou_val, self.num_timesteps)
+                self.writer.add_scalar("episode/misclass_rate_final_vs_timesteps", misclass_rate_val, self.num_timesteps)
 
                 self.writer.flush()
 
@@ -393,4 +404,3 @@ class StepMetricsCallback(BaseCallback):
             self.writer.flush()
             self.writer.close()
             self.writer = None
-

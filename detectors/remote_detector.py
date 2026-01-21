@@ -90,3 +90,26 @@ class RemoteDetectorWrapper:
         if not pil_images:
             return []
         return self._send_images(pil_images)
+
+    def infer_detections_batch(self, pil_images) -> list[dict]:
+        """
+        Return detection summaries for a list of images.
+
+        Remote detector servers may not support full detection payloads, so this
+        fallback returns zeroed metrics to keep the env running.
+        """
+        if not pil_images:
+            return []
+        return [
+            {
+                "target_conf": 0.0,
+                "target_box": None,
+                "top_conf": 0.0,
+                "top_class": None,
+                "top_box": None,
+                "boxes": [],
+                "confs": [],
+                "clss": [],
+            }
+            for _ in pil_images
+        ]

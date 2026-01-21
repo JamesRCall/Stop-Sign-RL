@@ -33,7 +33,8 @@ class StopSignGridEnv(gym.Env):
           c0_day, c_day, c0_on, c_on
         Primary objective is drop_on = c0_day - c_on (target threshold).
         Secondary objective keeps day confidence high (penalize if drop exceeds tolerance).
-      - Episode terminates early when drop_on_mean meets uv_drop_threshold.
+      - Additional objectives use mean IoU (target vs top detection) and misclassification rate.
+      - Episode terminates early when success criteria are met (drop + misclass/IoU).
 
     Observation:
       RGB image of the *daylight* composite for the first transform (H,W,3) uint8.
@@ -42,7 +43,7 @@ class StopSignGridEnv(gym.Env):
       Let raw_core = blend(drop_on_s, drop_on) - lambda_day * max(0, drop_day - day_tolerance)
                               - lambda_area * area_frac.
       Add a smooth shaping bonus as drop_on approaches threshold, plus a small
-      success bonus once drop_on >= uv_drop_threshold, then squash:
+      success bonus once success criteria are met, then squash:
 
           raw_total = raw_core + shaping + success_bonus
           reward    = tanh(1.2 * raw_total)    (-1, 1)
@@ -84,6 +85,8 @@ class StopSignGridEnv(gym.Env):
         day_tolerance: float = 0.05,
         lambda_day: float = 1.0,
         lambda_area: float = 0.3,
+        lambda_iou: float = 0.4,
+        lambda_misclass: float = 0.6,
         uv_min_alpha: float = 0.08,
         min_base_conf: float = 0.20,
         cell_cover_thresh: float = 0.60,
@@ -156,6 +159,8 @@ class StopSignGridEnv(gym.Env):
         self.day_tolerance = float(day_tolerance)
         self.lambda_day = float(lambda_day)
         self.lambda_area = float(lambda_area)
+        self.lambda_iou = float(lambda_iou)
+        self.lambda_misclass = float(lambda_misclass)
         self.uv_min_alpha = float(uv_min_alpha)
         self.min_base_conf = float(min_base_conf)
         self.info_image_every = int(info_image_every)
@@ -338,7 +343,12 @@ class StopSignGridEnv(gym.Env):
         # 2) Evaluate overlay vs baseline
         eval_K = self._current_eval_K(self._last_drop_on_s)
         eval_seeds = self._transform_seeds[:eval_K]
-        c_day, c_on = self._eval_overlay_over_K(eval_seeds)
+        overlay_metrics = self._eval_overlay_over_K(eval_seeds)
+        c_day = overlay_metrics["c_day"]
+        c_on = overlay_metrics["c_on"]
+        mean_iou = overlay_metrics["mean_iou"]
+        misclass_rate = overlay_metrics["misclass_rate"]
+
         c0_day = self._mean_over_K(self._baseline_c0_day_list, eval_K)
         c0_on = self._mean_over_K(self._baseline_c0_on_list, eval_K)
 
@@ -387,11 +397,17 @@ class StopSignGridEnv(gym.Env):
         pen_day = max(0.0, drop_day - self.day_tolerance)
         area_frac = self._area_frac_selected()
         drop_blend = 0.7 * drop_on_s + 0.3 * drop_on
-        raw_core = drop_blend - self.lambda_day * pen_day - self.lambda_area * area_frac
+        raw_core = (
+            drop_blend
+            - self.lambda_day * pen_day
+            - self.lambda_area * area_frac
+            + self.lambda_iou * mean_iou
+            + self.lambda_misclass * misclass_rate
+        )
 
         thr = self.uv_drop_threshold
         shaping = 0.35 * math.tanh(3.0 * (drop_on_s - 0.5 * thr))
-        uv_success = drop_on_s >= thr and (self.area_cap_frac is None or area_frac <= self.area_cap_frac)
+        uv_success = self._is_episode_success(drop_on_s, mean_iou, misclass_rate, area_frac, thr)
         success_bonus = 0.2 if uv_success else 0.0
 
         raw_total = raw_core + shaping + success_bonus
@@ -403,11 +419,11 @@ class StopSignGridEnv(gym.Env):
                 raw_total += float(self.area_cap_penalty)
         reward = math.tanh(1.2 * raw_total)
 
-        if drop_on_s >= thr:
+        if uv_success:
             terminated = True
-            if self.area_cap_frac is not None and area_frac > self.area_cap_frac:
-                uv_success = False
-                cap_exceeded = True
+        if terminated and self.area_cap_frac is not None and area_frac > self.area_cap_frac:
+            uv_success = False
+            cap_exceeded = True
 
         truncated = (self._step >= self.steps_per_episode)
 
@@ -424,6 +440,8 @@ class StopSignGridEnv(gym.Env):
             "reward_core": float(raw_core),
             "reward_raw_total": float(raw_total),
             "reward": float(reward),
+            "mean_iou": float(mean_iou),
+            "misclass_rate": float(misclass_rate),
             "selected_cells": int(self._episode_cells.sum()),
             "grid_cell_px": int(self.grid_cell_px),
             "eval_K_used": int(eval_K),
@@ -432,7 +450,9 @@ class StopSignGridEnv(gym.Env):
             "uv_drop_threshold": float(self.uv_drop_threshold),
             "day_tolerance": float(self.day_tolerance),
             "lambda_area": float(self.lambda_area),
-            "base_conf": float(c0_day),
+            "lambda_iou": float(self.lambda_iou),
+            "lambda_misclass": float(self.lambda_misclass),
+            "base_conf": float(c0_on),
             "after_conf": float(c_on),
             "total_area_mask_frac": float(area_frac),
             "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
@@ -614,7 +634,7 @@ class StopSignGridEnv(gym.Env):
         mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
         return mean(c0_day_list), mean(c_day_list), mean(c0_on_list), mean(c_on_list)
 
-    def _eval_overlay_over_K(self, seeds: List[int]) -> Tuple[float, float]:
+    def _eval_overlay_over_K(self, seeds: List[int]) -> Dict[str, float]:
         imgs_over_day, imgs_over_on = [], []
 
         # Precompute overlays once per step
@@ -630,8 +650,43 @@ class StopSignGridEnv(gym.Env):
         c_day_list = self.det.infer_confidence_batch(imgs_over_day)
         c_on_list  = self.det.infer_confidence_batch(imgs_over_on)
 
+        det_on = self.det.infer_detections_batch(imgs_over_on)
+        iou_vals = []
+        misclass_vals = []
+        for det in det_on:
+            target_conf = float(det.get("target_conf", 0.0))
+            top_conf = float(det.get("top_conf", 0.0))
+            top_class = det.get("top_class", None)
+            target_box = det.get("target_box", None)
+            top_box = det.get("top_box", None)
+            misclass = (top_class is not None and top_class != self.det.target_id and top_conf > 0.0)
+            misclass_vals.append(1.0 if misclass else 0.0)
+
+            iou = 0.0
+            if target_box is not None and top_box is not None:
+                iou = _iou_xyxy(target_box, top_box)
+            iou_vals.append(float(iou))
+
         mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
-        return mean(c_day_list), mean(c_on_list)
+        return {
+            "c_day": mean(c_day_list),
+            "c_on": mean(c_on_list),
+            "mean_iou": mean(iou_vals),
+            "misclass_rate": mean(misclass_vals),
+        }
+
+    def _is_episode_success(
+        self,
+        drop_on_s: float,
+        mean_iou: float,
+        misclass_rate: float,
+        area_frac: float,
+        threshold: float,
+    ) -> bool:
+        base_drop = float(drop_on_s) >= float(threshold)
+        attack_signal = (float(misclass_rate) > 0.0) or (float(mean_iou) < 0.25)
+        within_cap = (self.area_cap_frac is None) or (float(area_frac) <= float(self.area_cap_frac))
+        return base_drop and attack_signal and within_cap
 
 
     def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
@@ -849,3 +904,23 @@ def _random_perspective_coeffs(W, H, rng, max_shift=0.06):
     B = np.array([p for uv in dst for p in uv], dtype=np.float32)
     coeffs = np.linalg.lstsq(A, B, rcond=None)[0]
     return coeffs
+
+
+def _iou_xyxy(box_a, box_b) -> float:
+    ax1, ay1, ax2, ay2 = [float(v) for v in box_a]
+    bx1, by1, bx2, by2 = [float(v) for v in box_b]
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    if union <= 0.0:
+        return 0.0
+    return float(inter / union)

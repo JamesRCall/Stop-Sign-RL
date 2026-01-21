@@ -123,6 +123,8 @@ def make_env_factory(
     grid_cell_px: int,
     uv_drop_threshold: float,
     lambda_area: float,
+    lambda_iou: float,
+    lambda_misclass: float,
     area_cap_frac: Optional[float],
     area_cap_penalty: float,
     area_cap_mode: str,
@@ -141,6 +143,8 @@ def make_env_factory(
     @param grid_cell_px: Grid cell size in pixels.
     @param uv_drop_threshold: UV drop threshold for success.
     @param lambda_area: Area penalty weight.
+    @param lambda_iou: IOU reward weight.
+    @param lambda_misclass: Misclassification reward weight.
     @param area_cap_frac: Area cap fraction (or None).
     @param area_cap_penalty: Penalty when cap exceeded.
     @param area_cap_mode: "soft" or "hard" cap mode.
@@ -175,6 +179,8 @@ def make_env_factory(
                 day_tolerance=0.05,
                 lambda_day=1.0,
                 lambda_area=float(lambda_area),
+                lambda_iou=float(lambda_iou),
+                lambda_misclass=float(lambda_misclass),
                 area_cap_frac=area_cap_frac,
                 area_cap_penalty=area_cap_penalty,
                 area_cap_mode=area_cap_mode,
@@ -210,6 +216,8 @@ def parse_args():
     ap.add_argument("--grid-cell", type=int, default=2, choices=[2, 4, 8, 16, 32])
     ap.add_argument("--uv-threshold", type=float, default=0.70)
     ap.add_argument("--lambda-area", type=float, default=0.30)
+    ap.add_argument("--lambda-iou", type=float, default=0.40)
+    ap.add_argument("--lambda-misclass", type=float, default=0.60)
     ap.add_argument("--area-cap-frac", type=float, default=0.30,
                     help="Fraction of sign grid allowed for patches; <=0 disables cap.")
     ap.add_argument("--area-cap-penalty", type=float, default=-0.20,
@@ -310,6 +318,8 @@ if __name__ == "__main__":
                 grid_cell_px=args.grid_cell,
                 uv_drop_threshold=args.uv_threshold,
                 lambda_area=lambda_area,
+                lambda_iou=float(args.lambda_iou),
+                lambda_misclass=float(args.lambda_misclass),
                 area_cap_frac=area_cap_frac,
                 area_cap_penalty=float(args.area_cap_penalty),
                 area_cap_mode=str(args.area_cap_mode),

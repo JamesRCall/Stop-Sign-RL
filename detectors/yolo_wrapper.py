@@ -156,3 +156,100 @@ class DetectorWrapper:
             out.append(float(confs[mask].max()) if mask.any() else 0.0)
         return out
 
+    def infer_detections_batch(self, pil_images) -> list[dict]:
+        """
+        Return detection summaries for each image.
+
+        Each entry includes:
+          - target_conf: max confidence for target class
+          - target_box: [x1, y1, x2, y2] for max target conf (or None)
+          - top_conf: max confidence across all detections
+          - top_class: class id for top detection (or None)
+          - top_box: [x1, y1, x2, y2] for top detection (or None)
+          - boxes, confs, clss: full arrays for downstream analysis
+        """
+        try:
+            results = self.model.predict(
+                pil_images,
+                conf=self.conf,
+                iou=self.iou,
+                verbose=False,
+                device=self.device,
+            )
+        except Exception as e:
+            if self.debug:
+                print(f"[DetectorWrapper] batch predict() error on device={self.device}: {e}")
+            return [
+                {
+                    "target_conf": 0.0,
+                    "target_box": None,
+                    "top_conf": 0.0,
+                    "top_class": None,
+                    "top_box": None,
+                    "boxes": [],
+                    "confs": [],
+                    "clss": [],
+                }
+                for _ in pil_images
+            ]
+
+        out = []
+        import numpy as np
+
+        def to_numpy(x):
+            try:
+                return x.detach().cpu().numpy()
+            except Exception:
+                return np.asarray(x)
+
+        for r0 in results:
+            boxes = getattr(r0, "boxes", None)
+            if boxes is None or len(boxes) == 0:
+                out.append(
+                    {
+                        "target_conf": 0.0,
+                        "target_box": None,
+                        "top_conf": 0.0,
+                        "top_class": None,
+                        "top_box": None,
+                        "boxes": [],
+                        "confs": [],
+                        "clss": [],
+                    }
+                )
+                continue
+
+            confs = to_numpy(boxes.conf).astype(float).reshape(-1)
+            clss = to_numpy(boxes.cls).astype(int).reshape(-1)
+            xyxy = to_numpy(boxes.xyxy).astype(float).reshape(-1, 4)
+
+            top_idx = int(np.argmax(confs)) if confs.size else None
+            top_conf = float(confs[top_idx]) if top_idx is not None else 0.0
+            top_class = int(clss[top_idx]) if top_idx is not None else None
+            top_box = xyxy[top_idx].tolist() if top_idx is not None else None
+
+            target_mask = (clss == self.target_id)
+            if target_mask.any():
+                t_idx = int(np.argmax(confs[target_mask]))
+                t_all = np.flatnonzero(target_mask)
+                t_pick = int(t_all[t_idx])
+                target_conf = float(confs[t_pick])
+                target_box = xyxy[t_pick].tolist()
+            else:
+                target_conf = 0.0
+                target_box = None
+
+            out.append(
+                {
+                    "target_conf": target_conf,
+                    "target_box": target_box,
+                    "top_conf": top_conf,
+                    "top_class": top_class,
+                    "top_box": top_box,
+                    "boxes": xyxy.tolist(),
+                    "confs": confs.tolist(),
+                    "clss": clss.tolist(),
+                }
+            )
+
+        return out
