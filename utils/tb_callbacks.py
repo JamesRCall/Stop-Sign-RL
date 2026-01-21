@@ -237,6 +237,7 @@ class EpisodeMetricsCallback(BaseCallback):
             selected_cells = None
             eval_k = None
             uv_success = None
+            attack_success = None
             area_cap_exceeded = None
             mean_iou = None
             misclass_rate = None
@@ -250,6 +251,7 @@ class EpisodeMetricsCallback(BaseCallback):
                 selected_cells = info.get("selected_cells", None)
                 eval_k = info.get("eval_K_used", None)
                 uv_success = info.get("uv_success", None)
+                attack_success = info.get("attack_success", None)
                 area_cap_exceeded = info.get("area_cap_exceeded", None)
                 mean_iou = info.get("mean_iou", None)
                 misclass_rate = info.get("misclass_rate", None)
@@ -264,6 +266,7 @@ class EpisodeMetricsCallback(BaseCallback):
             selected_cells_val = float(selected_cells) if selected_cells is not None else float("nan")
             eval_k_val = float(eval_k) if eval_k is not None else float("nan")
             uv_success_val = float(uv_success) if uv_success is not None else float("nan")
+            attack_success_val = float(attack_success) if attack_success is not None else float("nan")
             area_cap_exceeded_val = float(area_cap_exceeded) if area_cap_exceeded is not None else float("nan")
             mean_iou_val = float(mean_iou) if mean_iou is not None else float("nan")
             misclass_rate_val = float(misclass_rate) if misclass_rate is not None else float("nan")
@@ -280,6 +283,7 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/selected_cells_final", selected_cells_val, self._ep_count)
                 self.writer.add_scalar("episode/eval_K_used_final", eval_k_val, self._ep_count)
                 self.writer.add_scalar("episode/uv_success_final", uv_success_val, self._ep_count)
+                self.writer.add_scalar("episode/attack_success_final", attack_success_val, self._ep_count)
                 self.writer.add_scalar("episode/area_cap_exceeded_final", area_cap_exceeded_val, self._ep_count)
                 self.writer.add_scalar("episode/mean_iou_final", mean_iou_val, self._ep_count)
                 self.writer.add_scalar("episode/misclass_rate_final", misclass_rate_val, self._ep_count)
@@ -295,6 +299,7 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/selected_cells_final_vs_timesteps", selected_cells_val, self.num_timesteps)
                 self.writer.add_scalar("episode/eval_K_used_final_vs_timesteps", eval_k_val, self.num_timesteps)
                 self.writer.add_scalar("episode/uv_success_final_vs_timesteps", uv_success_val, self.num_timesteps)
+                self.writer.add_scalar("episode/attack_success_final_vs_timesteps", attack_success_val, self.num_timesteps)
                 self.writer.add_scalar("episode/area_cap_exceeded_final_vs_timesteps", area_cap_exceeded_val, self.num_timesteps)
                 self.writer.add_scalar("episode/mean_iou_final_vs_timesteps", mean_iou_val, self.num_timesteps)
                 self.writer.add_scalar("episode/misclass_rate_final_vs_timesteps", misclass_rate_val, self.num_timesteps)

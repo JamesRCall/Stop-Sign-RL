@@ -33,7 +33,7 @@ class StopSignGridEnv(gym.Env):
         Primary objective is drop_on = c0_day - c_on (target threshold).
         Secondary objective keeps day confidence high (penalize if drop exceeds tolerance).
       - Additional objectives use mean IoU (target vs top detection) and misclassification rate.
-      - Episode terminates early when success criteria are met (drop + misclass/IoU).
+      - Episode terminates early when drop-success is met; attack-success is tracked separately.
 
     Observation:
       Cropped RGB image around the sign (daylight composite) with optional
@@ -141,7 +141,14 @@ class StopSignGridEnv(gym.Env):
 
         self.max_cells = int(max_cells) if max_cells is not None else None
         self.area_cap_frac = float(area_cap_frac) if area_cap_frac is not None else None
-        self._derived_max_cells = (self.max_cells is None and self.area_cap_frac is not None)
+        self.area_cap_mode = str(area_cap_mode).lower().strip()
+        if self.area_cap_mode not in ("soft", "hard"):
+            raise ValueError("area_cap_mode must be 'soft' or 'hard'")
+        self._derived_max_cells = (
+            self.max_cells is None
+            and self.area_cap_frac is not None
+            and self.area_cap_mode == "hard"
+        )
         if self.area_cap_frac is not None and not (0.0 < self.area_cap_frac <= 1.0):
             raise ValueError("area_cap_frac must be in (0, 1]")
         if self._derived_max_cells:
@@ -172,9 +179,6 @@ class StopSignGridEnv(gym.Env):
         self.obs_margin = float(obs_margin)
         self.obs_include_mask = bool(obs_include_mask)
         self.area_cap_penalty = float(area_cap_penalty)
-        self.area_cap_mode = str(area_cap_mode).lower().strip()
-        if self.area_cap_mode not in ("soft", "hard"):
-            raise ValueError("area_cap_mode must be 'soft' or 'hard'")
 
 
         # detector
@@ -294,6 +298,7 @@ class StopSignGridEnv(gym.Env):
                 "total_area_mask_frac": area_frac,
                 "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else 0.0,
                 "uv_success": False,
+                "attack_success": False,
                 "area_cap_exceeded": cap_exceeded,
             }
             return obs, 0.0, bool(terminated), bool(truncated), info
@@ -317,6 +322,7 @@ class StopSignGridEnv(gym.Env):
                     "total_area_mask_frac": float(area_frac),
                     "area_cap": float(self.area_cap_frac),
                     "uv_success": False,
+                    "attack_success": False,
                     "area_cap_exceeded": True,
                 }
                 return obs, float(self.area_cap_penalty), bool(terminated), bool(truncated), info
@@ -374,6 +380,7 @@ class StopSignGridEnv(gym.Env):
                 "total_area_mask_frac": float(area_frac),
                 "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
                 "uv_success": False,
+                "attack_success": False,
                 "area_cap_exceeded": bool(cap_exceeded),
             }
             return obs, float(reward), bool(terminated), bool(truncated), info
@@ -392,8 +399,9 @@ class StopSignGridEnv(gym.Env):
 
         thr = self.uv_drop_threshold
         shaping = 0.35 * math.tanh(3.0 * (drop_on - 0.5 * thr))
-        uv_success = self._is_episode_success(drop_on, mean_iou, misclass_rate, area_frac, thr)
-        success_bonus = 0.2 if uv_success else 0.0
+        drop_success = self._is_drop_success(drop_on, area_frac, thr)
+        attack_success = self._is_attack_success(drop_on, mean_iou, misclass_rate, area_frac, thr)
+        success_bonus = 0.2 if drop_success else 0.0
 
         raw_total = raw_core + shaping + success_bonus
         if cap_exceeded and self.area_cap_mode == "soft":
@@ -404,10 +412,11 @@ class StopSignGridEnv(gym.Env):
                 raw_total += float(self.area_cap_penalty)
         reward = math.tanh(1.2 * raw_total)
 
-        if uv_success:
+        if drop_success:
             terminated = True
         if terminated and self.area_cap_frac is not None and area_frac > self.area_cap_frac:
-            uv_success = False
+            drop_success = False
+            attack_success = False
             cap_exceeded = True
 
         truncated = (self._step >= self.steps_per_episode)
@@ -451,7 +460,8 @@ class StopSignGridEnv(gym.Env):
             "after_conf": float(c_on),
             "total_area_mask_frac": float(area_frac),
             "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
-            "uv_success": bool(uv_success),
+            "uv_success": bool(drop_success),
+            "attack_success": bool(attack_success),
             "area_cap_exceeded": bool(cap_exceeded),
             "trace": {
                 "phase": "grid_uv",
@@ -476,8 +486,8 @@ class StopSignGridEnv(gym.Env):
             info["diagnostic_area_thresh"] = float(self.diag_area_thresh)
             info["diagnostic_conf_thresh"] = float(self.diag_conf_thresh)
 
-        # Always attach the final image if we succeeded (hit threshold), so it can be saved reliably.
-        if terminated and uv_success:
+        # Always attach the final image if we hit drop success, so it can be saved reliably.
+        if terminated and drop_success:
             info["composited_pil"] = preview_on
             info["overlay_pil"] = self._render_overlay_pattern(mode="on")
         # Otherwise only attach occasionally to reduce overhead
@@ -631,7 +641,7 @@ class StopSignGridEnv(gym.Env):
 
     def set_area_cap_frac(self, value: Optional[float]) -> None:
         """
-        Update area cap and derived max_cells at runtime.
+        Update area cap and derived max_cells at runtime (hard mode only).
 
         @param value: New cap fraction (None or <=0 disables).
         """
@@ -743,7 +753,7 @@ class StopSignGridEnv(gym.Env):
             "top_class_counts": top_class_counts,
         }
 
-    def _is_episode_success(
+    def _is_attack_success(
         self,
         drop_on_s: float,
         mean_iou: float,
@@ -755,6 +765,11 @@ class StopSignGridEnv(gym.Env):
         attack_signal = (float(misclass_rate) > 0.0) or (float(mean_iou) < 0.25)
         within_cap = (self.area_cap_frac is None) or (float(area_frac) <= float(self.area_cap_frac))
         return base_drop and attack_signal and within_cap
+
+    def _is_drop_success(self, drop_on_s: float, area_frac: float, threshold: float) -> bool:
+        base_drop = float(drop_on_s) >= float(threshold)
+        within_cap = (self.area_cap_frac is None) or (float(area_frac) <= float(self.area_cap_frac))
+        return base_drop and within_cap
 
 
     def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
