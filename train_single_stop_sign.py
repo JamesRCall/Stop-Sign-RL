@@ -55,6 +55,19 @@ class StopSignFeatureExtractor(BaseFeaturesExtractor):
         return self.linear(self.cnn(observations))
 
 
+def build_policy_kwargs() -> dict:
+    """
+    Build PPO policy kwargs for the custom CNN extractor.
+
+    @return: Dict of policy kwargs.
+    """
+    return {
+        "features_extractor_class": StopSignFeatureExtractor,
+        "features_extractor_kwargs": {"features_dim": 512},
+        "net_arch": {"pi": [256, 256], "vf": [256, 256]},
+    }
+
+
 # ----------------- progress logger -----------------
 class ProgressETACallback(BaseCallback):
     """
@@ -550,11 +563,7 @@ if __name__ == "__main__":
         step_cb.set_log_dir(phase_log_dir)
 
         env = build_env(eval_K=int(args.eval_K), bg_mode=args.bg_mode, use_pole=not args.no_pole)
-        policy_kwargs = dict(
-            features_extractor_class=StopSignFeatureExtractor,
-            features_extractor_kwargs=dict(features_dim=512),
-            net_arch=dict(pi=[256, 256], vf=[256, 256]),
-        )
+        policy_kwargs = build_policy_kwargs()
         model = PPO(
             "CnnPolicy",
             env,
@@ -610,11 +619,7 @@ if __name__ == "__main__":
             env = build_env(eval_K=int(ph["eval_K"]), bg_mode=ph["bg_mode"], use_pole=bool(ph["use_pole"]))
 
             if model is None:
-                policy_kwargs = dict(
-                    features_extractor_class=StopSignFeatureExtractor,
-                    features_extractor_kwargs=dict(features_dim=512),
-                    net_arch=dict(pi=[256, 256], vf=[256, 256]),
-                )
+                policy_kwargs = build_policy_kwargs()
                 model = PPO(
                     "CnnPolicy",
                     env,

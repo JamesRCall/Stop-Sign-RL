@@ -302,6 +302,12 @@ fi
 if [[ "${MULTIPHASE}" == "1" ]]; then
   EXTRA_ARGS+=(--multiphase)
 fi
+if [[ -n "${ENT_COEF_START}" ]]; then
+  EXTRA_ARGS+=(--ent-coef-start "${ENT_COEF_START}")
+fi
+if [[ -n "${ENT_COEF_END}" ]]; then
+  EXTRA_ARGS+=(--ent-coef-end "${ENT_COEF_END}")
+fi
 
 echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
@@ -335,8 +341,6 @@ python "${PY_MAIN}" \
   --lambda-area-start "${LAMBDA_AREA_START}" \
   --lambda-area-end "${LAMBDA_AREA_END}" \
   --lambda-area-steps "${LAMBDA_AREA_STEPS}" \
-  --ent-coef-start "${ENT_COEF_START}" \
-  --ent-coef-end "${ENT_COEF_END}" \
   --ent-coef-steps "${ENT_COEF_STEPS}" \
   --obs-size "${OBS_SIZE}" \
   --obs-margin "${OBS_MARGIN}" \
