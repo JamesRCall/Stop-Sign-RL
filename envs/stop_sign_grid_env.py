@@ -31,7 +31,7 @@ class StopSignGridEnv(gym.Env):
         with identical placement and background.
       - Compute mean confidences over K runs:
           c0_day, c_day, c0_on, c_on
-        Primary objective is drop_on = c0_on - c_on (target threshold).
+        Primary objective is drop_on = c0_day - c_on (target threshold).
         Secondary objective keeps day confidence high (penalize if drop exceeds tolerance).
       - Episode terminates early when drop_on_mean meets uv_drop_threshold.
 
@@ -343,7 +343,7 @@ class StopSignGridEnv(gym.Env):
         c0_on = self._mean_over_K(self._baseline_c0_on_list, eval_K)
 
         drop_day = float(c0_day - c_day)
-        drop_on  = float(c0_on - c_on)
+        drop_on  = float(c0_day - c_on)
 
         # (Option A reward smoothing) Smooth UV drop signal over recent steps
         self._drop_hist.append(drop_on)
@@ -362,7 +362,7 @@ class StopSignGridEnv(gym.Env):
         cap_exceeded = self.area_cap_frac is not None and area_frac > self.area_cap_frac
 
         # (Baseline gating)
-        if c0_on < self.min_base_conf:
+        if c0_day < self.min_base_conf:
             reward = -0.05
             # keep termination from max_cells if you want; I'm leaving it as-is:
             truncated = (self._step >= self.steps_per_episode)
@@ -432,7 +432,7 @@ class StopSignGridEnv(gym.Env):
             "uv_drop_threshold": float(self.uv_drop_threshold),
             "day_tolerance": float(self.day_tolerance),
             "lambda_area": float(self.lambda_area),
-            "base_conf": float(c0_on),
+            "base_conf": float(c0_day),
             "after_conf": float(c_on),
             "total_area_mask_frac": float(area_frac),
             "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
