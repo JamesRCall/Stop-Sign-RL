@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import Tuple, Dict, Any, List, Optional
 import math
 import numpy as np
-from collections import deque
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 import gymnasium as gym
@@ -100,11 +99,6 @@ class StopSignGridEnv(gym.Env):
         iou_thresh: float = 0.45,
         info_image_every: int = 50,
 
-        # Reward smoothing
-        reward_smooth_n: int = 10,
-        use_ema: bool = True,
-        ema_beta: float = 0.90,
-
         seed: Optional[int] = None,
     ):
         super().__init__()
@@ -169,13 +163,6 @@ class StopSignGridEnv(gym.Env):
         if self.area_cap_mode not in ("soft", "hard"):
             raise ValueError("area_cap_mode must be 'soft' or 'hard'")
 
-
-        # Reward smoothing state (Option A)
-        self.reward_smooth_n = int(reward_smooth_n)
-        self.use_ema = bool(use_ema)
-        self.ema_beta = float(ema_beta)
-        self._drop_hist = deque(maxlen=self.reward_smooth_n)
-        self._drop_ema = None
 
         # detector
         dev_str = str(yolo_device)
@@ -262,9 +249,6 @@ class StopSignGridEnv(gym.Env):
             self._transform_seeds
         )
 
-        # Reset reward smoothing buffers (Option A)
-        self._drop_hist.clear()
-        self._drop_ema = None
         self._last_drop_on_s = 0.0
 
         return np.array(obs, dtype=np.uint8), {}
@@ -355,17 +339,7 @@ class StopSignGridEnv(gym.Env):
         drop_day = float(c0_day - c_day)
         drop_on  = float(c0_day - c_on)
 
-        # (Option A reward smoothing) Smooth UV drop signal over recent steps
-        self._drop_hist.append(drop_on)
-        if self.use_ema:
-            if self._drop_ema is None:
-                self._drop_ema = drop_on
-            else:
-                b = float(self.ema_beta)
-                self._drop_ema = b * float(self._drop_ema) + (1.0 - b) * drop_on
-            drop_on_s = float(self._drop_ema)
-        else:
-            drop_on_s = float(np.mean(self._drop_hist)) if len(self._drop_hist) else float(drop_on)
+        drop_on_s = float(drop_on)
         self._last_drop_on_s = drop_on_s
 
         area_frac = self._area_frac_selected()
@@ -452,7 +426,7 @@ class StopSignGridEnv(gym.Env):
             "lambda_area": float(self.lambda_area),
             "lambda_iou": float(self.lambda_iou),
             "lambda_misclass": float(self.lambda_misclass),
-            "base_conf": float(c0_on),
+            "base_conf": float(c0_day),
             "after_conf": float(c_on),
             "total_area_mask_frac": float(area_frac),
             "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,

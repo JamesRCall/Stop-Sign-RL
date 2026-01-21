@@ -22,6 +22,7 @@ class RemoteDetectorWrapper:
         server_addr: str,
         conf: float = 0.10,
         iou: float = 0.45,
+        target_id: int = 11,
         debug: bool = False,
         timeout_s: float = 30.0,
     ):
@@ -35,6 +36,7 @@ class RemoteDetectorWrapper:
         self.server_addr = str(server_addr)
         self.conf = float(conf)
         self.iou = float(iou)
+        self.target_id = int(target_id)
         self.debug = bool(debug)
         self.timeout_s = float(timeout_s)
 
