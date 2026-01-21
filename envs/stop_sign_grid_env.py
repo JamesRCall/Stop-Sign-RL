@@ -941,8 +941,8 @@ class StopSignGridEnv(gym.Env):
         W, H = self.img_size
         bg_rgba = bg_rgb.resize((W, H), Image.BILINEAR).convert("RGBA")
 
-        # Wider distance variance: allow sign to appear smaller (farther) or larger (closer).
-        target_w = int(rng.uniform(0.12 * W, 0.60 * W))
+        # Distance variance with a safer minimum size to avoid missed detections.
+        target_w = int(rng.uniform(0.18 * W, 0.60 * W))
         scale = target_w / max(1, group_rgba.width)
         group = group_rgba.resize((target_w, int(group_rgba.height * scale)), Image.BILINEAR)
 
