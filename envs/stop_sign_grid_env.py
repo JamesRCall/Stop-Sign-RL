@@ -798,6 +798,8 @@ class StopSignGridEnv(gym.Env):
             x = int(rng.integers(right_min, max_x + 1))
         # Avoid placing the sign too high in the frame.
         min_y = max(margin, int(0.12 * H))
+        if min_y > max_y:
+            min_y = max(margin, max_y)
         y = int(rng.integers(min_y, max_y + 1))
 
         canvas = bg_rgba.copy()
