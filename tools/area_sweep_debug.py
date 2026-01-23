@@ -369,11 +369,13 @@ def main() -> None:
 
                         for _ in range(trials):
                             env._episode_cells[:] = False
+                            mask_seed = int(rng.integers(0, 2**31 - 1))
                             if target_n > 0:
                                 if target_n >= total:
                                     env._episode_cells[:, :] = env._valid_cells
                                 else:
-                                    picks = rng.choice(total, size=target_n, replace=False)
+                                    rng_mask = np.random.default_rng(mask_seed)
+                                    picks = rng_mask.choice(total, size=target_n, replace=False)
                                     coords = valid_coords[picks]
                                     for r, c in coords:
                                         env._episode_cells[int(r), int(c)] = True
@@ -397,6 +399,7 @@ def main() -> None:
                                 "paint_combo": combo_names,
                                 "bg_idx": int(bg_idx),
                                 "place_seed": int(env._place_seed),
+                                "mask_seed": int(mask_seed),
                                 "transform_seeds": [int(s) for s in env._transform_seeds],
                                 "area_frac": float(area_frac),
                                 "c_on": float(c_on),

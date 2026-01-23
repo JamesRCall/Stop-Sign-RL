@@ -68,7 +68,7 @@ def main():
 
     rng = np.random.default_rng(123)
     for t in range(1, args.steps + 1):
-        a = rng.uniform(-1, 1, size=(2,)).astype(np.float32)  # (row, col)
+        a = int(rng.integers(0, env.action_space.n))
         obs, rew, term, trunc, info = env.step(a)
 
         # Save the daylight observation (transform #0)

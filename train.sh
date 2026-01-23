@@ -23,8 +23,14 @@ VEC="${VEC:-dummy}"                 # must be dummy for CUDA+YOLO in current arc
 EVAL_K="${EVAL_K:-3}"
 GRID_CELL="${GRID_CELL:-16}"
 LAMBDA_AREA="${LAMBDA_AREA:-0.30}"
-LAMBDA_EFFICIENCY="${LAMBDA_EFFICIENCY:-0.0}"
+LAMBDA_EFFICIENCY="${LAMBDA_EFFICIENCY:-0.25}"
 EFFICIENCY_EPS="${EFFICIENCY_EPS:-0.02}"
+LAMBDA_PERCEPTUAL="${LAMBDA_PERCEPTUAL:-0.0}"
+LAMBDA_DAY="${LAMBDA_DAY:-0.0}"
+AREA_TARGET="${AREA_TARGET:-}"
+AREA_LAGRANGE_LR="${AREA_LAGRANGE_LR:-0.02}"
+AREA_LAGRANGE_MIN="${AREA_LAGRANGE_MIN:-0.0}"
+AREA_LAGRANGE_MAX="${AREA_LAGRANGE_MAX:-5.0}"
 AREA_CAP_FRAC="${AREA_CAP_FRAC:-0.30}"
 AREA_CAP_PENALTY="${AREA_CAP_PENALTY:--0.20}"
 AREA_CAP_MODE="${AREA_CAP_MODE:-soft}"
@@ -37,11 +43,17 @@ LAMBDA_AREA_STEPS="${LAMBDA_AREA_STEPS:-200000}"
 OBS_SIZE="${OBS_SIZE:-224}"
 OBS_MARGIN="${OBS_MARGIN:-0.10}"
 OBS_INCLUDE_MASK="${OBS_INCLUDE_MASK:-1}"
+CELL_COVER_THRESH="${CELL_COVER_THRESH:-0.60}"
 SUCCESS_CONF="${SUCCESS_CONF:-0.20}"
 TRANSFORM_STRENGTH="${TRANSFORM_STRENGTH:-1.0}"
+PAINT="${PAINT:-neon_yellow}"
+PAINT_LIST="${PAINT_LIST:-}"
 PHASE1_TRANSFORM_STRENGTH="${PHASE1_TRANSFORM_STRENGTH:-}"
 PHASE2_TRANSFORM_STRENGTH="${PHASE2_TRANSFORM_STRENGTH:-}"
 PHASE3_TRANSFORM_STRENGTH="${PHASE3_TRANSFORM_STRENGTH:-}"
+PHASE1_LAMBDA_DAY="${PHASE1_LAMBDA_DAY:-}"
+PHASE2_LAMBDA_DAY="${PHASE2_LAMBDA_DAY:-}"
+PHASE3_LAMBDA_DAY="${PHASE3_LAMBDA_DAY:-}"
 
 YOLO_VERSION="${YOLO_VERSION:-8}"
 YOLO_WEIGHTS="${YOLO_WEIGHTS:-}"
@@ -91,11 +103,23 @@ Options:
   --lambda-area X             (default: $LAMBDA_AREA)
   --lambda-efficiency X       (default: $LAMBDA_EFFICIENCY)
   --efficiency-eps X          (default: $EFFICIENCY_EPS)
+  --lambda-perceptual X       (default: $LAMBDA_PERCEPTUAL)
+  --lambda-day X              (default: $LAMBDA_DAY)
+  --area-target F             (default: $AREA_TARGET)
+  --area-lagrange-lr X         (default: $AREA_LAGRANGE_LR)
+  --area-lagrange-min X        (default: $AREA_LAGRANGE_MIN)
+  --area-lagrange-max X        (default: $AREA_LAGRANGE_MAX)
   --success-conf X            (default: $SUCCESS_CONF)
   --transform-strength X      (default: $TRANSFORM_STRENGTH)
+  --paint NAME                (default: $PAINT)
+  --paint-list LIST           (comma-separated)
+  --cell-cover-thresh X       (default: $CELL_COVER_THRESH)
   --phase1-transform-strength X
   --phase2-transform-strength X
   --phase3-transform-strength X
+  --phase1-lambda-day X
+  --phase2-lambda-day X
+  --phase3-lambda-day X
   --area-cap-frac F           (default: $AREA_CAP_FRAC)
   --area-cap-penalty P        (default: $AREA_CAP_PENALTY)
   --area-cap-mode {soft|hard} (default: $AREA_CAP_MODE)
@@ -155,11 +179,23 @@ while [[ $# -gt 0 ]]; do
     --lambda-area) LAMBDA_AREA="$2"; shift 2;;
     --lambda-efficiency) LAMBDA_EFFICIENCY="$2"; shift 2;;
     --efficiency-eps) EFFICIENCY_EPS="$2"; shift 2;;
+    --lambda-perceptual) LAMBDA_PERCEPTUAL="$2"; shift 2;;
+    --lambda-day) LAMBDA_DAY="$2"; shift 2;;
+    --area-target) AREA_TARGET="$2"; shift 2;;
+    --area-lagrange-lr) AREA_LAGRANGE_LR="$2"; shift 2;;
+    --area-lagrange-min) AREA_LAGRANGE_MIN="$2"; shift 2;;
+    --area-lagrange-max) AREA_LAGRANGE_MAX="$2"; shift 2;;
     --success-conf) SUCCESS_CONF="$2"; shift 2;;
     --transform-strength) TRANSFORM_STRENGTH="$2"; shift 2;;
+    --paint) PAINT="$2"; shift 2;;
+    --paint-list) PAINT_LIST="$2"; shift 2;;
+    --cell-cover-thresh) CELL_COVER_THRESH="$2"; shift 2;;
     --phase1-transform-strength) PHASE1_TRANSFORM_STRENGTH="$2"; shift 2;;
     --phase2-transform-strength) PHASE2_TRANSFORM_STRENGTH="$2"; shift 2;;
     --phase3-transform-strength) PHASE3_TRANSFORM_STRENGTH="$2"; shift 2;;
+    --phase1-lambda-day) PHASE1_LAMBDA_DAY="$2"; shift 2;;
+    --phase2-lambda-day) PHASE2_LAMBDA_DAY="$2"; shift 2;;
+    --phase3-lambda-day) PHASE3_LAMBDA_DAY="$2"; shift 2;;
     --area-cap-frac) AREA_CAP_FRAC="$2"; shift 2;;
     --area-cap-penalty) AREA_CAP_PENALTY="$2"; shift 2;;
     --area-cap-mode) AREA_CAP_MODE="$2"; shift 2;;
@@ -329,6 +365,9 @@ fi
 if [[ -n "${ENT_COEF_END}" ]]; then
   EXTRA_ARGS+=(--ent-coef-end "${ENT_COEF_END}")
 fi
+if [[ -n "${AREA_TARGET}" ]]; then
+  EXTRA_ARGS+=(--area-target "${AREA_TARGET}")
+fi
 if [[ -n "${PHASE1_TRANSFORM_STRENGTH}" ]]; then
   EXTRA_ARGS+=(--phase1-transform-strength "${PHASE1_TRANSFORM_STRENGTH}")
 fi
@@ -338,12 +377,24 @@ fi
 if [[ -n "${PHASE3_TRANSFORM_STRENGTH}" ]]; then
   EXTRA_ARGS+=(--phase3-transform-strength "${PHASE3_TRANSFORM_STRENGTH}")
 fi
+if [[ -n "${PHASE1_LAMBDA_DAY}" ]]; then
+  EXTRA_ARGS+=(--phase1-lambda-day "${PHASE1_LAMBDA_DAY}")
+fi
+if [[ -n "${PHASE2_LAMBDA_DAY}" ]]; then
+  EXTRA_ARGS+=(--phase2-lambda-day "${PHASE2_LAMBDA_DAY}")
+fi
+if [[ -n "${PHASE3_LAMBDA_DAY}" ]]; then
+  EXTRA_ARGS+=(--phase3-lambda-day "${PHASE3_LAMBDA_DAY}")
+fi
+if [[ -n "${PAINT_LIST}" ]]; then
+  EXTRA_ARGS+=(--paint-list "${PAINT_LIST}")
+fi
 
 echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
 echo "        yolo-version=${YOLO_VERSION} yolo-weights=${YOLO_WEIGHTS:-<default>}"
 echo "        num-envs=${NUM_ENVS} vec=${VEC} eval_K=${EVAL_K} grid=${GRID_CELL}"
-echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
+echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} area-target=${AREA_TARGET:-<cap>} lagrange-lr=${AREA_LAGRANGE_LR} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
 echo "        cap-ramp=${AREA_CAP_START}->${AREA_CAP_END} over ${AREA_CAP_STEPS} steps"
 echo "        lambda-ramp=${LAMBDA_AREA_START}->${LAMBDA_AREA_END} over ${LAMBDA_AREA_STEPS} steps"
 echo "        n-steps=${N_STEPS} batch=${BATCH} total-steps=${TOTAL_STEPS}"
@@ -364,8 +415,15 @@ python "${PY_MAIN}" \
   --lambda-area "${LAMBDA_AREA}" \
   --lambda-efficiency "${LAMBDA_EFFICIENCY}" \
   --efficiency-eps "${EFFICIENCY_EPS}" \
+  --lambda-perceptual "${LAMBDA_PERCEPTUAL}" \
+  --lambda-day "${LAMBDA_DAY}" \
+  --area-lagrange-lr "${AREA_LAGRANGE_LR}" \
+  --area-lagrange-min "${AREA_LAGRANGE_MIN}" \
+  --area-lagrange-max "${AREA_LAGRANGE_MAX}" \
   --success-conf "${SUCCESS_CONF}" \
   --transform-strength "${TRANSFORM_STRENGTH}" \
+  --paint "${PAINT}" \
+  --cell-cover-thresh "${CELL_COVER_THRESH}" \
   --area-cap-frac "${AREA_CAP_FRAC}" \
   --area-cap-penalty "${AREA_CAP_PENALTY}" \
   --area-cap-mode "${AREA_CAP_MODE}" \

@@ -82,18 +82,24 @@ class StopSignGridEnv(gym.Env):
 
         # Paint (single pair)
         uv_paint: UVPaint = VIOLET_GLOW,
+        uv_paint_list: Optional[List[UVPaint]] = None,
         use_single_color: bool = True,
 
         # Threshold logic
-        uv_drop_threshold: float = 0.70,
+        uv_drop_threshold: float = 0.75,
         success_conf_threshold: float = 0.20,
         day_tolerance: float = 0.05,
         lambda_day: float = 1.0,
         lambda_area: float = 0.3,
+        area_target_frac: Optional[float] = None,
+        area_lagrange_lr: float = 0.0,
+        area_lagrange_min: float = 0.0,
+        area_lagrange_max: float = 5.0,
         lambda_iou: float = 0.4,
         lambda_misclass: float = 0.6,
         lambda_efficiency: float = 0.0,
         efficiency_eps: float = 0.02,
+        lambda_perceptual: float = 0.0,
         transform_strength: float = 1.0,
         uv_min_alpha: float = 0.08,
         min_base_conf: float = 0.20,
@@ -167,7 +173,8 @@ class StopSignGridEnv(gym.Env):
             else:
                 self.max_cells = 0
 
-        # UV paint pair (single)
+        # UV paint pair (single or list)
+        self.paint_list = list(uv_paint_list) if uv_paint_list else None
         self.paint = uv_paint
         self.use_single_color = bool(use_single_color)
 
@@ -177,10 +184,16 @@ class StopSignGridEnv(gym.Env):
         self.day_tolerance = float(day_tolerance)
         self.lambda_day = float(lambda_day)
         self.lambda_area = float(lambda_area)
+        self.area_target_frac = float(area_target_frac) if area_target_frac is not None else None
+        self.area_lagrange_lr = float(area_lagrange_lr)
+        self.area_lagrange_min = float(area_lagrange_min)
+        self.area_lagrange_max = float(area_lagrange_max)
+        self._lambda_area_dyn = float(lambda_area)
         self.lambda_iou = float(lambda_iou)
         self.lambda_misclass = float(lambda_misclass)
         self.lambda_efficiency = float(lambda_efficiency)
         self.efficiency_eps = float(efficiency_eps)
+        self.lambda_perceptual = float(lambda_perceptual)
         self.transform_strength = float(transform_strength)
         self.uv_min_alpha = float(uv_min_alpha)
         self.min_base_conf = float(min_base_conf)
@@ -191,6 +204,11 @@ class StopSignGridEnv(gym.Env):
         self.obs_margin = float(obs_margin)
         self.obs_include_mask = bool(obs_include_mask)
         self.area_cap_penalty = float(area_cap_penalty)
+        if self.area_target_frac is not None:
+            if not (0.0 < self.area_target_frac <= 1.0):
+                raise ValueError("area_target_frac must be in (0, 1]")
+        if self.area_lagrange_max < self.area_lagrange_min:
+            raise ValueError("area_lagrange_max must be >= area_lagrange_min")
 
 
         # detector
@@ -266,6 +284,10 @@ class StopSignGridEnv(gym.Env):
 
         self._step = 0
         self._episode_cells = np.zeros((self.Gh, self.Gw), dtype=bool)
+
+        if self.paint_list:
+            pick = int(self.rng.integers(0, len(self.paint_list)))
+            self.paint = self.paint_list[pick]
 
         self._bg_rgb = self._choose_bg_rgb()
         self._place_seed = int(self.rng.integers(0, 2**31 - 1))
@@ -404,14 +426,28 @@ class StopSignGridEnv(gym.Env):
         eff_drop = max(0.0, float(drop_on))
         eff_denom = max(float(area_frac), float(self.efficiency_eps))
         efficiency = math.log1p(eff_drop / eff_denom)
+        lambda_area_used = float(self.lambda_area)
+        area_target = self.area_target_frac if self.area_target_frac is not None else self.area_cap_frac
+        if self.area_lagrange_lr > 0.0 and area_target is not None and float(area_target) > 0.0:
+            violation = float(area_frac) - float(area_target)
+            self._lambda_area_dyn = float(
+                np.clip(
+                    self._lambda_area_dyn + (self.area_lagrange_lr * violation),
+                    self.area_lagrange_min,
+                    self.area_lagrange_max,
+                )
+            )
+            lambda_area_used = float(self._lambda_area_dyn)
         raw_core = (
             drop_blend
             - self.lambda_day * pen_day
-            - self.lambda_area * area_frac
+            - lambda_area_used * area_frac
             + self.lambda_iou * (1.0 - mean_iou)
             + self.lambda_misclass * misclass_rate
             + self.lambda_efficiency * efficiency
         )
+        perceptual = self._perceptual_delta()
+        raw_core -= self.lambda_perceptual * perceptual
 
         conf_thr = self.success_conf_threshold
         shaping = 0.35 * math.tanh(3.0 * (conf_thr - c_on))
@@ -455,8 +491,13 @@ class StopSignGridEnv(gym.Env):
             "drop_day": drop_day, "drop_on": drop_on, "drop_on_smooth": float(drop_on_s),
             "reward_core": float(raw_core),
             "reward_efficiency": float(self.lambda_efficiency * efficiency),
+            "reward_perceptual": float(-self.lambda_perceptual * perceptual),
             "reward_raw_total": float(raw_total),
             "reward": float(reward),
+            "lambda_area_used": float(lambda_area_used),
+            "lambda_area_dyn": float(self._lambda_area_dyn),
+            "area_target_frac": float(area_target) if area_target is not None else None,
+            "area_lagrange_lr": float(self.area_lagrange_lr),
             "mean_iou": float(mean_iou),
             "misclass_rate": float(misclass_rate),
             "mean_target_conf": float(mean_target_conf),
@@ -477,6 +518,9 @@ class StopSignGridEnv(gym.Env):
             "lambda_misclass": float(self.lambda_misclass),
             "lambda_efficiency": float(self.lambda_efficiency),
             "efficiency_eps": float(self.efficiency_eps),
+            "lambda_perceptual": float(self.lambda_perceptual),
+            "perceptual_delta": float(perceptual),
+            "paint_name": getattr(self.paint, "name", "unknown"),
             "base_conf": float(c0_day),
             "after_conf": float(c_on),
             "total_area_mask_frac": float(area_frac),
@@ -690,6 +734,7 @@ class StopSignGridEnv(gym.Env):
         @param value: New lambda_area value.
         """
         self.lambda_area = float(value)
+        self._lambda_area_dyn = float(value)
 
     def _eval_over_K(self) -> Tuple[float, float, float, float]:
         imgs_plain_day = []
@@ -853,6 +898,22 @@ class StopSignGridEnv(gym.Env):
 
         img.paste(color, mask=mask)
         return img
+
+    def _perceptual_delta(self) -> float:
+        """
+        Measure daylight-visibility delta: mean absolute RGB difference between
+        baseline sign and daylight overlay, masked to the sign alpha.
+        """
+        base = self.sign_rgba_day.convert("RGB")
+        over = self._apply_grid_overlay(self.sign_rgba_day, mode="day").convert("RGB")
+        base_arr = np.array(base, dtype=np.float32)
+        over_arr = np.array(over, dtype=np.float32)
+        diff = np.abs(over_arr - base_arr) / 255.0
+        mask = (np.array(self._sign_alpha, dtype=np.uint8) > 0).astype(np.float32)
+        if mask.sum() <= 0:
+            return 0.0
+        diff_mean = float((diff.mean(axis=2) * mask).sum() / mask.sum())
+        return diff_mean
 
     def _transform_sign(self, sign_rgba: Image.Image, seed: int) -> Image.Image:
         rng = np.random.default_rng(seed)

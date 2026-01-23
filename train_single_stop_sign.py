@@ -13,7 +13,17 @@ from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback,
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 from envs.stop_sign_grid_env import StopSignGridEnv
-from utils.uv_paint import GREEN_GLOW  # single pair; swap here if you want another
+from utils.uv_paint import (
+    GREEN_GLOW,
+    NEON_YELLOW_GLOW,
+    ORANGE_GLOW,
+    RED_GLOW,
+    BLUE_LIGHT_GLOW,
+    BLUE_MED_GLOW,
+    BLUE_DARK_GLOW,
+    PURPLE_GLOW,
+    UVPaint,
+)
 from utils.save_callbacks import SaveImprovingOverlaysCallback
 from utils.tb_callbacks import TensorboardOverlayCallback, EpisodeMetricsCallback, StepMetricsCallback
 
@@ -66,6 +76,36 @@ def build_policy_kwargs() -> dict:
         "features_extractor_kwargs": {"features_dim": 512},
         "net_arch": {"pi": [256, 256], "vf": [256, 256]},
     }
+
+
+def resolve_paint_list(paint_name: str, paint_list: Optional[str]) -> List[UVPaint]:
+    """
+    Resolve paint selection from CLI args.
+
+    @param paint_name: Single paint name.
+    @param paint_list: Optional comma-separated list.
+    @return: List of UVPaints (length >= 1).
+    """
+    mapping = {
+        "green": GREEN_GLOW,
+        "neon_yellow": NEON_YELLOW_GLOW,
+        "orange": ORANGE_GLOW,
+        "red": RED_GLOW,
+        "light_blue": BLUE_LIGHT_GLOW,
+        "medium_blue": BLUE_MED_GLOW,
+        "dark_blue": BLUE_DARK_GLOW,
+        "purple": PURPLE_GLOW,
+    }
+    paints = []
+    if paint_list:
+        for part in paint_list.split(","):
+            key = part.strip().lower()
+            if key in mapping:
+                paints.append(mapping[key])
+    if not paints:
+        key = str(paint_name or "neon_yellow").strip().lower()
+        paints = [mapping.get(key, NEON_YELLOW_GLOW)]
+    return paints
 
 
 # ----------------- progress logger -----------------
@@ -231,6 +271,10 @@ def make_env_factory(
     efficiency_eps: float,
     transform_strength: float,
     lambda_area: float,
+    area_target_frac: Optional[float],
+    area_lagrange_lr: float,
+    area_lagrange_min: float,
+    area_lagrange_max: float,
     lambda_iou: float,
     lambda_misclass: float,
     area_cap_frac: Optional[float],
@@ -241,6 +285,9 @@ def make_env_factory(
     obs_size: Tuple[int, int],
     obs_margin: float,
     obs_include_mask: bool,
+    uv_paints: List[UVPaint],
+    cell_cover_thresh: float,
+    lambda_perceptual: float,
 ):
     """
     Create a factory function for VecEnv construction.
@@ -258,19 +305,31 @@ def make_env_factory(
     @param efficiency_eps: Denominator epsilon for efficiency bonus.
     @param transform_strength: Strength of sign transforms (0..1).
     @param lambda_area: Area penalty weight.
+    @param area_target_frac: Target area fraction for adaptive penalty.
+    @param area_lagrange_lr: Lagrange multiplier update rate.
+    @param area_lagrange_min: Minimum adaptive area penalty.
+    @param area_lagrange_max: Maximum adaptive area penalty.
     @param lambda_iou: IOU reward weight.
     @param lambda_misclass: Misclassification reward weight.
     @param area_cap_frac: Area cap fraction (or None).
     @param area_cap_penalty: Penalty when cap exceeded.
     @param area_cap_mode: "soft" or "hard" cap mode.
+    @param area_target_frac: Target area fraction for adaptive penalty.
+    @param area_lagrange_lr: Lagrange multiplier update rate.
+    @param area_lagrange_min: Minimum adaptive area penalty.
+    @param area_lagrange_max: Maximum adaptive area penalty.
     @param yolo_wts: YOLO weights path.
     @param yolo_device: YOLO device spec.
     @param obs_size: Cropped observation size.
     @param obs_margin: Crop margin around sign bbox.
     @param obs_include_mask: Include overlay mask channel.
+    @param uv_paints: List of paints to sample (per episode).
+    @param cell_cover_thresh: Cell coverage threshold for grid validity.
+    @param lambda_perceptual: Daylight visibility penalty weight.
     @return: Callable that builds a monitored env.
     """
     def _init():
+        paint_list = list(uv_paints) if uv_paints else [NEON_YELLOW_GLOW]
         return Monitor(
             StopSignGridEnv(
                 stop_sign_image=stop_plain,
@@ -293,8 +352,10 @@ def make_env_factory(
                 # max_cells = ceil(area_cap_frac * valid_total) and terminates with
                 # info["note"]="max_cells_reached" once selected_cells hits that cap.
                 max_cells=None,  # leave None because we terminate by threshold
-                uv_paint=GREEN_GLOW,  # single color pair for this project
+                uv_paint=paint_list[0],
+                uv_paint_list=paint_list if len(paint_list) > 1 else None,
                 use_single_color=True,
+                cell_cover_thresh=float(cell_cover_thresh),
 
                 uv_drop_threshold=uv_drop_threshold,
                 success_conf_threshold=success_conf_threshold,
@@ -302,10 +363,15 @@ def make_env_factory(
                 efficiency_eps=efficiency_eps,
                 transform_strength=transform_strength,
                 day_tolerance=0.05,
-                lambda_day=1.0,
+                lambda_day=float(args.lambda_day),
                 lambda_area=float(lambda_area),
+                area_target_frac=area_target_frac,
+                area_lagrange_lr=float(area_lagrange_lr),
+                area_lagrange_min=float(area_lagrange_min),
+                area_lagrange_max=float(area_lagrange_max),
                 lambda_iou=float(lambda_iou),
                 lambda_misclass=float(lambda_misclass),
+                lambda_perceptual=float(lambda_perceptual),
                 area_cap_frac=area_cap_frac,
                 area_cap_penalty=area_cap_penalty,
                 area_cap_mode=area_cap_mode,
@@ -345,16 +411,30 @@ def parse_args():
     ap.add_argument("--episode-steps", type=int, default=7000)
     ap.add_argument("--eval-K", type=int, default=10)
     ap.add_argument("--grid-cell", type=int, default=2, choices=[2, 4, 8, 16, 32])
-    ap.add_argument("--uv-threshold", type=float, default=0.70)
+    ap.add_argument("--uv-threshold", type=float, default=0.75)
     ap.add_argument("--success-conf", type=float, default=0.20,
                     help="Success threshold for after-conf (stop sign).")
     ap.add_argument("--lambda-area", type=float, default=0.30)
     ap.add_argument("--lambda-iou", type=float, default=0.40)
     ap.add_argument("--lambda-misclass", type=float, default=0.60)
-    ap.add_argument("--lambda-efficiency", type=float, default=0.0,
+    ap.add_argument("--lambda-perceptual", type=float, default=0.0,
+                    help="Penalty for daylight visibility (lower is better).")
+    ap.add_argument("--lambda-day", type=float, default=0.0,
+                    help="Penalty weight for daylight drop.")
+    ap.add_argument("--lambda-efficiency", type=float, default=0.25,
                     help="Efficiency bonus weight (drop per area).")
     ap.add_argument("--efficiency-eps", type=float, default=0.02,
                     help="Epsilon for efficiency denominator.")
+    ap.add_argument("--area-target", type=float, default=None,
+                    help="Target area fraction for adaptive area penalty (default: use area cap if set).")
+    ap.add_argument("--area-lagrange-lr", type=float, default=0.02,
+                    help="Adaptive area penalty learning rate (0 disables).")
+    ap.add_argument("--area-lagrange-min", type=float, default=0.0,
+                    help="Minimum adaptive area penalty.")
+    ap.add_argument("--area-lagrange-max", type=float, default=5.0,
+                    help="Maximum adaptive area penalty.")
+    ap.add_argument("--cell-cover-thresh", type=float, default=0.60,
+                    help="Grid cell coverage threshold (0..1). Lower covers edges.")
     ap.add_argument("--transform-strength", type=float, default=1.0,
                     help="Strength of geometric/photometric transforms (0..1).")
     ap.add_argument("--area-cap-frac", type=float, default=0.30,
@@ -399,9 +479,15 @@ def parse_args():
     ap.add_argument("--phase1-eval-K", type=int, default=None,
                     help="Phase 1 eval_K override (default 1).")
     ap.add_argument("--phase2-eval-K", type=int, default=None,
-                    help="Phase 2 eval_K override (default 3).")
+                    help="Phase 2 eval_K override (default 2).")
     ap.add_argument("--phase3-eval-K", type=int, default=None,
-                    help="Phase 3 eval_K override (default 5 or --eval-K if smaller).")
+                    help="Phase 3 eval_K override (default 4 or --eval-K if smaller).")
+    ap.add_argument("--phase1-lambda-day", type=float, default=None,
+                    help="Phase 1 lambda-day override (default 0.0).")
+    ap.add_argument("--phase2-lambda-day", type=float, default=None,
+                    help="Phase 2 lambda-day override (default 0.5).")
+    ap.add_argument("--phase3-lambda-day", type=float, default=None,
+                    help="Phase 3 lambda-day override (default 1.0).")
     ap.add_argument("--phase1-transform-strength", type=float, default=None,
                     help="Phase 1 transform strength override (default 0.4).")
     ap.add_argument("--phase2-transform-strength", type=float, default=None,
@@ -486,6 +572,7 @@ if __name__ == "__main__":
         else:
             lambda_area = float(args.lambda_area)
 
+        paint_list = resolve_paint_list(args.paint, args.paint_list)
         fns = [
             make_env_factory(
                 stop_plain, stop_uv, pole_use, backgrounds,
@@ -495,6 +582,10 @@ if __name__ == "__main__":
                 uv_drop_threshold=args.uv_threshold,
                 success_conf_threshold=float(args.success_conf),
                 lambda_area=lambda_area,
+                area_target_frac=(float(args.area_target) if args.area_target is not None else None),
+                area_lagrange_lr=float(args.area_lagrange_lr),
+                area_lagrange_min=float(args.area_lagrange_min),
+                area_lagrange_max=float(args.area_lagrange_max),
                 lambda_iou=float(args.lambda_iou),
                 lambda_misclass=float(args.lambda_misclass),
                 lambda_efficiency=float(args.lambda_efficiency),
@@ -508,6 +599,9 @@ if __name__ == "__main__":
                 obs_size=(int(args.obs_size), int(args.obs_size)),
                 obs_margin=float(args.obs_margin),
                 obs_include_mask=bool(int(args.obs_include_mask)),
+                uv_paints=paint_list,
+                cell_cover_thresh=float(args.cell_cover_thresh),
+                lambda_perceptual=float(args.lambda_perceptual),
             ) for _ in range(args.num_envs)
         ]
         v = SubprocVecEnv(fns) if args.vec == "subproc" else DummyVecEnv(fns)
@@ -629,26 +723,30 @@ if __name__ == "__main__":
     else:
         p1, p2, p3 = resolve_phase_steps(int(args.total_steps))
         phase1_eval = int(args.phase1_eval_K) if args.phase1_eval_K is not None else 1
-        phase2_eval = int(args.phase2_eval_K) if args.phase2_eval_K is not None else 3
-        phase3_eval = int(args.phase3_eval_K) if args.phase3_eval_K is not None else min(5, int(args.eval_K))
+        phase2_eval = int(args.phase2_eval_K) if args.phase2_eval_K is not None else 2
+        phase3_eval = int(args.phase3_eval_K) if args.phase3_eval_K is not None else min(4, int(args.eval_K))
         phase1_tf = float(args.phase1_transform_strength) if args.phase1_transform_strength is not None else 0.4
         phase2_tf = float(args.phase2_transform_strength) if args.phase2_transform_strength is not None else 0.7
         phase3_tf = float(args.phase3_transform_strength) if args.phase3_transform_strength is not None else 1.0
+        phase1_ld = float(args.phase1_lambda_day) if args.phase1_lambda_day is not None else 0.0
+        phase2_ld = float(args.phase2_lambda_day) if args.phase2_lambda_day is not None else 0.5
+        phase3_ld = float(args.phase3_lambda_day) if args.phase3_lambda_day is not None else 1.0
         phases = [
-            {"name": "phase1_easy", "steps": p1, "eval_K": phase1_eval, "bg_mode": "solid", "use_pole": False, "tf": phase1_tf},
-            {"name": "phase2_medium", "steps": p2, "eval_K": phase2_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase2_tf},
-            {"name": "phase3_full", "steps": p3, "eval_K": phase3_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase3_tf},
+            {"name": "phase1_easy", "steps": p1, "eval_K": phase1_eval, "bg_mode": "solid", "use_pole": False, "tf": phase1_tf, "lambda_day": phase1_ld},
+            {"name": "phase2_medium", "steps": p2, "eval_K": phase2_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase2_tf, "lambda_day": phase2_ld},
+            {"name": "phase3_full", "steps": p3, "eval_K": phase3_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase3_tf, "lambda_day": phase3_ld},
         ]
 
         for i, ph in enumerate(phases):
             if int(ph["steps"]) <= 0:
                 continue
-            print(f\"[CURRICULUM] {ph['name']} steps={ph['steps']} eval_K={ph['eval_K']} tf={ph['tf']} bg={ph['bg_mode']} pole={ph['use_pole']}\")
+            print(f"[CURRICULUM] {ph['name']} steps={ph['steps']} eval_K={ph['eval_K']} tf={ph['tf']} lambda_day={ph['lambda_day']} bg={ph['bg_mode']} pole={ph['use_pole']}")
             phase_log_dir = os.path.join(tb_root, ph["name"])
             tb_cb.set_log_dir(phase_log_dir, tag_prefix=f"{run_tag}/{ph['name']}")
             ep_cb.set_log_dir(phase_log_dir)
             step_cb.set_log_dir(phase_log_dir)
 
+            args.lambda_day = float(ph["lambda_day"])
             env = build_env(
                 eval_K=int(ph["eval_K"]),
                 bg_mode=ph["bg_mode"],
@@ -697,3 +795,7 @@ if __name__ == "__main__":
     final = os.path.join(args.ckpt, "ppo_grid_uv_final")
     model.save(final)
     print(f" Saved final model to {final}")
+    ap.add_argument("--paint", default="neon_yellow",
+                    help="Paint name (neon_yellow, orange, red, light_blue, medium_blue, dark_blue, purple, green).")
+    ap.add_argument("--paint-list", default="",
+                    help="Comma-separated list of paint names to sample per episode.")
