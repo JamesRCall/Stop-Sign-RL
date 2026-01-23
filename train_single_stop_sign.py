@@ -650,7 +650,7 @@ if __name__ == "__main__":
     
     saver = SaveImprovingOverlaysCallback(
         save_dir=args.overlays, threshold=0.0, mode="minimal",
-        max_saved=1000, verbose=1, tb_callback=tb_cb
+        max_saved=50, verbose=1, tb_callback=tb_cb
     )
 
     # checkpoint cadence
