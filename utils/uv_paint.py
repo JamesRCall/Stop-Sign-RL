@@ -22,7 +22,7 @@ class UVPaint:
     active_hex: str         # how it looks under UV (activated)
     translucent: bool = True
     day_alpha: float = 0.35
-    active_alpha: float = 0.80
+    active_alpha: float = 1.0
 
     @property
     def day_rgb(self) -> Tuple[int, int, int]:
