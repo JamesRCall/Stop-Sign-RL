@@ -40,10 +40,16 @@ class StopSignGridEnv(gym.Env):
       overlay-mask channel (H,W,3 or H,W,4) uint8.
 
     Reward (per step, normalized):
-      Let raw_core = drop_on - lambda_day * max(0, drop_day - day_tolerance)
-                              - lambda_area * area_frac.
-      Add a smooth shaping bonus as drop_on approaches threshold, plus a small
-      success bonus once success criteria are met, then squash:
+      Let raw_core = drop_on
+                     - lambda_day * max(0, drop_day - day_tolerance)
+                     - lambda_area_used * area_frac
+                     + lambda_iou * (1 - mean_iou)
+                     + lambda_misclass * misclass_rate
+                     + lambda_efficiency * log1p(drop_on / area_frac).
+      lambda_area_used can be adaptive (Lagrangian) when area_target_frac is set.
+
+      Add a smooth shaping bonus as after-conf approaches the success threshold,
+      plus a small success bonus once success criteria are met, then squash:
 
           raw_total = raw_core + shaping + success_bonus
           reward    = tanh(1.2 * raw_total)    (-1, 1)

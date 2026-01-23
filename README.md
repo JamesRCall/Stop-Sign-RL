@@ -17,6 +17,7 @@ Core ideas:
 - UV paint pair: daylight color/alpha vs UV-on color/alpha.
 - Matched transforms and backgrounds across daylight/UV variants for fair comparison.
 - Reward that targets UV confidence drop while penalizing daylight drop and patch area.
+- Efficiency bonus (drop per area) and optional adaptive area penalty to favor minimal patches.
 - Early termination on success or area cap.
 
 ---
@@ -67,6 +68,12 @@ Minimal run:
 python train_single_stop_sign.py --data ./data --bgdir ./data/backgrounds
 ```
 
+Recommended single-machine run:
+
+```bash
+bash train.sh --yolo-weights ./weights/yolo8n.pt --multiphase
+```
+
 Resume from latest checkpoint:
 
 ```bash
@@ -91,11 +98,16 @@ From `train_single_stop_sign.py`:
 - `--grid-cell` (2, 4, 8, 16, 32) grid size in pixels
 - `--uv-threshold` UV drop threshold for success
 - `--lambda-area` area penalty strength (encourages minimal patches)
+- `--lambda-efficiency` efficiency bonus (drop per area)
+- `--area-target`, `--area-lagrange-lr/min/max` adaptive area penalty target and bounds
 - `--lambda-area-start`, `--lambda-area-end`, `--lambda-area-steps` (curriculum)
 - `--area-cap-frac` cap on total patch area (<= 0 disables)
 - `--area-cap-penalty` reward penalty when cap would be exceeded
 - `--area-cap-mode` (`soft` or `hard`)
 - `--area-cap-start`, `--area-cap-end`, `--area-cap-steps` (curriculum)
+- `--lambda-day` penalty for daylight confidence drop beyond tolerance
+- `--lambda-iou`, `--lambda-misclass` extra objectives for mislocalization/misclassification
+- `--paint`, `--paint-list` paint selection (single or per-episode sampling)
 - `--multiphase` enable 3-phase curriculum (solid/no pole -> dataset + pole)
 - `--phase1-steps`, `--phase2-steps`, `--phase3-steps` (phase lengths; 0 = auto split)
 - `--phase1-eval-K`, `--phase2-eval-K`, `--phase3-eval-K` (per-phase eval_K overrides)
@@ -117,6 +129,8 @@ Highlights:
 - Discrete action space over valid grid cells inside the sign octagon.
 - UV-on reward uses raw UV drop (`drop_on`) computed as the day baseline
   confidence minus UV-on overlay confidence.
+- Reward includes an efficiency bonus (drop per area) and an optional adaptive
+  area penalty that nudges toward a target patch fraction.
 - Observations are cropped around the sign with an optional overlay-mask channel
   (controlled by `--obs-*` flags).
 - Training uses a lightweight custom CNN extractor tuned for sign crops.
@@ -154,12 +168,17 @@ Episode metrics currently include:
 - `episode/reward_final`, `episode/selected_cells_final`
 - `episode/eval_K_used_final`
 - `episode/uv_success_final`, `episode/area_cap_exceeded_final`
+- `episode/reward_core_final`, `episode/reward_raw_total_final`
+- `episode/reward_efficiency_final`, `episode/reward_perceptual_final`
+- `episode/lambda_area_used_final`, `episode/lambda_area_dyn_final`
+- `episode/area_target_frac_final`, `episode/area_lagrange_lr_final`
 
 Step metrics:
 - Rolling window of per-step rows in
   `runs/tb/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics.ndjson`
 - 500-step snapshots in
   `runs/tb/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics_500.ndjson`
+- Step scalars include reward components and adaptive area weights when present.
 
 ---
 

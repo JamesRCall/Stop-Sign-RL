@@ -160,6 +160,10 @@ class EpisodeMetricsCallback(BaseCallback):
       - episode/reward_final, episode/selected_cells_final
       - episode/eval_K_used_final, episode/uv_success_final, episode/area_cap_exceeded_final
       - episode/mean_iou_final, episode/misclass_rate_final
+      - episode/reward_core_final, episode/reward_raw_total_final
+      - episode/reward_efficiency_final, episode/reward_perceptual_final
+      - episode/lambda_area_used_final, episode/lambda_area_dyn_final
+      - episode/area_target_frac_final, episode/area_lagrange_lr_final
 
     X-axis is episode index (so you can see improvement run-to-run).
     Also logs *_vs_timesteps variants so you can align with training time.
@@ -195,6 +199,10 @@ class EpisodeMetricsCallback(BaseCallback):
                 "base_conf": None,
                 "after_conf": None,
                 "reward": None,
+                "reward_core": None,
+                "reward_raw_total": None,
+                "reward_efficiency": None,
+                "reward_perceptual": None,
                 "selected_cells": None,
                 "eval_k": None,
                 "uv_success": None,
@@ -202,6 +210,10 @@ class EpisodeMetricsCallback(BaseCallback):
                 "area_cap_exceeded": None,
                 "mean_iou": None,
                 "misclass_rate": None,
+                "lambda_area_used": None,
+                "lambda_area_dyn": None,
+                "area_target_frac": None,
+                "area_lagrange_lr": None,
             }
             for _ in range(int(n_envs))
         ]
@@ -248,6 +260,10 @@ class EpisodeMetricsCallback(BaseCallback):
                     ("base_conf", "base_conf"),
                     ("after_conf", "after_conf"),
                     ("reward", "reward"),
+                    ("reward_core", "reward_core"),
+                    ("reward_raw_total", "reward_raw_total"),
+                    ("reward_efficiency", "reward_efficiency"),
+                    ("reward_perceptual", "reward_perceptual"),
                     ("selected_cells", "selected_cells"),
                     ("eval_k", "eval_K_used"),
                     ("uv_success", "uv_success"),
@@ -255,6 +271,10 @@ class EpisodeMetricsCallback(BaseCallback):
                     ("area_cap_exceeded", "area_cap_exceeded"),
                     ("mean_iou", "mean_iou"),
                     ("misclass_rate", "misclass_rate"),
+                    ("lambda_area_used", "lambda_area_used"),
+                    ("lambda_area_dyn", "lambda_area_dyn"),
+                    ("area_target_frac", "area_target_frac"),
+                    ("area_lagrange_lr", "area_lagrange_lr"),
                 ):
                     val = info.get(alt_key, None)
                     if isinstance(val, (int, float)) and not np.isnan(val):
@@ -274,6 +294,10 @@ class EpisodeMetricsCallback(BaseCallback):
             base_conf = None
             after_conf = None
             reward = None
+            reward_core = None
+            reward_raw_total = None
+            reward_efficiency = None
+            reward_perceptual = None
             selected_cells = None
             eval_k = None
             uv_success = None
@@ -281,6 +305,10 @@ class EpisodeMetricsCallback(BaseCallback):
             area_cap_exceeded = None
             mean_iou = None
             misclass_rate = None
+            lambda_area_used = None
+            lambda_area_dyn = None
+            area_target_frac = None
+            area_lagrange_lr = None
             if isinstance(info, dict):
                 area = info.get("total_area_mask_frac", None)
                 drop_on = info.get("drop_on", None)
@@ -288,6 +316,10 @@ class EpisodeMetricsCallback(BaseCallback):
                 base_conf = info.get("base_conf", info.get("c0_on", None))
                 after_conf = info.get("after_conf", info.get("c_on", None))
                 reward = info.get("reward", None)
+                reward_core = info.get("reward_core", None)
+                reward_raw_total = info.get("reward_raw_total", None)
+                reward_efficiency = info.get("reward_efficiency", None)
+                reward_perceptual = info.get("reward_perceptual", None)
                 selected_cells = info.get("selected_cells", None)
                 eval_k = info.get("eval_K_used", None)
                 uv_success = info.get("uv_success", None)
@@ -295,6 +327,10 @@ class EpisodeMetricsCallback(BaseCallback):
                 area_cap_exceeded = info.get("area_cap_exceeded", None)
                 mean_iou = info.get("mean_iou", None)
                 misclass_rate = info.get("misclass_rate", None)
+                lambda_area_used = info.get("lambda_area_used", None)
+                lambda_area_dyn = info.get("lambda_area_dyn", None)
+                area_target_frac = info.get("area_target_frac", None)
+                area_lagrange_lr = info.get("area_lagrange_lr", None)
 
             # Fallback: use last valid per-env values, then NaN if still missing.
             last = self._last_valid[env_idx] if env_idx < len(self._last_valid) else {}
@@ -310,6 +346,14 @@ class EpisodeMetricsCallback(BaseCallback):
                 after_conf = last.get("after_conf", None)
             if reward is None:
                 reward = last.get("reward", None)
+            if reward_core is None:
+                reward_core = last.get("reward_core", None)
+            if reward_raw_total is None:
+                reward_raw_total = last.get("reward_raw_total", None)
+            if reward_efficiency is None:
+                reward_efficiency = last.get("reward_efficiency", None)
+            if reward_perceptual is None:
+                reward_perceptual = last.get("reward_perceptual", None)
             if selected_cells is None:
                 selected_cells = last.get("selected_cells", None)
             if eval_k is None:
@@ -324,6 +368,14 @@ class EpisodeMetricsCallback(BaseCallback):
                 mean_iou = last.get("mean_iou", None)
             if misclass_rate is None:
                 misclass_rate = last.get("misclass_rate", None)
+            if lambda_area_used is None:
+                lambda_area_used = last.get("lambda_area_used", None)
+            if lambda_area_dyn is None:
+                lambda_area_dyn = last.get("lambda_area_dyn", None)
+            if area_target_frac is None:
+                area_target_frac = last.get("area_target_frac", None)
+            if area_lagrange_lr is None:
+                area_lagrange_lr = last.get("area_lagrange_lr", None)
 
             # Final fallback: NaN so TB shows gaps instead of crashing.
             area_val = float(area) if area is not None else float("nan")
@@ -332,6 +384,10 @@ class EpisodeMetricsCallback(BaseCallback):
             base_conf_val = float(base_conf) if base_conf is not None else float("nan")
             after_conf_val = float(after_conf) if after_conf is not None else float("nan")
             reward_val = float(reward) if reward is not None else float("nan")
+            reward_core_val = float(reward_core) if reward_core is not None else float("nan")
+            reward_raw_total_val = float(reward_raw_total) if reward_raw_total is not None else float("nan")
+            reward_efficiency_val = float(reward_efficiency) if reward_efficiency is not None else float("nan")
+            reward_perceptual_val = float(reward_perceptual) if reward_perceptual is not None else float("nan")
             selected_cells_val = float(selected_cells) if selected_cells is not None else float("nan")
             eval_k_val = float(eval_k) if eval_k is not None else float("nan")
             uv_success_val = float(uv_success) if uv_success is not None else float("nan")
@@ -339,6 +395,10 @@ class EpisodeMetricsCallback(BaseCallback):
             area_cap_exceeded_val = float(area_cap_exceeded) if area_cap_exceeded is not None else float("nan")
             mean_iou_val = float(mean_iou) if mean_iou is not None else float("nan")
             misclass_rate_val = float(misclass_rate) if misclass_rate is not None else float("nan")
+            lambda_area_used_val = float(lambda_area_used) if lambda_area_used is not None else float("nan")
+            lambda_area_dyn_val = float(lambda_area_dyn) if lambda_area_dyn is not None else float("nan")
+            area_target_frac_val = float(area_target_frac) if area_target_frac is not None else float("nan")
+            area_lagrange_lr_val = float(area_lagrange_lr) if area_lagrange_lr is not None else float("nan")
 
             # log vs EPISODE INDEX (best for tracking improvement)
             if self.writer is not None:
@@ -349,6 +409,10 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/base_conf_final", base_conf_val, self._ep_count)
                 self.writer.add_scalar("episode/after_conf_final", after_conf_val, self._ep_count)
                 self.writer.add_scalar("episode/reward_final", reward_val, self._ep_count)
+                self.writer.add_scalar("episode/reward_core_final", reward_core_val, self._ep_count)
+                self.writer.add_scalar("episode/reward_raw_total_final", reward_raw_total_val, self._ep_count)
+                self.writer.add_scalar("episode/reward_efficiency_final", reward_efficiency_val, self._ep_count)
+                self.writer.add_scalar("episode/reward_perceptual_final", reward_perceptual_val, self._ep_count)
                 self.writer.add_scalar("episode/selected_cells_final", selected_cells_val, self._ep_count)
                 self.writer.add_scalar("episode/eval_K_used_final", eval_k_val, self._ep_count)
                 self.writer.add_scalar("episode/uv_success_final", uv_success_val, self._ep_count)
@@ -356,6 +420,10 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/area_cap_exceeded_final", area_cap_exceeded_val, self._ep_count)
                 self.writer.add_scalar("episode/mean_iou_final", mean_iou_val, self._ep_count)
                 self.writer.add_scalar("episode/misclass_rate_final", misclass_rate_val, self._ep_count)
+                self.writer.add_scalar("episode/lambda_area_used_final", lambda_area_used_val, self._ep_count)
+                self.writer.add_scalar("episode/lambda_area_dyn_final", lambda_area_dyn_val, self._ep_count)
+                self.writer.add_scalar("episode/area_target_frac_final", area_target_frac_val, self._ep_count)
+                self.writer.add_scalar("episode/area_lagrange_lr_final", area_lagrange_lr_val, self._ep_count)
 
                 # also log vs global timesteps (sometimes useful)
                 self.writer.add_scalar("episode/length_steps_vs_timesteps", ep_len, self.num_timesteps)
@@ -365,6 +433,10 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/base_conf_final_vs_timesteps", base_conf_val, self.num_timesteps)
                 self.writer.add_scalar("episode/after_conf_final_vs_timesteps", after_conf_val, self.num_timesteps)
                 self.writer.add_scalar("episode/reward_final_vs_timesteps", reward_val, self.num_timesteps)
+                self.writer.add_scalar("episode/reward_core_final_vs_timesteps", reward_core_val, self.num_timesteps)
+                self.writer.add_scalar("episode/reward_raw_total_final_vs_timesteps", reward_raw_total_val, self.num_timesteps)
+                self.writer.add_scalar("episode/reward_efficiency_final_vs_timesteps", reward_efficiency_val, self.num_timesteps)
+                self.writer.add_scalar("episode/reward_perceptual_final_vs_timesteps", reward_perceptual_val, self.num_timesteps)
                 self.writer.add_scalar("episode/selected_cells_final_vs_timesteps", selected_cells_val, self.num_timesteps)
                 self.writer.add_scalar("episode/eval_K_used_final_vs_timesteps", eval_k_val, self.num_timesteps)
                 self.writer.add_scalar("episode/uv_success_final_vs_timesteps", uv_success_val, self.num_timesteps)
@@ -372,6 +444,10 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/area_cap_exceeded_final_vs_timesteps", area_cap_exceeded_val, self.num_timesteps)
                 self.writer.add_scalar("episode/mean_iou_final_vs_timesteps", mean_iou_val, self.num_timesteps)
                 self.writer.add_scalar("episode/misclass_rate_final_vs_timesteps", misclass_rate_val, self.num_timesteps)
+                self.writer.add_scalar("episode/lambda_area_used_final_vs_timesteps", lambda_area_used_val, self.num_timesteps)
+                self.writer.add_scalar("episode/lambda_area_dyn_final_vs_timesteps", lambda_area_dyn_val, self.num_timesteps)
+                self.writer.add_scalar("episode/area_target_frac_final_vs_timesteps", area_target_frac_val, self.num_timesteps)
+                self.writer.add_scalar("episode/area_lagrange_lr_final_vs_timesteps", area_lagrange_lr_val, self.num_timesteps)
 
                 self.writer.flush()
 
@@ -388,6 +464,7 @@ class StepMetricsCallback(BaseCallback):
     """
     Logs step-level metrics to a lightweight ndjson file and TB scalars.
     Keeps a rolling window if keep_last_n > 0.
+    Includes reward components and adaptive area weights when available.
     """
 
     def __init__(
@@ -477,6 +554,14 @@ class StepMetricsCallback(BaseCallback):
         mean_target_conf = info.get("mean_target_conf", None)
         eval_k = info.get("eval_K_used", None)
         top_class_counts = info.get("top_class_counts", None)
+        reward_core = info.get("reward_core", None)
+        reward_raw_total = info.get("reward_raw_total", None)
+        reward_efficiency = info.get("reward_efficiency", None)
+        reward_perceptual = info.get("reward_perceptual", None)
+        lambda_area_used = info.get("lambda_area_used", None)
+        lambda_area_dyn = info.get("lambda_area_dyn", None)
+        area_target_frac = info.get("area_target_frac", None)
+        area_lagrange_lr = info.get("area_lagrange_lr", None)
 
         row = {
             "step": int(self.num_timesteps),
@@ -492,6 +577,14 @@ class StepMetricsCallback(BaseCallback):
             "mean_target_conf": float(mean_target_conf) if mean_target_conf is not None else None,
             "eval_K_used": int(eval_k) if eval_k is not None else None,
             "top_class_counts": top_class_counts if isinstance(top_class_counts, dict) else None,
+            "reward_core": float(reward_core) if reward_core is not None else None,
+            "reward_raw_total": float(reward_raw_total) if reward_raw_total is not None else None,
+            "reward_efficiency": float(reward_efficiency) if reward_efficiency is not None else None,
+            "reward_perceptual": float(reward_perceptual) if reward_perceptual is not None else None,
+            "lambda_area_used": float(lambda_area_used) if lambda_area_used is not None else None,
+            "lambda_area_dyn": float(lambda_area_dyn) if lambda_area_dyn is not None else None,
+            "area_target_frac": float(area_target_frac) if area_target_frac is not None else None,
+            "area_lagrange_lr": float(area_lagrange_lr) if area_lagrange_lr is not None else None,
         }
 
         if self.writer is not None:
@@ -513,6 +606,22 @@ class StepMetricsCallback(BaseCallback):
                 self.writer.add_scalar("step_range/mean_top_conf", row["mean_top_conf"], self.num_timesteps)
             if row["mean_target_conf"] is not None:
                 self.writer.add_scalar("step_range/mean_target_conf", row["mean_target_conf"], self.num_timesteps)
+            if row["reward_core"] is not None:
+                self.writer.add_scalar("step_range/reward_core", row["reward_core"], self.num_timesteps)
+            if row["reward_raw_total"] is not None:
+                self.writer.add_scalar("step_range/reward_raw_total", row["reward_raw_total"], self.num_timesteps)
+            if row["reward_efficiency"] is not None:
+                self.writer.add_scalar("step_range/reward_efficiency", row["reward_efficiency"], self.num_timesteps)
+            if row["reward_perceptual"] is not None:
+                self.writer.add_scalar("step_range/reward_perceptual", row["reward_perceptual"], self.num_timesteps)
+            if row["lambda_area_used"] is not None:
+                self.writer.add_scalar("step_range/lambda_area_used", row["lambda_area_used"], self.num_timesteps)
+            if row["lambda_area_dyn"] is not None:
+                self.writer.add_scalar("step_range/lambda_area_dyn", row["lambda_area_dyn"], self.num_timesteps)
+            if row["area_target_frac"] is not None:
+                self.writer.add_scalar("step_range/area_target_frac", row["area_target_frac"], self.num_timesteps)
+            if row["area_lagrange_lr"] is not None:
+                self.writer.add_scalar("step_range/area_lagrange_lr", row["area_lagrange_lr"], self.num_timesteps)
             self.writer.flush()
 
         try:
