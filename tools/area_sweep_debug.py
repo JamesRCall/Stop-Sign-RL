@@ -71,8 +71,8 @@ def parse_paint_list(s: str) -> List[str]:
     return out
 
 
-def resolve_paints(names: List[str]) -> List[UVPaint]:
-    mapping = {
+def get_paint_map() -> dict:
+    return {
         "green": GREEN_GLOW,
         "violet": VIOLET_GLOW,
         "blue": BLUE_GLOW,
@@ -106,11 +106,35 @@ def resolve_paints(names: List[str]) -> List[UVPaint]:
         "medium_blue": BLUE_MED_GLOW,
         "dark_blue": BLUE_DARK_GLOW,
     }
+
+
+def resolve_paints(names: List[str]) -> List[UVPaint]:
+    mapping = get_paint_map()
     paints = []
     for n in names:
         if n in mapping:
             paints.append(mapping[n])
     return paints
+
+
+def parse_combo_list(s: str, mapping: dict) -> List[tuple]:
+    combos = []
+    for part in s.split(","):
+        part = part.strip().lower()
+        if not part:
+            continue
+        names = [p.strip() for p in part.split("+") if p.strip()]
+        paints = []
+        ok = True
+        for name in names:
+            if name in mapping:
+                paints.append(mapping[name])
+            else:
+                ok = False
+                break
+        if ok and paints:
+            combos.append(tuple(paints))
+    return combos
 
 
 def apply_multi_color_overlay(sign_rgba: Image.Image, mode: str, env: StopSignGridEnv, paints: List[UVPaint], rng) -> Image.Image:
@@ -224,6 +248,8 @@ def main() -> None:
         default="neon_yellow,orange,red,light_blue,medium_blue,dark_blue,purple,green",
         help="Comma-separated paint names to test.",
     )
+    p.add_argument("--combo-list", default="",
+                   help="Comma-separated explicit combos (e.g., neon_yellow+orange,orange+dark_blue).")
     p.add_argument("--combo-sizes", default="1",
                    help="Comma-separated combo sizes to test (e.g., 1,2,3).")
     p.add_argument("--combo-limit", type=int, default=0,
@@ -247,6 +273,7 @@ def main() -> None:
     percents = [1.0] if args.full_cover else parse_percents(args.percentages)
     k_list = parse_int_list(args.eval_k_list) if args.eval_k_list.strip() else [int(args.eval_k)]
     paint_names = parse_paint_list(args.paint_list)
+    paint_map = get_paint_map()
     paints = resolve_paints(paint_names)
     if not paints:
         paints = [GREEN_GLOW]
@@ -255,14 +282,17 @@ def main() -> None:
     if not combo_sizes:
         combo_sizes = [1]
     combos = []
-    for k in combo_sizes:
-        for combo in itertools.combinations(paints, min(k, len(paints))):
-            combos.append(combo)
+    if args.combo_list.strip():
+        combos = parse_combo_list(args.combo_list, paint_map)
+    else:
+        for k in combo_sizes:
+            for combo in itertools.combinations(paints, min(k, len(paints))):
+                combos.append(combo)
 
-    if args.combo_limit and len(combos) > int(args.combo_limit):
-        rng_tmp = np.random.default_rng(int(args.seed))
-        picks = rng_tmp.choice(len(combos), size=int(args.combo_limit), replace=False)
-        combos = [combos[int(i)] for i in picks]
+        if args.combo_limit and len(combos) > int(args.combo_limit):
+            rng_tmp = np.random.default_rng(int(args.seed))
+            picks = rng_tmp.choice(len(combos), size=int(args.combo_limit), replace=False)
+            combos = [combos[int(i)] for i in picks]
 
     for eval_k in k_list:
         rng = np.random.default_rng(int(args.seed))
