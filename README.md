@@ -99,7 +99,8 @@ From `train_single_stop_sign.py`:
 - `--uv-threshold` UV drop threshold for success
 - `--lambda-area` area penalty strength (encourages minimal patches)
 - `--lambda-efficiency` efficiency bonus (drop per area)
-- `--area-target`, `--area-lagrange-lr/min/max` adaptive area penalty target and bounds
+- `--area-target` (default 0.20) and `--area-lagrange-lr/min/max` adaptive area penalty target and bounds
+- `--step-cost` (default 0.0) and `--step-cost-after-target` (default 0.03) per-step penalties
 - `--step-cost`, `--step-cost-after-target` per-step penalties
 - `--lambda-area-start`, `--lambda-area-end`, `--lambda-area-steps` (curriculum)
 - `--area-cap-frac` cap on total patch area (<= 0 disables)
@@ -230,6 +231,7 @@ Episode metrics currently include:
 - `episode/reward_efficiency_final`, `episode/reward_perceptual_final`
 - `episode/lambda_area_used_final`, `episode/lambda_area_dyn_final`
 - `episode/area_target_frac_final`, `episode/area_lagrange_lr_final`
+- `episode/area_reward_corr` (rolling correlation between area and reward)
 
 Step metrics:
 - Rolling window of per-step rows in

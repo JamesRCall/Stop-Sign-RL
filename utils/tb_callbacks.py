@@ -164,6 +164,7 @@ class EpisodeMetricsCallback(BaseCallback):
       - episode/reward_efficiency_final, episode/reward_perceptual_final, episode/reward_step_cost_final
       - episode/lambda_area_used_final, episode/lambda_area_dyn_final
       - episode/area_target_frac_final, episode/area_lagrange_lr_final
+      - episode/area_reward_corr (rolling correlation between area and reward)
 
     X-axis is episode index (so you can see improvement run-to-run).
     Also logs *_vs_timesteps variants so you can align with training time.
@@ -183,6 +184,9 @@ class EpisodeMetricsCallback(BaseCallback):
         self.writer: SummaryWriter | None = None
         self._ep_count = 0
         self._ep_len: List[int] = []
+        self._area_hist: List[float] = []
+        self._reward_hist: List[float] = []
+        self._corr_window = 50
 
     def _on_training_start(self) -> None:
         if self.writer is None:
@@ -239,6 +243,8 @@ class EpisodeMetricsCallback(BaseCallback):
         self._ep_count = 0
         self._ep_len = []
         self._last_valid = []
+        self._area_hist = []
+        self._reward_hist = []
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", None)
@@ -433,6 +439,21 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/area_target_frac_final", area_target_frac_val, self._ep_count)
                 self.writer.add_scalar("episode/area_lagrange_lr_final", area_lagrange_lr_val, self._ep_count)
 
+                # rolling correlation between area and reward (last N episodes)
+                if not np.isnan(area_val) and not np.isnan(reward_val):
+                    self._area_hist.append(float(area_val))
+                    self._reward_hist.append(float(reward_val))
+                    if len(self._area_hist) > self._corr_window:
+                        self._area_hist = self._area_hist[-self._corr_window :]
+                        self._reward_hist = self._reward_hist[-self._corr_window :]
+                    if len(self._area_hist) >= 3:
+                        try:
+                            corr = float(np.corrcoef(self._area_hist, self._reward_hist)[0, 1])
+                        except Exception:
+                            corr = float("nan")
+                        if not np.isnan(corr):
+                            self.writer.add_scalar("episode/area_reward_corr", corr, self._ep_count)
+
                 # also log vs global timesteps (sometimes useful)
                 self.writer.add_scalar("episode/length_steps_vs_timesteps", ep_len, self.num_timesteps)
                 self.writer.add_scalar("episode/area_frac_final_vs_timesteps", area_val, self.num_timesteps)
@@ -457,6 +478,13 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/lambda_area_dyn_final_vs_timesteps", lambda_area_dyn_val, self.num_timesteps)
                 self.writer.add_scalar("episode/area_target_frac_final_vs_timesteps", area_target_frac_val, self.num_timesteps)
                 self.writer.add_scalar("episode/area_lagrange_lr_final_vs_timesteps", area_lagrange_lr_val, self.num_timesteps)
+                if self._area_hist and self._reward_hist and len(self._area_hist) >= 3:
+                    try:
+                        corr = float(np.corrcoef(self._area_hist, self._reward_hist)[0, 1])
+                    except Exception:
+                        corr = float("nan")
+                    if not np.isnan(corr):
+                        self.writer.add_scalar("episode/area_reward_corr_vs_timesteps", corr, self.num_timesteps)
 
                 self.writer.flush()
 
