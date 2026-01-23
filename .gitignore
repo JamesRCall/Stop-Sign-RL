@@ -19,11 +19,17 @@ __pycache__/
 
 # Checkpoints, runs, outputs
 runs/
-!runs/analysis/          
-runs/analysis/*.png      
+!runs/analysis/
+runs/analysis/*.png
+_runs/
+_old_runs/
+_debug_area_sweep/
+_debug_grid/
 *.zip
 *.pth
 *.pt
+slides/*.pptx
+slides/charts/*.png
 
 # Weights (keep a placeholder but ignore actual binaries)
 weights/

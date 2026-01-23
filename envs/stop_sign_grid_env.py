@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import Tuple, Dict, Any, List, Optional
 import math
 import numpy as np
-from collections import deque
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 import gymnasium as gym
@@ -22,7 +21,7 @@ class StopSignGridEnv(gym.Env):
 
     Per step:
       - Add 1 new grid cell (grid_cell_px square) to a running episode mask.
-      - Duplicate cells are disallowed: remap to a free cell.
+      - Duplicate cells are disallowed: action is remapped to a free cell deterministically.
       - Render three matched variants on the same background/pole/placement/transforms:
           0) Plain (no overlay) baseline for day and UV-on
           1) Daylight overlay (pre-activation color/alpha)
@@ -33,19 +32,31 @@ class StopSignGridEnv(gym.Env):
           c0_day, c_day, c0_on, c_on
         Primary objective is drop_on = c0_day - c_on (target threshold).
         Secondary objective keeps day confidence high (penalize if drop exceeds tolerance).
-      - Episode terminates early when drop_on_mean meets uv_drop_threshold.
+      - Additional objectives use mean IoU (target vs top detection) and misclassification rate.
+      - Episode terminates early when after-conf <= success threshold.
 
     Observation:
-      RGB image of the *daylight* composite for the first transform (H,W,3) uint8.
+      Cropped RGB image around the sign (daylight composite) with optional
+      overlay-mask channel (H,W,3 or H,W,4) uint8.
 
     Reward (per step, normalized):
-      Let raw_core = blend(drop_on_s, drop_on) - lambda_day * max(0, drop_day - day_tolerance)
-                              - lambda_area * area_frac.
-      Add a smooth shaping bonus as drop_on approaches threshold, plus a small
-      success bonus once drop_on >= uv_drop_threshold, then squash:
+      Let raw_core = drop_on
+                     - lambda_day * max(0, drop_day - day_tolerance)
+                     - lambda_area_used * area_frac
+                     + lambda_iou * (1 - mean_iou)
+                     + lambda_misclass * misclass_rate
+                     + lambda_efficiency * log1p(drop_on / area_frac).
+      lambda_area_used can be adaptive (Lagrangian) when area_target_frac is set.
+
+      Add a smooth shaping bonus as after-conf approaches the success threshold,
+      plus a small success bonus once success criteria are met, then squash:
 
           raw_total = raw_core + shaping + success_bonus
           reward    = tanh(1.2 * raw_total)    (-1, 1)
+
+      Efficiency bonus (optional):
+        efficiency = log1p(max(0, drop_on) / max(area_frac, efficiency_eps))
+        raw_core += lambda_efficiency * efficiency
 
       so PPO always sees a bounded per-step reward.
     """
@@ -77,13 +88,25 @@ class StopSignGridEnv(gym.Env):
 
         # Paint (single pair)
         uv_paint: UVPaint = VIOLET_GLOW,
+        uv_paint_list: Optional[List[UVPaint]] = None,
         use_single_color: bool = True,
 
         # Threshold logic
-        uv_drop_threshold: float = 0.70,
+        uv_drop_threshold: float = 0.75,
+        success_conf_threshold: float = 0.20,
         day_tolerance: float = 0.05,
         lambda_day: float = 1.0,
         lambda_area: float = 0.3,
+        area_target_frac: Optional[float] = None,
+        area_lagrange_lr: float = 0.0,
+        area_lagrange_min: float = 0.0,
+        area_lagrange_max: float = 5.0,
+        lambda_iou: float = 0.4,
+        lambda_misclass: float = 0.6,
+        lambda_efficiency: float = 0.0,
+        efficiency_eps: float = 0.02,
+        lambda_perceptual: float = 0.0,
+        transform_strength: float = 1.0,
         uv_min_alpha: float = 0.08,
         min_base_conf: float = 0.20,
         cell_cover_thresh: float = 0.60,
@@ -96,11 +119,13 @@ class StopSignGridEnv(gym.Env):
         conf_thresh: float = 0.10,
         iou_thresh: float = 0.45,
         info_image_every: int = 50,
+        diag_area_thresh: float = 0.80,
+        diag_conf_thresh: float = 0.70,
 
-        # Reward smoothing
-        reward_smooth_n: int = 10,
-        use_ema: bool = True,
-        ema_beta: float = 0.90,
+        # Observation crop
+        obs_size: Tuple[int, int] = (224, 224),
+        obs_margin: float = 0.10,
+        obs_include_mask: bool = True,
 
         seed: Optional[int] = None,
     ):
@@ -136,7 +161,14 @@ class StopSignGridEnv(gym.Env):
 
         self.max_cells = int(max_cells) if max_cells is not None else None
         self.area_cap_frac = float(area_cap_frac) if area_cap_frac is not None else None
-        self._derived_max_cells = (self.max_cells is None and self.area_cap_frac is not None)
+        self.area_cap_mode = str(area_cap_mode).lower().strip()
+        if self.area_cap_mode not in ("soft", "hard"):
+            raise ValueError("area_cap_mode must be 'soft' or 'hard'")
+        self._derived_max_cells = (
+            self.max_cells is None
+            and self.area_cap_frac is not None
+            and self.area_cap_mode == "hard"
+        )
         if self.area_cap_frac is not None and not (0.0 < self.area_cap_frac <= 1.0):
             raise ValueError("area_cap_frac must be in (0, 1]")
         if self._derived_max_cells:
@@ -147,30 +179,43 @@ class StopSignGridEnv(gym.Env):
             else:
                 self.max_cells = 0
 
-        # UV paint pair (single)
+        # UV paint pair (single or list)
+        self.paint_list = list(uv_paint_list) if uv_paint_list else None
         self.paint = uv_paint
         self.use_single_color = bool(use_single_color)
 
         # threshold / reward
         self.uv_drop_threshold = float(uv_drop_threshold)
+        self.success_conf_threshold = float(success_conf_threshold)
         self.day_tolerance = float(day_tolerance)
         self.lambda_day = float(lambda_day)
         self.lambda_area = float(lambda_area)
+        self.area_target_frac = float(area_target_frac) if area_target_frac is not None else None
+        self.area_lagrange_lr = float(area_lagrange_lr)
+        self.area_lagrange_min = float(area_lagrange_min)
+        self.area_lagrange_max = float(area_lagrange_max)
+        self._lambda_area_dyn = float(lambda_area)
+        self.lambda_iou = float(lambda_iou)
+        self.lambda_misclass = float(lambda_misclass)
+        self.lambda_efficiency = float(lambda_efficiency)
+        self.efficiency_eps = float(efficiency_eps)
+        self.lambda_perceptual = float(lambda_perceptual)
+        self.transform_strength = float(transform_strength)
         self.uv_min_alpha = float(uv_min_alpha)
         self.min_base_conf = float(min_base_conf)
         self.info_image_every = int(info_image_every)
+        self.diag_area_thresh = float(diag_area_thresh)
+        self.diag_conf_thresh = float(diag_conf_thresh)
+        self.obs_size = (int(obs_size[0]), int(obs_size[1]))
+        self.obs_margin = float(obs_margin)
+        self.obs_include_mask = bool(obs_include_mask)
         self.area_cap_penalty = float(area_cap_penalty)
-        self.area_cap_mode = str(area_cap_mode).lower().strip()
-        if self.area_cap_mode not in ("soft", "hard"):
-            raise ValueError("area_cap_mode must be 'soft' or 'hard'")
+        if self.area_target_frac is not None:
+            if not (0.0 < self.area_target_frac <= 1.0):
+                raise ValueError("area_target_frac must be in (0, 1]")
+        if self.area_lagrange_max < self.area_lagrange_min:
+            raise ValueError("area_lagrange_max must be >= area_lagrange_min")
 
-
-        # Reward smoothing state (Option A)
-        self.reward_smooth_n = int(reward_smooth_n)
-        self.use_ema = bool(use_ema)
-        self.ema_beta = float(ema_beta)
-        self._drop_hist = deque(maxlen=self.reward_smooth_n)
-        self._drop_ema = None
 
         # detector
         dev_str = str(yolo_device)
@@ -190,9 +235,10 @@ class StopSignGridEnv(gym.Env):
 
         # action/obs spaces
         self.action_space = spaces.Discrete(self._n_valid)
-        H, W = self.img_size[1], self.img_size[0]
+        H, W = self.obs_size[1], self.obs_size[0]
+        C = 4 if self.obs_include_mask else 3
         self.observation_space = spaces.Box(
-            low=0, high=255, shape=(H, W, 3), dtype=np.uint8
+            low=0, high=255, shape=(H, W, C), dtype=np.uint8
         )
 
         # RNG & episodic state
@@ -205,6 +251,7 @@ class StopSignGridEnv(gym.Env):
         self._baseline_c0_day_list: List[float] = []
         self._baseline_c0_on_list: List[float] = []
         self._last_drop_on_s = 0.0
+        self._diag_saved = False
 
     # ----------------------------- grid build --------------------------------
 
@@ -244,23 +291,25 @@ class StopSignGridEnv(gym.Env):
         self._step = 0
         self._episode_cells = np.zeros((self.Gh, self.Gw), dtype=bool)
 
+        if self.paint_list:
+            pick = int(self.rng.integers(0, len(self.paint_list)))
+            self.paint = self.paint_list[pick]
+
         self._bg_rgb = self._choose_bg_rgb()
         self._place_seed = int(self.rng.integers(0, 2**31 - 1))
         self._transform_seeds = [
             int(self.rng.integers(0, 2**31 - 1)) for _ in range(self.eval_K_max)
         ]
 
-        obs = self._render_variant(kind="day", use_overlay=False, transform_seed=self._transform_seeds[0])
+        obs = self._render_observation(kind="day", use_overlay=False, transform_seed=self._transform_seeds[0])
 
         # Cache plain baseline confidences (same throughout episode)
         self._baseline_c0_day_list, self._baseline_c0_on_list = self._eval_plain_over_K(
             self._transform_seeds
         )
 
-        # Reset reward smoothing buffers (Option A)
-        self._drop_hist.clear()
-        self._drop_ema = None
         self._last_drop_on_s = 0.0
+        self._diag_saved = False
 
         return np.array(obs, dtype=np.uint8), {}
 
@@ -272,35 +321,30 @@ class StopSignGridEnv(gym.Env):
         # 1) Action is an index into valid cells (octagon-aware)
         idx = int(action)
         idx = max(0, min(idx, self._n_valid - 1))
-        r, c = self._valid_coords[idx]
-        r, c = int(r), int(c)
+        free_mask = self._valid_cells & (~self._episode_cells)
+        coords = np.argwhere(free_mask)
+        if coords.size == 0:
+            # no free cells left
+            terminated = True
+            truncated = (self._step >= self.steps_per_episode)
 
-        # Enforce non-duplicate: if already used, sample a random unused valid cell
-        if self._episode_cells[r, c]:
-            free_mask = self._valid_cells & (~self._episode_cells)
-            coords = np.argwhere(free_mask)
-            if coords.size == 0:
-                # no free cells left
-                terminated = True
-                truncated = (self._step >= self.steps_per_episode)
+            obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
+            area_frac = self._area_frac_selected()
+            cap_exceeded = self.area_cap_frac is not None and area_frac > self.area_cap_frac
+            info = {
+                "objective": "grid_uv",
+                "note": "no_free_cells",
+                "lambda_area": float(self.lambda_area),
+                "total_area_mask_frac": area_frac,
+                "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else 0.0,
+                "uv_success": False,
+                "attack_success": False,
+                "area_cap_exceeded": cap_exceeded,
+            }
+            return obs, -1.0, bool(terminated), bool(truncated), info
 
-                obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
-                obs = np.array(obs_img, dtype=np.uint8)
-                area_frac = self._area_frac_selected()
-                cap_exceeded = self.area_cap_frac is not None and area_frac > self.area_cap_frac
-                info = {
-                    "objective": "grid_uv",
-                    "note": "no_free_cells",
-                    "lambda_area": float(self.lambda_area),
-                    "total_area_mask_frac": area_frac,
-                    "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else 0.0,
-                    "uv_success": False,
-                    "area_cap_exceeded": cap_exceeded,
-                }
-                return obs, 0.0, bool(terminated), bool(truncated), info
-
-            pick = coords[int(self.rng.integers(0, coords.shape[0]))]
-            r, c = int(pick[0]), int(pick[1])
+        pick = coords[idx % coords.shape[0]]
+        r, c = int(pick[0]), int(pick[1])
 
         selected_cells = int(self._episode_cells.sum())
         valid_total = int(self._valid_cells.sum())
@@ -309,8 +353,7 @@ class StopSignGridEnv(gym.Env):
             if next_area_frac > self.area_cap_frac:
                 terminated = True
                 truncated = (self._step >= self.steps_per_episode)
-                obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
-                obs = np.array(obs_img, dtype=np.uint8)
+                obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
                 area_frac = float(selected_cells) / float(valid_total)
                 info = {
                     "objective": "grid_uv",
@@ -319,6 +362,7 @@ class StopSignGridEnv(gym.Env):
                     "total_area_mask_frac": float(area_frac),
                     "area_cap": float(self.area_cap_frac),
                     "uv_success": False,
+                    "attack_success": False,
                     "area_cap_exceeded": True,
                 }
                 return obs, float(self.area_cap_penalty), bool(terminated), bool(truncated), info
@@ -338,24 +382,22 @@ class StopSignGridEnv(gym.Env):
         # 2) Evaluate overlay vs baseline
         eval_K = self._current_eval_K(self._last_drop_on_s)
         eval_seeds = self._transform_seeds[:eval_K]
-        c_day, c_on = self._eval_overlay_over_K(eval_seeds)
+        overlay_metrics = self._eval_overlay_over_K(eval_seeds)
+        c_day = overlay_metrics["c_day"]
+        c_on = overlay_metrics["c_on"]
+        mean_iou = overlay_metrics["mean_iou"]
+        misclass_rate = overlay_metrics["misclass_rate"]
+        mean_target_conf = overlay_metrics.get("mean_target_conf", 0.0)
+        mean_top_conf = overlay_metrics.get("mean_top_conf", 0.0)
+        top_class_counts = overlay_metrics.get("top_class_counts", {})
+
         c0_day = self._mean_over_K(self._baseline_c0_day_list, eval_K)
         c0_on = self._mean_over_K(self._baseline_c0_on_list, eval_K)
 
         drop_day = float(c0_day - c_day)
         drop_on  = float(c0_day - c_on)
 
-        # (Option A reward smoothing) Smooth UV drop signal over recent steps
-        self._drop_hist.append(drop_on)
-        if self.use_ema:
-            if self._drop_ema is None:
-                self._drop_ema = drop_on
-            else:
-                b = float(self.ema_beta)
-                self._drop_ema = b * float(self._drop_ema) + (1.0 - b) * drop_on
-            drop_on_s = float(self._drop_ema)
-        else:
-            drop_on_s = float(np.mean(self._drop_hist)) if len(self._drop_hist) else float(drop_on)
+        drop_on_s = float(drop_on)
         self._last_drop_on_s = drop_on_s
 
         area_frac = self._area_frac_selected()
@@ -367,8 +409,7 @@ class StopSignGridEnv(gym.Env):
             # keep termination from max_cells if you want; I'm leaving it as-is:
             truncated = (self._step >= self.steps_per_episode)
 
-            obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
-            obs = np.array(obs_img, dtype=np.uint8)
+            obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
             info = {
                 "objective": "grid_uv",
                 "c0_day": c0_day, "c_day": c_day,
@@ -379,42 +420,75 @@ class StopSignGridEnv(gym.Env):
                 "total_area_mask_frac": float(area_frac),
                 "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
                 "uv_success": False,
+                "attack_success": False,
                 "area_cap_exceeded": bool(cap_exceeded),
             }
             return obs, float(reward), bool(terminated), bool(truncated), info
 
-        # 3) Reward using smoothed UV drop
+        # 3) Reward using raw UV drop (no smoothing for core objective)
         pen_day = max(0.0, drop_day - self.day_tolerance)
         area_frac = self._area_frac_selected()
-        drop_blend = 0.7 * drop_on_s + 0.3 * drop_on
-        raw_core = drop_blend - self.lambda_day * pen_day - self.lambda_area * area_frac
+        drop_blend = float(drop_on)
+        eff_drop = max(0.0, float(drop_on))
+        eff_denom = max(float(area_frac), float(self.efficiency_eps))
+        efficiency = math.log1p(eff_drop / eff_denom)
+        lambda_area_used = float(self.lambda_area)
+        area_target = self.area_target_frac if self.area_target_frac is not None else self.area_cap_frac
+        if self.area_lagrange_lr > 0.0 and area_target is not None and float(area_target) > 0.0:
+            violation = float(area_frac) - float(area_target)
+            self._lambda_area_dyn = float(
+                np.clip(
+                    self._lambda_area_dyn + (self.area_lagrange_lr * violation),
+                    self.area_lagrange_min,
+                    self.area_lagrange_max,
+                )
+            )
+            lambda_area_used = float(self._lambda_area_dyn)
+        raw_core = (
+            drop_blend
+            - self.lambda_day * pen_day
+            - lambda_area_used * area_frac
+            + self.lambda_iou * (1.0 - mean_iou)
+            + self.lambda_misclass * misclass_rate
+            + self.lambda_efficiency * efficiency
+        )
+        perceptual = self._perceptual_delta()
+        raw_core -= self.lambda_perceptual * perceptual
 
-        thr = self.uv_drop_threshold
-        shaping = 0.35 * math.tanh(3.0 * (drop_on_s - 0.5 * thr))
-        uv_success = drop_on_s >= thr and (self.area_cap_frac is None or area_frac <= self.area_cap_frac)
-        success_bonus = 0.2 if uv_success else 0.0
+        conf_thr = self.success_conf_threshold
+        shaping = 0.35 * math.tanh(3.0 * (conf_thr - c_on))
+        conf_success = self._is_drop_success(c_on, area_frac, conf_thr)
+        attack_success = bool(conf_success)
+        success_bonus = 0.2 if conf_success else 0.0
 
         raw_total = raw_core + shaping + success_bonus
         if cap_exceeded and self.area_cap_mode == "soft":
             if self.area_cap_frac and self.area_cap_frac > 0:
                 excess = max(0.0, (area_frac - self.area_cap_frac) / self.area_cap_frac)
-                raw_total += float(self.area_cap_penalty) * (1.0 + 2.0 * excess)
+                over_pen = abs(float(self.area_cap_penalty)) * (1.0 + 2.0 * excess)
             else:
-                raw_total += float(self.area_cap_penalty)
+                over_pen = abs(float(self.area_cap_penalty))
+            raw_total = -over_pen
         reward = math.tanh(1.2 * raw_total)
 
-        if drop_on_s >= thr:
+        if conf_success:
             terminated = True
-            if self.area_cap_frac is not None and area_frac > self.area_cap_frac:
-                uv_success = False
-                cap_exceeded = True
+        if terminated and self.area_cap_frac is not None and area_frac > self.area_cap_frac:
+            conf_success = False
+            attack_success = False
+            cap_exceeded = True
 
         truncated = (self._step >= self.steps_per_episode)
 
         # 4) Observation and preview
-        obs_img = self._render_variant(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
-        obs = np.array(obs_img, dtype=np.uint8)
+        obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
         preview_on = self._render_variant(kind="on", use_overlay=True, transform_seed=self._transform_seeds[0])
+
+        target_id = getattr(self.det, "target_id", None)
+        target_name = None
+        id_to_name = getattr(self.det, "id_to_name", None)
+        if target_id is not None and isinstance(id_to_name, dict):
+            target_name = id_to_name.get(int(target_id))
 
         info = {
             "objective": "grid_uv",
@@ -422,21 +496,43 @@ class StopSignGridEnv(gym.Env):
             "c0_on": c0_on,   "c_on": c_on,
             "drop_day": drop_day, "drop_on": drop_on, "drop_on_smooth": float(drop_on_s),
             "reward_core": float(raw_core),
+            "reward_efficiency": float(self.lambda_efficiency * efficiency),
+            "reward_perceptual": float(-self.lambda_perceptual * perceptual),
             "reward_raw_total": float(raw_total),
             "reward": float(reward),
+            "lambda_area_used": float(lambda_area_used),
+            "lambda_area_dyn": float(self._lambda_area_dyn),
+            "area_target_frac": float(area_target) if area_target is not None else None,
+            "area_lagrange_lr": float(self.area_lagrange_lr),
+            "mean_iou": float(mean_iou),
+            "misclass_rate": float(misclass_rate),
+            "mean_target_conf": float(mean_target_conf),
+            "mean_top_conf": float(mean_top_conf),
+            "top_class_counts": dict(top_class_counts),
+            "target_id": int(target_id) if target_id is not None else None,
+            "target_name": str(target_name) if target_name is not None else None,
             "selected_cells": int(self._episode_cells.sum()),
             "grid_cell_px": int(self.grid_cell_px),
             "eval_K_used": int(eval_K),
             "eval_K_min": int(self.eval_K_min),
             "eval_K_max": int(self.eval_K_max),
             "uv_drop_threshold": float(self.uv_drop_threshold),
+            "success_conf_threshold": float(self.success_conf_threshold),
             "day_tolerance": float(self.day_tolerance),
             "lambda_area": float(self.lambda_area),
+            "lambda_iou": float(self.lambda_iou),
+            "lambda_misclass": float(self.lambda_misclass),
+            "lambda_efficiency": float(self.lambda_efficiency),
+            "efficiency_eps": float(self.efficiency_eps),
+            "lambda_perceptual": float(self.lambda_perceptual),
+            "perceptual_delta": float(perceptual),
+            "paint_name": getattr(self.paint, "name", "unknown"),
             "base_conf": float(c0_day),
             "after_conf": float(c_on),
             "total_area_mask_frac": float(area_frac),
             "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
-            "uv_success": bool(uv_success),
+            "uv_success": bool(conf_success),
+            "attack_success": bool(attack_success),
             "area_cap_exceeded": bool(cap_exceeded),
             "trace": {
                 "phase": "grid_uv",
@@ -449,12 +545,24 @@ class StopSignGridEnv(gym.Env):
         if max_cells_reached:
             info["note"] = "max_cells_reached"
 
-        # Always attach the final image if we succeeded (hit threshold), so it can be saved reliably.
-        if terminated and uv_success:
+        diagnostic = (
+            (not self._diag_saved)
+            and (area_frac >= self.diag_area_thresh)
+            and (c_on >= self.diag_conf_thresh)
+        )
+        if diagnostic:
+            self._diag_saved = True
+            info["diagnostic"] = True
+            info["diagnostic_reason"] = "high_coverage_high_conf"
+            info["diagnostic_area_thresh"] = float(self.diag_area_thresh)
+            info["diagnostic_conf_thresh"] = float(self.diag_conf_thresh)
+
+        # Always attach the final image if we hit drop success, so it can be saved reliably.
+        if terminated and conf_success:
             info["composited_pil"] = preview_on
             info["overlay_pil"] = self._render_overlay_pattern(mode="on")
         # Otherwise only attach occasionally to reduce overhead
-        elif (self._step % self.info_image_every) == 0:
+        elif diagnostic or (self._step % self.info_image_every) == 0:
             info["composited_pil"] = preview_on
             info["overlay_pil"] = self._render_overlay_pattern(mode="on")
 
@@ -542,19 +650,69 @@ class StopSignGridEnv(gym.Env):
             and (not self._episode_cells[r, c])
         )
 
-    def _render_variant(self, kind: str, use_overlay: bool, transform_seed: int) -> Image.Image:
+    def _render_variant(
+        self,
+        kind: str,
+        use_overlay: bool,
+        transform_seed: int,
+        return_meta: bool = False,
+    ):
         assert kind in ("day", "on")
         sign_src = self.sign_rgba_day if kind == "day" else self.sign_rgba_on
         sign = sign_src if not use_overlay else self._apply_grid_overlay(
             sign_src, mode=("day" if kind == "day" else "on")
         )
         sign_t = self._transform_sign(sign, transform_seed)
-        img = self._compose_on_bg(sign_t, self._place_seed)
-        return img
+        if return_meta:
+            return self._compose_on_bg(sign_t, self._place_seed, return_meta=True)
+        return self._compose_on_bg(sign_t, self._place_seed)
+
+    def _crop_observation(self, img: Image.Image, sign_bbox_bg: Tuple[float, float, float, float], resample):
+        W, H = img.size
+        x1, y1, x2, y2 = [float(v) for v in sign_bbox_bg]
+        if x2 <= x1 or y2 <= y1:
+            crop = img
+        else:
+            pad = int(round(max(x2 - x1, y2 - y1) * self.obs_margin))
+            cx1 = max(0, int(math.floor(x1 - pad)))
+            cy1 = max(0, int(math.floor(y1 - pad)))
+            cx2 = min(W, int(math.ceil(x2 + pad)))
+            cy2 = min(H, int(math.ceil(y2 + pad)))
+            if cx2 <= cx1 or cy2 <= cy1:
+                crop = img
+            else:
+                crop = img.crop((cx1, cy1, cx2, cy2))
+        if crop.size != self.obs_size:
+            crop = crop.resize(self.obs_size, resample=resample)
+        return crop
+
+    def _render_observation(self, kind: str, use_overlay: bool, transform_seed: int) -> np.ndarray:
+        img, meta = self._render_variant(kind=kind, use_overlay=use_overlay, transform_seed=transform_seed, return_meta=True)
+        sign_bbox_bg = meta.get("sign_bbox_bg", (0, 0, img.size[0], img.size[1]))
+        crop = self._crop_observation(img, sign_bbox_bg, resample=Image.BILINEAR)
+
+        if not self.obs_include_mask:
+            return np.array(crop, dtype=np.uint8)
+
+        # Build overlay mask aligned to the sign placement.
+        overlay = self._render_overlay_pattern(mode="on")
+        overlay_t = self._transform_sign(overlay, transform_seed)
+        x1, y1, x2, y2 = [float(v) for v in sign_bbox_bg]
+        mw = max(1, int(round(x2 - x1)))
+        mh = max(1, int(round(y2 - y1)))
+        overlay_t = overlay_t.resize((mw, mh), resample=Image.NEAREST)
+        mask = Image.new("L", self.img_size, 0)
+        alpha = overlay_t.split()[-1]
+        mask.paste(alpha, (int(round(x1)), int(round(y1))))
+        mask_crop = self._crop_observation(mask, sign_bbox_bg, resample=Image.NEAREST)
+
+        rgb = np.array(crop, dtype=np.uint8)
+        m = np.array(mask_crop, dtype=np.uint8)
+        return np.dstack([rgb, m])
 
     def set_area_cap_frac(self, value: Optional[float]) -> None:
         """
-        Update area cap and derived max_cells at runtime.
+        Update area cap and derived max_cells at runtime (hard mode only).
 
         @param value: New cap fraction (None or <=0 disables).
         """
@@ -582,6 +740,7 @@ class StopSignGridEnv(gym.Env):
         @param value: New lambda_area value.
         """
         self.lambda_area = float(value)
+        self._lambda_area_dyn = float(value)
 
     def _eval_over_K(self) -> Tuple[float, float, float, float]:
         imgs_plain_day = []
@@ -614,7 +773,7 @@ class StopSignGridEnv(gym.Env):
         mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
         return mean(c0_day_list), mean(c_day_list), mean(c0_on_list), mean(c_on_list)
 
-    def _eval_overlay_over_K(self, seeds: List[int]) -> Tuple[float, float]:
+    def _eval_overlay_over_K(self, seeds: List[int]) -> Dict[str, Any]:
         imgs_over_day, imgs_over_on = [], []
 
         # Precompute overlays once per step
@@ -630,8 +789,59 @@ class StopSignGridEnv(gym.Env):
         c_day_list = self.det.infer_confidence_batch(imgs_over_day)
         c_on_list  = self.det.infer_confidence_batch(imgs_over_on)
 
+        det_on = self.det.infer_detections_batch(imgs_over_on)
+        iou_vals = []
+        misclass_vals = []
+        target_conf_vals = []
+        top_conf_vals = []
+        top_class_counts: Dict[int, int] = {}
+        for det in det_on:
+            target_conf = float(det.get("target_conf", 0.0))
+            top_conf = float(det.get("top_conf", 0.0))
+            top_class = det.get("top_class", None)
+            target_box = det.get("target_box", None)
+            top_box = det.get("top_box", None)
+            misclass = (top_class is not None and top_class != self.det.target_id and top_conf > 0.0)
+            misclass_vals.append(1.0 if misclass else 0.0)
+            target_conf_vals.append(target_conf)
+            top_conf_vals.append(top_conf)
+            if top_class is not None:
+                cls = int(top_class)
+                top_class_counts[cls] = top_class_counts.get(cls, 0) + 1
+
+            iou = 0.0
+            if target_box is not None and top_box is not None:
+                iou = _iou_xyxy(target_box, top_box)
+            iou_vals.append(float(iou))
+
         mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
-        return mean(c_day_list), mean(c_on_list)
+        return {
+            "c_day": mean(c_day_list),
+            "c_on": mean(c_on_list),
+            "mean_iou": mean(iou_vals),
+            "misclass_rate": mean(misclass_vals),
+            "mean_target_conf": mean(target_conf_vals),
+            "mean_top_conf": mean(top_conf_vals),
+            "top_class_counts": top_class_counts,
+        }
+
+    def _is_attack_success(
+        self,
+        drop_on_s: float,
+        mean_iou: float,
+        misclass_rate: float,
+        area_frac: float,
+        threshold: float,
+    ) -> bool:
+        base_drop = float(drop_on_s) >= float(threshold)
+        attack_signal = (float(misclass_rate) > 0.0) or (float(mean_iou) < 0.25)
+        within_cap = (self.area_cap_frac is None) or (float(area_frac) <= float(self.area_cap_frac))
+        return base_drop and attack_signal and within_cap
+
+    def _is_drop_success(self, after_conf: float, area_frac: float, threshold: float) -> bool:
+        conf_ok = float(after_conf) <= float(threshold)
+        within_cap = (self.area_cap_frac is None) or (float(area_frac) <= float(self.area_cap_frac))
+        return conf_ok and within_cap
 
 
     def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
@@ -695,46 +905,83 @@ class StopSignGridEnv(gym.Env):
         img.paste(color, mask=mask)
         return img
 
+    def _perceptual_delta(self) -> float:
+        """
+        Measure daylight-visibility delta: mean absolute RGB difference between
+        baseline sign and daylight overlay, masked to the sign alpha.
+        """
+        base = self.sign_rgba_day.convert("RGB")
+        over = self._apply_grid_overlay(self.sign_rgba_day, mode="day").convert("RGB")
+        base_arr = np.array(base, dtype=np.float32)
+        over_arr = np.array(over, dtype=np.float32)
+        diff = np.abs(over_arr - base_arr) / 255.0
+        mask = (np.array(self._sign_alpha, dtype=np.uint8) > 0).astype(np.float32)
+        if mask.sum() <= 0:
+            return 0.0
+        diff_mean = float((diff.mean(axis=2) * mask).sum() / mask.sum())
+        return diff_mean
+
     def _transform_sign(self, sign_rgba: Image.Image, seed: int) -> Image.Image:
         rng = np.random.default_rng(seed)
         W, H = sign_rgba.size
+        strength = max(0.0, min(1.0, float(self.transform_strength)))
         out = sign_rgba.copy()
 
-        angle = rng.uniform(-6, 6)
-        shear = rng.uniform(-4, 4)
-        scale = 1.0 + rng.uniform(-0.10, 0.10)
-        tx = rng.uniform(-0.02 * W, 0.02 * W)
-        ty = rng.uniform(-0.02 * H, 0.02 * H)
+        if strength <= 0.0:
+            return out
+
+        angle = rng.uniform(-6.0 * strength, 6.0 * strength)
+        shear = rng.uniform(-4.0 * strength, 4.0 * strength)
+        scale = 1.0 + rng.uniform(-0.10 * strength, 0.10 * strength)
+        tx = rng.uniform(-0.02 * strength * W, 0.02 * strength * W)
+        ty = rng.uniform(-0.02 * strength * H, 0.02 * strength * H)
 
         aff = _affine_matrix(angle, shear, scale, tx, ty, W, H)
         out = out.transform((W, H), Image.AFFINE, data=aff, resample=Image.BILINEAR, fillcolor=(0, 0, 0, 0))
 
-        if rng.random() < 0.5:
-            coeffs = _random_perspective_coeffs(W, H, rng, max_shift=0.06)
+        if rng.random() < 0.5 * strength:
+            coeffs = _random_perspective_coeffs(W, H, rng, max_shift=0.06 * strength)
             out = out.transform((W, H), Image.PERSPECTIVE, coeffs, resample=Image.BILINEAR, fillcolor=(0, 0, 0, 0))
 
         rgb, a = out.convert("RGB"), out.split()[-1]
-        if rng.random() < 0.7:
-            rgb = ImageEnhance.Brightness(rgb).enhance(float(rng.uniform(0.9, 1.1)))
-        if rng.random() < 0.7:
-            rgb = ImageEnhance.Contrast(rgb).enhance(float(rng.uniform(0.9, 1.1)))
-        if rng.random() < 0.3:
-            rgb = ImageEnhance.Color(rgb).enhance(float(rng.uniform(0.9, 1.1)))
-        if rng.random() < 0.4:
-            rgb = rgb.filter(ImageFilter.GaussianBlur(radius=float(rng.uniform(0.0, 0.8))))
-        if rng.random() < 0.6:
+        if rng.random() < 0.7 * strength:
+            rgb = ImageEnhance.Brightness(rgb).enhance(float(rng.uniform(1.0 - 0.1 * strength, 1.0 + 0.1 * strength)))
+        if rng.random() < 0.7 * strength:
+            rgb = ImageEnhance.Contrast(rgb).enhance(float(rng.uniform(1.0 - 0.1 * strength, 1.0 + 0.1 * strength)))
+        if rng.random() < 0.3 * strength:
+            rgb = ImageEnhance.Color(rgb).enhance(float(rng.uniform(1.0 - 0.1 * strength, 1.0 + 0.1 * strength)))
+        if rng.random() < 0.4 * strength:
+            rgb = rgb.filter(ImageFilter.GaussianBlur(radius=float(rng.uniform(0.0, 0.8 * strength))))
+        if rng.random() < 0.6 * strength:
             arr = np.array(rgb, dtype=np.int16)
-            sigma = rng.uniform(1.0, 3.0)
+            sigma = rng.uniform(1.0 * strength, 3.0 * strength)
             noise = rng.normal(0.0, sigma, size=arr.shape)
             arr = np.clip(arr + noise, 0, 255).astype(np.uint8)
             rgb = Image.fromarray(arr, mode="RGB")
 
         return Image.merge("RGBA", (*rgb.split(), a))
 
-    def _compose_on_bg(self, sign_rgba_t: Image.Image, place_seed: int) -> Image.Image:
-        group = self._compose_sign_and_pole(sign_rgba_t)
-        img, _ = self._place_group_on_background(group, self._bg_rgb, seed=place_seed)
-        return img
+    def _compose_on_bg(self, sign_rgba_t: Image.Image, place_seed: int, return_meta: bool = False):
+        if return_meta:
+            group, gmeta = self._compose_sign_and_pole(sign_rgba_t, return_meta=True)
+        else:
+            group, gmeta = self._compose_sign_and_pole(sign_rgba_t, return_meta=False), None
+        img, place = self._place_group_on_background(group, self._bg_rgb, seed=place_seed)
+        if not return_meta:
+            return img
+
+        sign_bbox = gmeta.get("sign_bbox", (0, 0, sign_rgba_t.width, sign_rgba_t.height))
+        sx1, sy1, sx2, sy2 = [float(v) for v in sign_bbox]
+        scale = float(place.get("scale", 1.0))
+        x = float(place.get("x", 0.0))
+        y = float(place.get("y", 0.0))
+        sign_bbox_bg = (x + scale * sx1, y + scale * sy1, x + scale * sx2, y + scale * sy2)
+        meta = {
+            **place,
+            "sign_bbox_group": sign_bbox,
+            "sign_bbox_bg": sign_bbox_bg,
+        }
+        return img, meta
 
     def _compose_sign_and_pole(
         self,
@@ -743,8 +990,11 @@ class StopSignGridEnv(gym.Env):
         bottom_len_factor: float = 4.0,
         clearance_px: int = 2,
         side_margin_frac: float = 0.06,
-    ) -> Image.Image:
+        return_meta: bool = False,
+    ):
         if self.pole_rgba is None:
+            if return_meta:
+                return sign_rgba, {"sign_bbox": (0, 0, sign_rgba.width, sign_rgba.height)}
             return sign_rgba
 
         sign = sign_rgba.copy()
@@ -774,6 +1024,8 @@ class StopSignGridEnv(gym.Env):
         sx = (GW - SW) // 2
         sy = clearance_px
         group.alpha_composite(sign, (sx, sy))
+        if return_meta:
+            return group, {"sign_bbox": (sx, sy, sx + SW, sy + SH)}
         return group
 
     def _place_group_on_background(self, group_rgba: Image.Image, bg_rgb: Image.Image, seed: int):
@@ -781,8 +1033,8 @@ class StopSignGridEnv(gym.Env):
         W, H = self.img_size
         bg_rgba = bg_rgb.resize((W, H), Image.BILINEAR).convert("RGBA")
 
-        # Wider distance variance: allow sign to appear smaller (farther) or larger (closer).
-        target_w = int(rng.uniform(0.12 * W, 0.60 * W))
+        # Distance variance with a safer minimum size to avoid missed detections.
+        target_w = int(rng.uniform(0.18 * W, 0.60 * W))
         scale = target_w / max(1, group_rgba.width)
         group = group_rgba.resize((target_w, int(group_rgba.height * scale)), Image.BILINEAR)
 
@@ -849,3 +1101,23 @@ def _random_perspective_coeffs(W, H, rng, max_shift=0.06):
     B = np.array([p for uv in dst for p in uv], dtype=np.float32)
     coeffs = np.linalg.lstsq(A, B, rcond=None)[0]
     return coeffs
+
+
+def _iou_xyxy(box_a, box_b) -> float:
+    ax1, ay1, ax2, ay2 = [float(v) for v in box_a]
+    bx1, by1, bx2, by2 = [float(v) for v in box_b]
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    if union <= 0.0:
+        return 0.0
+    return float(inter / union)

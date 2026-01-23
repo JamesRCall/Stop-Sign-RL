@@ -17,6 +17,7 @@ Core ideas:
 - UV paint pair: daylight color/alpha vs UV-on color/alpha.
 - Matched transforms and backgrounds across daylight/UV variants for fair comparison.
 - Reward that targets UV confidence drop while penalizing daylight drop and patch area.
+- Efficiency bonus (drop per area) and optional adaptive area penalty to favor minimal patches.
 - Early termination on success or area cap.
 
 ---
@@ -67,6 +68,12 @@ Minimal run:
 python train_single_stop_sign.py --data ./data --bgdir ./data/backgrounds
 ```
 
+Recommended single-machine run:
+
+```bash
+bash train.sh --yolo-weights ./weights/yolo8n.pt --multiphase
+```
+
 Resume from latest checkpoint:
 
 ```bash
@@ -91,14 +98,25 @@ From `train_single_stop_sign.py`:
 - `--grid-cell` (2, 4, 8, 16, 32) grid size in pixels
 - `--uv-threshold` UV drop threshold for success
 - `--lambda-area` area penalty strength (encourages minimal patches)
+- `--lambda-efficiency` efficiency bonus (drop per area)
+- `--area-target`, `--area-lagrange-lr/min/max` adaptive area penalty target and bounds
 - `--lambda-area-start`, `--lambda-area-end`, `--lambda-area-steps` (curriculum)
 - `--area-cap-frac` cap on total patch area (<= 0 disables)
 - `--area-cap-penalty` reward penalty when cap would be exceeded
 - `--area-cap-mode` (`soft` or `hard`)
 - `--area-cap-start`, `--area-cap-end`, `--area-cap-steps` (curriculum)
+- `--lambda-day` penalty for daylight confidence drop beyond tolerance
+- `--lambda-iou`, `--lambda-misclass` extra objectives for mislocalization/misclassification
+- `--paint`, `--paint-list` paint selection (single or per-episode sampling)
+- `--multiphase` enable 3-phase curriculum (solid/no pole -> dataset + pole)
+- `--phase1-steps`, `--phase2-steps`, `--phase3-steps` (phase lengths; 0 = auto split)
+- `--phase1-eval-K`, `--phase2-eval-K`, `--phase3-eval-K` (per-phase eval_K overrides)
+- `--bg-mode` (`dataset` or `solid`) and `--no-pole` for single-phase
+- `--obs-size`, `--obs-margin`, `--obs-include-mask` (cropped observation + mask channel)
+- `--ent-coef`, `--ent-coef-start`, `--ent-coef-end`, `--ent-coef-steps` (entropy coefficient schedule)
 - `--detector-device` (e.g., `cpu`, `cuda`, or `auto`)
 - `--step-log-every`, `--step-log-keep`, `--step-log-500` (step logging control)
-- `--ckpt`, `--overlays`, `--tb` output paths
+- `--ckpt`, `--overlays`, `--tb` output paths (TB logs grouped under `grid_uv_yolo<ver>`)
 - `--save-freq-steps` or `--save-freq-updates` checkpoint cadence
 
 ---
@@ -109,11 +127,71 @@ The environment is implemented in `envs/stop_sign_grid_env.py`.
 
 Highlights:
 - Discrete action space over valid grid cells inside the sign octagon.
-- UV-on reward uses smoothed UV drop (`drop_on_smooth`) to reduce noise and is
-  computed as the day baseline confidence minus UV-on overlay confidence.
+- UV-on reward uses raw UV drop (`drop_on`) computed as the day baseline
+  confidence minus UV-on overlay confidence.
+- Reward includes an efficiency bonus (drop per area) and an optional adaptive
+  area penalty that nudges toward a target patch fraction.
+- Observations are cropped around the sign with an optional overlay-mask channel
+  (controlled by `--obs-*` flags).
+- Training uses a lightweight custom CNN extractor tuned for sign crops.
 - Area cap supports soft (penalty) or hard (terminate) modes.
 - Minimum UV alpha (`uv_min_alpha`) ensures patches are visible under UV even with
   very low paint alpha.
+
+### Reward Equation (current)
+
+Definitions:
+- `c0_day`: baseline day confidence (no overlay)
+- `c_day`: day confidence with overlay
+- `c_on`: UV-on confidence with overlay
+- `drop_day = c0_day - c_day`
+- `drop_on = c0_day - c_on`
+- `area = total_area_mask_frac`
+- `mean_iou`: mean IoU between target box and top detection
+- `misclass`: misclassification rate
+
+Adaptive area penalty:
+- `lambda_area_used = lambda_area` by default
+- If `area_lagrange_lr > 0` and `area_target` is set:
+  - `lambda_area_dyn = clip(lambda_area_dyn + area_lagrange_lr * (area - area_target),
+    area_lagrange_min, area_lagrange_max)`
+  - `lambda_area_used = lambda_area_dyn`
+
+Efficiency bonus:
+```
+eff = log1p(max(0, drop_on) / max(area, efficiency_eps))
+```
+
+Core reward:
+```
+pen_day  = max(0, drop_day - day_tolerance)
+raw_core = drop_on
+         - lambda_day * pen_day
+         - lambda_area_used * area
+         + lambda_iou * (1 - mean_iou)
+         + lambda_misclass * misclass
+         + lambda_efficiency * eff
+         - lambda_perceptual * perceptual_delta
+```
+
+Shaping + success:
+```
+shaping       = 0.35 * tanh(3.0 * (success_conf - c_on))
+success_bonus = 0.2 if c_on <= success_conf and within_cap else 0
+raw_total     = raw_core + shaping + success_bonus
+```
+
+Soft cap override (if enabled and exceeded):
+```
+excess    = max(0, (area - area_cap) / area_cap)
+over_pen  = abs(area_cap_penalty) * (1 + 2 * excess)
+raw_total = -over_pen
+```
+
+Final reward:
+```
+reward = tanh(1.2 * raw_total)
+```
 
 If you need to change rendering or physics:
 - `_transform_sign()` controls camera jitter, blur, color, and noise.
@@ -127,7 +205,10 @@ If you need to change rendering or physics:
 TensorBoard logs:
 
 ```bash
+# train_single_stop_sign.py
 tensorboard --logdir runs/tb --port 6006
+# train.sh (defaults)
+tensorboard --logdir _runs/tb --port 6006
 ```
 
 Callbacks log:
@@ -142,10 +223,17 @@ Episode metrics currently include:
 - `episode/reward_final`, `episode/selected_cells_final`
 - `episode/eval_K_used_final`
 - `episode/uv_success_final`, `episode/area_cap_exceeded_final`
+- `episode/reward_core_final`, `episode/reward_raw_total_final`
+- `episode/reward_efficiency_final`, `episode/reward_perceptual_final`
+- `episode/lambda_area_used_final`, `episode/lambda_area_dyn_final`
+- `episode/area_target_frac_final`, `episode/area_lagrange_lr_final`
 
 Step metrics:
-- Rolling window of per-step rows in `runs/tb/tb_step_metrics/step_metrics.ndjson`
-- 500-step snapshots in `runs/tb/tb_step_metrics/step_metrics_500.ndjson`
+- Rolling window of per-step rows in
+  `runs/tb/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics.ndjson`
+- 500-step snapshots in
+  `runs/tb/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics_500.ndjson`
+- Step scalars include reward components and adaptive area weights when present.
 
 ---
 
@@ -154,8 +242,9 @@ Step metrics:
 Generated files:
 - `runs/checkpoints/` PPO checkpoints.
 - `runs/overlays/` best overlays (PNG + JSON) and `traces.ndjson`.
-- `runs/tb/` TensorBoard event files.
+- `runs/tb/` TensorBoard event files (grouped under `grid_uv_yolo<ver>/<phase>`).
 - If you use `train.sh` defaults, outputs go to `_runs/` instead of `runs/`.
+  TensorBoard logs are grouped under `_runs/tb/grid_uv_yolo<ver>/<phase>`.
 
 Overlay saver:
 - `utils/save_callbacks.py` keeps the best N overlays and appends trace metadata.
@@ -173,9 +262,11 @@ Trace replay:
 ## Debugging and Tools
 
 - `tools/debug_grid_env.py` runs the env step-by-step and saves UV-on previews.
+- `tools/area_sweep_debug.py` sweeps coverage levels and logs confidence/IoU/misclass stats.
+- `tools/replay_area_sweep.py` replays logged sweep cases and saves images.
+- `tools/test_stop_sign_confidence.py` checks detector confidence on a single image.
 - `tools/cleanup_runs.py` removes old run outputs (dry-run by default).
 - `tools/detector_server.py` runs a shared YOLO detector for multi-process training.
-- `preview_stop_sign_3d.sh` renders a quick 3D preview (if your setup includes it).
 - `setup_env.sh` contains a helper for local setup.
 
 Cleanup usage:
@@ -213,7 +304,17 @@ Important `train.sh` knobs:
 - `--lambda-area`, `--lambda-area-start/end/steps`: area penalty and optional ramp.
 - `--area-cap-frac`, `--area-cap-mode`: patch area cap and soft/hard behavior.
 - `--area-cap-start/end/steps`: cap curriculum from larger to smaller.
+- `--obs-size`, `--obs-margin`, `--obs-include-mask`: observation crop and mask channel.
+- `--ent-coef`, `--ent-coef-start/end/steps`: entropy coefficient schedule.
 - `--step-log-every`, `--step-log-keep`, `--step-log-500`: step metrics logging controls.
+
+---
+
+## Commenting Guidelines
+
+- Keep comments sparse and focused on *why* a block exists or what it protects against.
+- Avoid restating obvious code; prefer naming and structure to make intent clear.
+- When behavior is non-obvious (curriculum logic, reward shaping), add a short note.
 
 ---
 
@@ -235,6 +336,9 @@ Important `train.sh` knobs:
 |
 |-- tools/
 |   |-- debug_grid_env.py
+|   |-- area_sweep_debug.py
+|   |-- replay_area_sweep.py
+|   |-- test_stop_sign_confidence.py
 |   |-- cleanup_runs.py
 |   |-- detector_server.py
 |
