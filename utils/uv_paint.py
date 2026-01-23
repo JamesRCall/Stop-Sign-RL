@@ -95,3 +95,9 @@ TAN_GLOW = UVPaint("TanGlow", day_hex="#D0D0D0", active_hex="#D2B48C", transluce
 PEACH_GLOW = UVPaint("PeachGlow", day_hex="#D0D0D0", active_hex="#FFDAB9", translucent=True, day_alpha=0.25, active_alpha=1.0)
 STEEL_GLOW = UVPaint("SteelGlow", day_hex="#D0D0D0", active_hex="#4682B4", translucent=True, day_alpha=0.25, active_alpha=1.0)
 LAVENDER_GLOW = UVPaint("LavenderGlow", day_hex="#D0D0D0", active_hex="#B57EDC", translucent=True, day_alpha=0.25, active_alpha=1.0)
+
+# Focused UV palette for combo testing
+NEON_YELLOW_GLOW = UVPaint("NeonYellowGlow", day_hex="#D0D0D0", active_hex="#E6FF00", translucent=True, day_alpha=0.25, active_alpha=1.0)
+BLUE_LIGHT_GLOW = UVPaint("BlueLightGlow", day_hex="#D0D0D0", active_hex="#7FDBFF", translucent=True, day_alpha=0.25, active_alpha=1.0)
+BLUE_MED_GLOW = UVPaint("BlueMedGlow", day_hex="#D0D0D0", active_hex="#0074D9", translucent=True, day_alpha=0.25, active_alpha=1.0)
+BLUE_DARK_GLOW = UVPaint("BlueDarkGlow", day_hex="#D0D0D0", active_hex="#001F3F", translucent=True, day_alpha=0.25, active_alpha=1.0)

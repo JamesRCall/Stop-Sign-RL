@@ -11,22 +11,24 @@ import glob
 import math
 import sys
 import json
+import itertools
 from typing import List
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from envs.stop_sign_grid_env import StopSignGridEnv
+from envs.stop_sign_grid_env import StopSignGridEnv, _iou_xyxy
 from utils.uv_paint import (
     GREEN_GLOW, VIOLET_GLOW, BLUE_GLOW, YELLOW_GLOW,
     RED_GLOW, ORANGE_GLOW, CYAN_GLOW, MAGENTA_GLOW, PINK_GLOW, LIME_GLOW,
     CHARTREUSE_GLOW, SKY_GLOW, NAVY_GLOW, GOLD_GLOW, AMBER_GLOW, CORAL_GLOW,
     MAROON_GLOW, OLIVE_GLOW, MINT_GLOW, AQUA_GLOW, PURPLE_GLOW, INDIGO_GLOW,
     SLATE_GLOW, BROWN_GLOW, TAN_GLOW, PEACH_GLOW, STEEL_GLOW, LAVENDER_GLOW,
+    NEON_YELLOW_GLOW, BLUE_LIGHT_GLOW, BLUE_MED_GLOW, BLUE_DARK_GLOW,
     UVPaint,
 )
 
@@ -98,12 +100,96 @@ def resolve_paints(names: List[str]) -> List[UVPaint]:
         "peach": PEACH_GLOW,
         "steel": STEEL_GLOW,
         "lavender": LAVENDER_GLOW,
+        "neon_yellow": NEON_YELLOW_GLOW,
+        "light_blue": BLUE_LIGHT_GLOW,
+        "medium_blue": BLUE_MED_GLOW,
+        "dark_blue": BLUE_DARK_GLOW,
     }
     paints = []
     for n in names:
         if n in mapping:
             paints.append(mapping[n])
     return paints
+
+
+def apply_multi_color_overlay(sign_rgba: Image.Image, mode: str, env: StopSignGridEnv, paints: List[UVPaint], rng) -> Image.Image:
+    assert mode in ("day", "on")
+    rgb = sign_rgba.convert("RGB")
+    a = sign_rgba.split()[-1]
+    if not paints:
+        return Image.merge("RGBA", (*rgb.split(), a))
+
+    on = np.argwhere(env._episode_cells)
+    for r, c in on:
+        paint = paints[int(rng.integers(0, len(paints)))]
+        if mode == "day":
+            color = paint.day_rgb
+            alpha = paint.day_alpha if paint.translucent else 1.0
+        else:
+            color = paint.active_rgb
+            alpha = paint.active_alpha if paint.translucent else 1.0
+            if paint.translucent:
+                alpha = max(alpha, env.uv_min_alpha)
+
+        x0, y0, x1, y1 = env._cell_rects[int(r) * env.Gw + int(c)]
+        mask = Image.new("L", rgb.size, 0)
+        mdraw = ImageDraw.Draw(mask)
+        mdraw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=255)
+        mask = Image.composite(mask, Image.new("L", mask.size, 0), env._sign_alpha)
+        if alpha < 1.0:
+            arr = (np.array(mask, dtype=np.float32) * float(alpha)).astype(np.uint8)
+            mask = Image.fromarray(arr, mode="L")
+        rgb.paste(color, mask=mask)
+
+    return Image.merge("RGBA", (*rgb.split(), a))
+
+
+def eval_overlay_over_K_custom(env: StopSignGridEnv, seeds: List[int], over_day: Image.Image, over_on: Image.Image) -> dict:
+    imgs_over_day, imgs_over_on = [], []
+    for t_seed in seeds:
+        over_day_t = env._compose_on_bg(env._transform_sign(over_day, t_seed), env._place_seed)
+        over_on_t = env._compose_on_bg(env._transform_sign(over_on, t_seed), env._place_seed)
+        imgs_over_day.append(over_day_t)
+        imgs_over_on.append(over_on_t)
+
+    c_day_list = env.det.infer_confidence_batch(imgs_over_day)
+    c_on_list = env.det.infer_confidence_batch(imgs_over_on)
+
+    det_on = env.det.infer_detections_batch(imgs_over_on)
+    iou_vals = []
+    misclass_vals = []
+    target_conf_vals = []
+    top_conf_vals = []
+    top_class_counts = {}
+    for det in det_on:
+        target_conf = float(det.get("target_conf", 0.0))
+        top_conf = float(det.get("top_conf", 0.0))
+        top_class = det.get("top_class", None)
+        target_box = det.get("target_box", None)
+        top_box = det.get("top_box", None)
+        misclass = (top_class is not None and top_class != env.det.target_id and top_conf > 0.0)
+        misclass_vals.append(1.0 if misclass else 0.0)
+        target_conf_vals.append(target_conf)
+        top_conf_vals.append(top_conf)
+        if top_class is not None:
+            cls = int(top_class)
+            top_class_counts[cls] = top_class_counts.get(cls, 0) + 1
+
+        iou = 0.0
+        if target_box is not None and top_box is not None:
+            iou = _iou_xyxy(target_box, top_box)
+        iou_vals.append(float(iou))
+
+    mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
+    return {
+        "c_day": mean(c_day_list),
+        "c_on": mean(c_on_list),
+        "mean_iou": mean(iou_vals),
+        "misclass_rate": mean(misclass_vals),
+        "mean_target_conf": mean(target_conf_vals),
+        "mean_top_conf": mean(top_conf_vals),
+        "top_class_counts": top_class_counts,
+    }
 
 
 def main() -> None:
@@ -132,8 +218,15 @@ def main() -> None:
                    help="Disable pole for debug.")
     p.add_argument("--high-conf", type=float, default=0.5,
                    help="Threshold to flag and optionally save high-confidence cases.")
-    p.add_argument("--paint-list", default="green,violet,blue,yellow",
-                   help="Comma-separated paint names to test (green,violet,blue,yellow).")
+    p.add_argument(
+        "--paint-list",
+        default="neon_yellow,orange,red,light_blue,medium_blue,dark_blue,purple,green",
+        help="Comma-separated paint names to test.",
+    )
+    p.add_argument("--combo-sizes", default="1",
+                   help="Comma-separated combo sizes to test (e.g., 1,2,3).")
+    p.add_argument("--combo-limit", type=int, default=0,
+                   help="Limit number of color combos (0 = no limit).")
     p.add_argument("--save", action="store_true", help="Save sample images for each percentage.")
     p.add_argument("--out", default="./_debug_area_sweep")
     p.add_argument("--log", default="./_debug_area_sweep/area_sweep.ndjson")
@@ -154,6 +247,19 @@ def main() -> None:
     paints = resolve_paints(paint_names)
     if not paints:
         paints = [GREEN_GLOW]
+    combo_sizes = parse_int_list(args.combo_sizes)
+    combo_sizes = [s for s in combo_sizes if s > 0]
+    if not combo_sizes:
+        combo_sizes = [1]
+    combos = []
+    for k in combo_sizes:
+        for combo in itertools.combinations(paints, min(k, len(paints))):
+            combos.append(combo)
+
+    if args.combo_limit and len(combos) > int(args.combo_limit):
+        rng_tmp = np.random.default_rng(int(args.seed))
+        picks = rng_tmp.choice(len(combos), size=int(args.combo_limit), replace=False)
+        combos = [combos[int(i)] for i in picks]
 
     for eval_k in k_list:
         rng = np.random.default_rng(int(args.seed))
@@ -167,7 +273,8 @@ def main() -> None:
             os.makedirs(args.out, exist_ok=True)
         os.makedirs(os.path.dirname(args.log), exist_ok=True)
 
-        for paint in paints:
+        for combo in combos:
+            combo_names = "+".join([p.name for p in combo])
             env = StopSignGridEnv(
                 stop_sign_image=stop_day,
                 stop_sign_uv_image=stop_uv,
@@ -177,7 +284,7 @@ def main() -> None:
                 yolo_device=args.device,
                 eval_K=int(eval_k),
                 grid_cell_px=int(args.grid_cell),
-                uv_paint=paint,
+                uv_paint=combo[0],
                 use_single_color=True,
                 cell_cover_thresh=float(args.cell_cover_thresh),
             )
@@ -185,7 +292,7 @@ def main() -> None:
             obs, _ = env.reset()
             if args.save:
                 os.makedirs(args.out, exist_ok=True)
-                Image.fromarray(obs).save(os.path.join(args.out, f"obs_day_baseline_k{eval_k}_{paint.name}.png"))
+                Image.fromarray(obs).save(os.path.join(args.out, f"obs_day_baseline_k{eval_k}_{combo_names}.png"))
 
             valid_coords = env._valid_coords  # (N,2)
             total = int(valid_coords.shape[0])
@@ -196,7 +303,7 @@ def main() -> None:
             print(
                 f"\nvalid_cells={total} | eval_K={eval_k} | trials={int(args.trials)} | "
                 f"bg_samples={bg_count} pos_samples={pos_samples} full_cover={bool(args.full_cover)} | "
-                f"paint={paint.name} cell_thresh={float(args.cell_cover_thresh):.2f}"
+                f"paint_combo={combo_names} cell_thresh={float(args.cell_cover_thresh):.2f}"
             )
 
             for pct in percents:
@@ -228,7 +335,9 @@ def main() -> None:
 
                             area_frac = float(env._episode_cells.sum()) / float(total)
                             eval_seeds = env._transform_seeds[: int(eval_k)]
-                            metrics = env._eval_overlay_over_K(eval_seeds)
+                            over_day = apply_multi_color_overlay(env.sign_rgba_day, "day", env, list(combo), rng)
+                            over_on = apply_multi_color_overlay(env.sign_rgba_on, "on", env, list(combo), rng)
+                            metrics = eval_overlay_over_K_custom(env, eval_seeds, over_day, over_on)
                             c_on = float(metrics.get("c_on", 0.0))
                             c_day = float(metrics.get("c_day", 0.0))
                             mean_iou = float(metrics.get("mean_iou", 0.0))
@@ -240,7 +349,7 @@ def main() -> None:
 
                             rec = {
                                 "eval_k": int(eval_k),
-                                "paint": paint.name,
+                                "paint_combo": combo_names,
                                 "bg_idx": int(bg_idx),
                                 "place_seed": int(env._place_seed),
                                 "transform_seeds": [int(s) for s in env._transform_seeds],
@@ -260,10 +369,10 @@ def main() -> None:
                             if args.save and c_on >= float(args.high_conf):
                                 stem = (
                                     f"area_{int(area_frac*100):03d}_k{eval_k}_bg{int(bg_idx)}_p{int(env._place_seed)}"
-                                    f"_{paint.name}"
+                                    f"_{combo_names}"
                                 )
-                                preview = env._render_variant(kind="on", use_overlay=True, transform_seed=env._transform_seeds[0])
-                                overlay = env._render_overlay_pattern(mode="on")
+                                preview = env._compose_on_bg(env._transform_sign(over_on, env._transform_seeds[0]), env._place_seed)
+                                overlay = apply_multi_color_overlay(env.sign_rgba_on, "on", env, list(combo), rng)
                                 preview.save(os.path.join(args.out, f"{stem}_uv_on.png"))
                                 overlay.save(os.path.join(args.out, f"{stem}_overlay.png"))
 
@@ -281,9 +390,9 @@ def main() -> None:
                 )
 
                 if args.save:
-                    stem = f"area_{int(mean[0]*100):03d}_k{eval_k}_mean_{paint.name}"
-                    preview = env._render_variant(kind="on", use_overlay=True, transform_seed=env._transform_seeds[0])
-                    overlay = env._render_overlay_pattern(mode="on")
+                    stem = f"area_{int(mean[0]*100):03d}_k{eval_k}_mean_{combo_names}"
+                    preview = env._compose_on_bg(env._transform_sign(over_on, env._transform_seeds[0]), env._place_seed)
+                    overlay = apply_multi_color_overlay(env.sign_rgba_on, "on", env, list(combo), rng)
                     preview.save(os.path.join(args.out, f"{stem}_uv_on.png"))
                     overlay.save(os.path.join(args.out, f"{stem}_overlay.png"))
 
