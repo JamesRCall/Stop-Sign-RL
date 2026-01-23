@@ -138,6 +138,61 @@ Highlights:
 - Minimum UV alpha (`uv_min_alpha`) ensures patches are visible under UV even with
   very low paint alpha.
 
+### Reward Equation (current)
+
+Definitions:
+- `c0_day`: baseline day confidence (no overlay)
+- `c_day`: day confidence with overlay
+- `c_on`: UV-on confidence with overlay
+- `drop_day = c0_day - c_day`
+- `drop_on = c0_day - c_on`
+- `area = total_area_mask_frac`
+- `mean_iou`: mean IoU between target box and top detection
+- `misclass`: misclassification rate
+
+Adaptive area penalty:
+- `lambda_area_used = lambda_area` by default
+- If `area_lagrange_lr > 0` and `area_target` is set:
+  - `lambda_area_dyn = clip(lambda_area_dyn + area_lagrange_lr * (area - area_target),
+    area_lagrange_min, area_lagrange_max)`
+  - `lambda_area_used = lambda_area_dyn`
+
+Efficiency bonus:
+```
+eff = log1p(max(0, drop_on) / max(area, efficiency_eps))
+```
+
+Core reward:
+```
+pen_day  = max(0, drop_day - day_tolerance)
+raw_core = drop_on
+         - lambda_day * pen_day
+         - lambda_area_used * area
+         + lambda_iou * (1 - mean_iou)
+         + lambda_misclass * misclass
+         + lambda_efficiency * eff
+         - lambda_perceptual * perceptual_delta
+```
+
+Shaping + success:
+```
+shaping       = 0.35 * tanh(3.0 * (success_conf - c_on))
+success_bonus = 0.2 if c_on <= success_conf and within_cap else 0
+raw_total     = raw_core + shaping + success_bonus
+```
+
+Soft cap override (if enabled and exceeded):
+```
+excess    = max(0, (area - area_cap) / area_cap)
+over_pen  = abs(area_cap_penalty) * (1 + 2 * excess)
+raw_total = -over_pen
+```
+
+Final reward:
+```
+reward = tanh(1.2 * raw_total)
+```
+
 If you need to change rendering or physics:
 - `_transform_sign()` controls camera jitter, blur, color, and noise.
 - `_compose_sign_and_pole()` controls pole ratio and placement.
@@ -207,9 +262,11 @@ Trace replay:
 ## Debugging and Tools
 
 - `tools/debug_grid_env.py` runs the env step-by-step and saves UV-on previews.
+- `tools/area_sweep_debug.py` sweeps coverage levels and logs confidence/IoU/misclass stats.
+- `tools/replay_area_sweep.py` replays logged sweep cases and saves images.
+- `tools/test_stop_sign_confidence.py` checks detector confidence on a single image.
 - `tools/cleanup_runs.py` removes old run outputs (dry-run by default).
 - `tools/detector_server.py` runs a shared YOLO detector for multi-process training.
-- `preview_stop_sign_3d.sh` renders a quick 3D preview (if your setup includes it).
 - `setup_env.sh` contains a helper for local setup.
 
 Cleanup usage:
@@ -279,6 +336,9 @@ Important `train.sh` knobs:
 |
 |-- tools/
 |   |-- debug_grid_env.py
+|   |-- area_sweep_debug.py
+|   |-- replay_area_sweep.py
+|   |-- test_stop_sign_confidence.py
 |   |-- cleanup_runs.py
 |   |-- detector_server.py
 |
