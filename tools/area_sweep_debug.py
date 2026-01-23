@@ -21,7 +21,14 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from envs.stop_sign_grid_env import StopSignGridEnv
-from utils.uv_paint import GREEN_GLOW, VIOLET_GLOW, BLUE_GLOW, YELLOW_GLOW, UVPaint
+from utils.uv_paint import (
+    GREEN_GLOW, VIOLET_GLOW, BLUE_GLOW, YELLOW_GLOW,
+    RED_GLOW, ORANGE_GLOW, CYAN_GLOW, MAGENTA_GLOW, PINK_GLOW, LIME_GLOW,
+    CHARTREUSE_GLOW, SKY_GLOW, NAVY_GLOW, GOLD_GLOW, AMBER_GLOW, CORAL_GLOW,
+    MAROON_GLOW, OLIVE_GLOW, MINT_GLOW, AQUA_GLOW, PURPLE_GLOW, INDIGO_GLOW,
+    SLATE_GLOW, BROWN_GLOW, TAN_GLOW, PEACH_GLOW, STEEL_GLOW, LAVENDER_GLOW,
+    UVPaint,
+)
 
 
 def load_bgs(folder: str) -> List[Image.Image]:
@@ -67,6 +74,30 @@ def resolve_paints(names: List[str]) -> List[UVPaint]:
         "violet": VIOLET_GLOW,
         "blue": BLUE_GLOW,
         "yellow": YELLOW_GLOW,
+        "red": RED_GLOW,
+        "orange": ORANGE_GLOW,
+        "cyan": CYAN_GLOW,
+        "magenta": MAGENTA_GLOW,
+        "pink": PINK_GLOW,
+        "lime": LIME_GLOW,
+        "chartreuse": CHARTREUSE_GLOW,
+        "sky": SKY_GLOW,
+        "navy": NAVY_GLOW,
+        "gold": GOLD_GLOW,
+        "amber": AMBER_GLOW,
+        "coral": CORAL_GLOW,
+        "maroon": MAROON_GLOW,
+        "olive": OLIVE_GLOW,
+        "mint": MINT_GLOW,
+        "aqua": AQUA_GLOW,
+        "purple": PURPLE_GLOW,
+        "indigo": INDIGO_GLOW,
+        "slate": SLATE_GLOW,
+        "brown": BROWN_GLOW,
+        "tan": TAN_GLOW,
+        "peach": PEACH_GLOW,
+        "steel": STEEL_GLOW,
+        "lavender": LAVENDER_GLOW,
     }
     paints = []
     for n in names:
