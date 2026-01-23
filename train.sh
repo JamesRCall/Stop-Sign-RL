@@ -81,6 +81,7 @@ STEP_LOG_KEEP="${STEP_LOG_KEEP:-1000}"
 STEP_LOG_500="${STEP_LOG_500:-500}"
 PY_MAIN="${PY_MAIN:-train_single_stop_sign.py}"
 MULTIPHASE="${MULTIPHASE:-0}"
+RESUME="${RESUME:-0}"
 
 # Monitoring
 MON_INTERVAL="${MON_INTERVAL:-5}"
@@ -155,6 +156,7 @@ Options:
   --ckpt DIR                  (default: $CKPT_DIR)
   --overlays DIR              (default: $OVR_DIR)
   --multiphase                (enable 3-phase curriculum)
+  --resume                    (resume from latest checkpoint)
 
   --port P                    (default: $PORT)
   --mon-interval SEC          (default: $MON_INTERVAL)
@@ -231,6 +233,7 @@ while [[ $# -gt 0 ]]; do
     --ckpt) CKPT_DIR="$2"; shift 2;;
     --overlays) OVR_DIR="$2"; shift 2;;
     --multiphase) MULTIPHASE="1"; shift 1;;
+    --resume) RESUME="1"; shift 1;;
 
     --port) PORT="$2"; shift 2;;
     --mon-interval) MON_INTERVAL="$2"; shift 2;;
@@ -358,6 +361,9 @@ if [[ -n "${YOLO_WEIGHTS}" ]]; then
 fi
 if [[ "${MULTIPHASE}" == "1" ]]; then
   EXTRA_ARGS+=(--multiphase)
+fi
+if [[ "${RESUME}" == "1" ]]; then
+  EXTRA_ARGS+=(--resume)
 fi
 if [[ -n "${ENT_COEF_START}" ]]; then
   EXTRA_ARGS+=(--ent-coef-start "${ENT_COEF_START}")
