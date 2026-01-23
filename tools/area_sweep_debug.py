@@ -276,13 +276,7 @@ def main() -> None:
             os.makedirs(args.out, exist_ok=True)
         os.makedirs(os.path.dirname(args.log), exist_ok=True)
 
-        total_runs = 0
-        for pct in percents:
-            target_n = int(math.ceil(float(pct) * total)) if percents else 0
-            trials = 1 if target_n == 0 else max(1, int(args.trials))
-            total_runs += bg_count * pos_samples * trials
-        total_runs = max(1, total_runs) * max(1, len(combos))
-
+        total_runs = None
         done_runs = 0
         t0 = time.perf_counter()
         last_print = t0
@@ -313,6 +307,13 @@ def main() -> None:
             if total <= 0:
                 print("No valid cells in mask.")
                 return
+            if total_runs is None:
+                total_runs = 0
+                for pct in percents:
+                    target_n = int(math.ceil(float(pct) * total)) if percents else 0
+                    trials = 1 if target_n == 0 else max(1, int(args.trials))
+                    total_runs += bg_count * pos_samples * trials
+                total_runs = max(1, total_runs) * max(1, len(combos))
 
             print(
                 f"\nvalid_cells={total} | eval_K={eval_k} | trials={int(args.trials)} | "
