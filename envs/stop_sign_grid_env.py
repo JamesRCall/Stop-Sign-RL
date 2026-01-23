@@ -33,7 +33,7 @@ class StopSignGridEnv(gym.Env):
         Primary objective is drop_on = c0_day - c_on (target threshold).
         Secondary objective keeps day confidence high (penalize if drop exceeds tolerance).
       - Additional objectives use mean IoU (target vs top detection) and misclassification rate.
-      - Episode terminates early when drop-success is met; attack-success is tracked separately.
+      - Episode terminates early when after-conf <= success threshold.
 
     Observation:
       Cropped RGB image around the sign (daylight composite) with optional
@@ -47,6 +47,10 @@ class StopSignGridEnv(gym.Env):
 
           raw_total = raw_core + shaping + success_bonus
           reward    = tanh(1.2 * raw_total)    (-1, 1)
+
+      Efficiency bonus (optional):
+        efficiency = log1p(max(0, drop_on) / max(area_frac, efficiency_eps))
+        raw_core += lambda_efficiency * efficiency
 
       so PPO always sees a bounded per-step reward.
     """
@@ -82,11 +86,15 @@ class StopSignGridEnv(gym.Env):
 
         # Threshold logic
         uv_drop_threshold: float = 0.70,
+        success_conf_threshold: float = 0.20,
         day_tolerance: float = 0.05,
         lambda_day: float = 1.0,
         lambda_area: float = 0.3,
         lambda_iou: float = 0.4,
         lambda_misclass: float = 0.6,
+        lambda_efficiency: float = 0.0,
+        efficiency_eps: float = 0.02,
+        transform_strength: float = 1.0,
         uv_min_alpha: float = 0.08,
         min_base_conf: float = 0.20,
         cell_cover_thresh: float = 0.60,
@@ -165,11 +173,15 @@ class StopSignGridEnv(gym.Env):
 
         # threshold / reward
         self.uv_drop_threshold = float(uv_drop_threshold)
+        self.success_conf_threshold = float(success_conf_threshold)
         self.day_tolerance = float(day_tolerance)
         self.lambda_day = float(lambda_day)
         self.lambda_area = float(lambda_area)
         self.lambda_iou = float(lambda_iou)
         self.lambda_misclass = float(lambda_misclass)
+        self.lambda_efficiency = float(lambda_efficiency)
+        self.efficiency_eps = float(efficiency_eps)
+        self.transform_strength = float(transform_strength)
         self.uv_min_alpha = float(uv_min_alpha)
         self.min_base_conf = float(min_base_conf)
         self.info_image_every = int(info_image_every)
@@ -301,7 +313,7 @@ class StopSignGridEnv(gym.Env):
                 "attack_success": False,
                 "area_cap_exceeded": cap_exceeded,
             }
-            return obs, 0.0, bool(terminated), bool(truncated), info
+            return obs, -1.0, bool(terminated), bool(truncated), info
 
         pick = coords[idx % coords.shape[0]]
         r, c = int(pick[0]), int(pick[1])
@@ -389,33 +401,38 @@ class StopSignGridEnv(gym.Env):
         pen_day = max(0.0, drop_day - self.day_tolerance)
         area_frac = self._area_frac_selected()
         drop_blend = float(drop_on)
+        eff_drop = max(0.0, float(drop_on))
+        eff_denom = max(float(area_frac), float(self.efficiency_eps))
+        efficiency = math.log1p(eff_drop / eff_denom)
         raw_core = (
             drop_blend
             - self.lambda_day * pen_day
             - self.lambda_area * area_frac
             + self.lambda_iou * (1.0 - mean_iou)
             + self.lambda_misclass * misclass_rate
+            + self.lambda_efficiency * efficiency
         )
 
-        thr = self.uv_drop_threshold
-        shaping = 0.35 * math.tanh(3.0 * (drop_on - 0.5 * thr))
-        drop_success = self._is_drop_success(drop_on, area_frac, thr)
-        attack_success = self._is_attack_success(drop_on, mean_iou, misclass_rate, area_frac, thr)
-        success_bonus = 0.2 if drop_success else 0.0
+        conf_thr = self.success_conf_threshold
+        shaping = 0.35 * math.tanh(3.0 * (conf_thr - c_on))
+        conf_success = self._is_drop_success(c_on, area_frac, conf_thr)
+        attack_success = bool(conf_success)
+        success_bonus = 0.2 if conf_success else 0.0
 
         raw_total = raw_core + shaping + success_bonus
         if cap_exceeded and self.area_cap_mode == "soft":
             if self.area_cap_frac and self.area_cap_frac > 0:
                 excess = max(0.0, (area_frac - self.area_cap_frac) / self.area_cap_frac)
-                raw_total += float(self.area_cap_penalty) * (1.0 + 2.0 * excess)
+                over_pen = abs(float(self.area_cap_penalty)) * (1.0 + 2.0 * excess)
             else:
-                raw_total += float(self.area_cap_penalty)
+                over_pen = abs(float(self.area_cap_penalty))
+            raw_total = -over_pen
         reward = math.tanh(1.2 * raw_total)
 
-        if drop_success:
+        if conf_success:
             terminated = True
         if terminated and self.area_cap_frac is not None and area_frac > self.area_cap_frac:
-            drop_success = False
+            conf_success = False
             attack_success = False
             cap_exceeded = True
 
@@ -437,6 +454,7 @@ class StopSignGridEnv(gym.Env):
             "c0_on": c0_on,   "c_on": c_on,
             "drop_day": drop_day, "drop_on": drop_on, "drop_on_smooth": float(drop_on_s),
             "reward_core": float(raw_core),
+            "reward_efficiency": float(self.lambda_efficiency * efficiency),
             "reward_raw_total": float(raw_total),
             "reward": float(reward),
             "mean_iou": float(mean_iou),
@@ -452,15 +470,18 @@ class StopSignGridEnv(gym.Env):
             "eval_K_min": int(self.eval_K_min),
             "eval_K_max": int(self.eval_K_max),
             "uv_drop_threshold": float(self.uv_drop_threshold),
+            "success_conf_threshold": float(self.success_conf_threshold),
             "day_tolerance": float(self.day_tolerance),
             "lambda_area": float(self.lambda_area),
             "lambda_iou": float(self.lambda_iou),
             "lambda_misclass": float(self.lambda_misclass),
+            "lambda_efficiency": float(self.lambda_efficiency),
+            "efficiency_eps": float(self.efficiency_eps),
             "base_conf": float(c0_day),
             "after_conf": float(c_on),
             "total_area_mask_frac": float(area_frac),
             "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
-            "uv_success": bool(drop_success),
+            "uv_success": bool(conf_success),
             "attack_success": bool(attack_success),
             "area_cap_exceeded": bool(cap_exceeded),
             "trace": {
@@ -487,7 +508,7 @@ class StopSignGridEnv(gym.Env):
             info["diagnostic_conf_thresh"] = float(self.diag_conf_thresh)
 
         # Always attach the final image if we hit drop success, so it can be saved reliably.
-        if terminated and drop_success:
+        if terminated and conf_success:
             info["composited_pil"] = preview_on
             info["overlay_pil"] = self._render_overlay_pattern(mode="on")
         # Otherwise only attach occasionally to reduce overhead
@@ -766,10 +787,10 @@ class StopSignGridEnv(gym.Env):
         within_cap = (self.area_cap_frac is None) or (float(area_frac) <= float(self.area_cap_frac))
         return base_drop and attack_signal and within_cap
 
-    def _is_drop_success(self, drop_on_s: float, area_frac: float, threshold: float) -> bool:
-        base_drop = float(drop_on_s) >= float(threshold)
+    def _is_drop_success(self, after_conf: float, area_frac: float, threshold: float) -> bool:
+        conf_ok = float(after_conf) <= float(threshold)
         within_cap = (self.area_cap_frac is None) or (float(area_frac) <= float(self.area_cap_frac))
-        return base_drop and within_cap
+        return conf_ok and within_cap
 
 
     def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
@@ -836,33 +857,37 @@ class StopSignGridEnv(gym.Env):
     def _transform_sign(self, sign_rgba: Image.Image, seed: int) -> Image.Image:
         rng = np.random.default_rng(seed)
         W, H = sign_rgba.size
+        strength = max(0.0, min(1.0, float(self.transform_strength)))
         out = sign_rgba.copy()
 
-        angle = rng.uniform(-6, 6)
-        shear = rng.uniform(-4, 4)
-        scale = 1.0 + rng.uniform(-0.10, 0.10)
-        tx = rng.uniform(-0.02 * W, 0.02 * W)
-        ty = rng.uniform(-0.02 * H, 0.02 * H)
+        if strength <= 0.0:
+            return out
+
+        angle = rng.uniform(-6.0 * strength, 6.0 * strength)
+        shear = rng.uniform(-4.0 * strength, 4.0 * strength)
+        scale = 1.0 + rng.uniform(-0.10 * strength, 0.10 * strength)
+        tx = rng.uniform(-0.02 * strength * W, 0.02 * strength * W)
+        ty = rng.uniform(-0.02 * strength * H, 0.02 * strength * H)
 
         aff = _affine_matrix(angle, shear, scale, tx, ty, W, H)
         out = out.transform((W, H), Image.AFFINE, data=aff, resample=Image.BILINEAR, fillcolor=(0, 0, 0, 0))
 
-        if rng.random() < 0.5:
-            coeffs = _random_perspective_coeffs(W, H, rng, max_shift=0.06)
+        if rng.random() < 0.5 * strength:
+            coeffs = _random_perspective_coeffs(W, H, rng, max_shift=0.06 * strength)
             out = out.transform((W, H), Image.PERSPECTIVE, coeffs, resample=Image.BILINEAR, fillcolor=(0, 0, 0, 0))
 
         rgb, a = out.convert("RGB"), out.split()[-1]
-        if rng.random() < 0.7:
-            rgb = ImageEnhance.Brightness(rgb).enhance(float(rng.uniform(0.9, 1.1)))
-        if rng.random() < 0.7:
-            rgb = ImageEnhance.Contrast(rgb).enhance(float(rng.uniform(0.9, 1.1)))
-        if rng.random() < 0.3:
-            rgb = ImageEnhance.Color(rgb).enhance(float(rng.uniform(0.9, 1.1)))
-        if rng.random() < 0.4:
-            rgb = rgb.filter(ImageFilter.GaussianBlur(radius=float(rng.uniform(0.0, 0.8))))
-        if rng.random() < 0.6:
+        if rng.random() < 0.7 * strength:
+            rgb = ImageEnhance.Brightness(rgb).enhance(float(rng.uniform(1.0 - 0.1 * strength, 1.0 + 0.1 * strength)))
+        if rng.random() < 0.7 * strength:
+            rgb = ImageEnhance.Contrast(rgb).enhance(float(rng.uniform(1.0 - 0.1 * strength, 1.0 + 0.1 * strength)))
+        if rng.random() < 0.3 * strength:
+            rgb = ImageEnhance.Color(rgb).enhance(float(rng.uniform(1.0 - 0.1 * strength, 1.0 + 0.1 * strength)))
+        if rng.random() < 0.4 * strength:
+            rgb = rgb.filter(ImageFilter.GaussianBlur(radius=float(rng.uniform(0.0, 0.8 * strength))))
+        if rng.random() < 0.6 * strength:
             arr = np.array(rgb, dtype=np.int16)
-            sigma = rng.uniform(1.0, 3.0)
+            sigma = rng.uniform(1.0 * strength, 3.0 * strength)
             noise = rng.normal(0.0, sigma, size=arr.shape)
             arr = np.clip(arr + noise, 0, 255).astype(np.uint8)
             rgb = Image.fromarray(arr, mode="RGB")

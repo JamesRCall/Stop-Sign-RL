@@ -187,6 +187,24 @@ class EpisodeMetricsCallback(BaseCallback):
         # initialize per-env counters
         n_envs = getattr(self.training_env, "num_envs", 1)
         self._ep_len = [0 for _ in range(int(n_envs))]
+        self._last_valid = [
+            {
+                "area": None,
+                "drop_on": None,
+                "drop_on_s": None,
+                "base_conf": None,
+                "after_conf": None,
+                "reward": None,
+                "selected_cells": None,
+                "eval_k": None,
+                "uv_success": None,
+                "attack_success": None,
+                "area_cap_exceeded": None,
+                "mean_iou": None,
+                "misclass_rate": None,
+            }
+            for _ in range(int(n_envs))
+        ]
 
         if self.verbose:
             print(f"[TB] episode metrics -> {self.tb_dir} (n_envs={n_envs})")
@@ -207,6 +225,7 @@ class EpisodeMetricsCallback(BaseCallback):
         os.makedirs(self.tb_dir, exist_ok=True)
         self._ep_count = 0
         self._ep_len = []
+        self._last_valid = []
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", None)
@@ -219,6 +238,27 @@ class EpisodeMetricsCallback(BaseCallback):
         for env_idx, (done, info) in enumerate(zip(dones, infos)):
             # increment length counter for this env each step
             self._ep_len[env_idx] += 1
+
+            if isinstance(info, dict):
+                last = self._last_valid[env_idx]
+                for key, alt_key in (
+                    ("area", "total_area_mask_frac"),
+                    ("drop_on", "drop_on"),
+                    ("drop_on_s", "drop_on_smooth"),
+                    ("base_conf", "base_conf"),
+                    ("after_conf", "after_conf"),
+                    ("reward", "reward"),
+                    ("selected_cells", "selected_cells"),
+                    ("eval_k", "eval_K_used"),
+                    ("uv_success", "uv_success"),
+                    ("attack_success", "attack_success"),
+                    ("area_cap_exceeded", "area_cap_exceeded"),
+                    ("mean_iou", "mean_iou"),
+                    ("misclass_rate", "misclass_rate"),
+                ):
+                    val = info.get(alt_key, None)
+                    if isinstance(val, (int, float)) and not np.isnan(val):
+                        last[key] = val
 
             if not done:
                 continue
@@ -256,7 +296,36 @@ class EpisodeMetricsCallback(BaseCallback):
                 mean_iou = info.get("mean_iou", None)
                 misclass_rate = info.get("misclass_rate", None)
 
-            # Fallback: if not present, store NaN (so TB shows gaps instead of crashing)
+            # Fallback: use last valid per-env values, then NaN if still missing.
+            last = self._last_valid[env_idx] if env_idx < len(self._last_valid) else {}
+            if area is None:
+                area = last.get("area", None)
+            if drop_on is None:
+                drop_on = last.get("drop_on", None)
+            if drop_on_s is None:
+                drop_on_s = last.get("drop_on_s", None)
+            if base_conf is None:
+                base_conf = last.get("base_conf", None)
+            if after_conf is None:
+                after_conf = last.get("after_conf", None)
+            if reward is None:
+                reward = last.get("reward", None)
+            if selected_cells is None:
+                selected_cells = last.get("selected_cells", None)
+            if eval_k is None:
+                eval_k = last.get("eval_k", None)
+            if uv_success is None:
+                uv_success = last.get("uv_success", None)
+            if attack_success is None:
+                attack_success = last.get("attack_success", None)
+            if area_cap_exceeded is None:
+                area_cap_exceeded = last.get("area_cap_exceeded", None)
+            if mean_iou is None:
+                mean_iou = last.get("mean_iou", None)
+            if misclass_rate is None:
+                misclass_rate = last.get("misclass_rate", None)
+
+            # Final fallback: NaN so TB shows gaps instead of crashing.
             area_val = float(area) if area is not None else float("nan")
             drop_on_val = float(drop_on) if drop_on is not None else float("nan")
             drop_on_s_val = float(drop_on_s) if drop_on_s is not None else float("nan")

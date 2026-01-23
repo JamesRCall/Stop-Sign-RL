@@ -226,6 +226,10 @@ def make_env_factory(
     eval_K: int,
     grid_cell_px: int,
     uv_drop_threshold: float,
+    success_conf_threshold: float,
+    lambda_efficiency: float,
+    efficiency_eps: float,
+    transform_strength: float,
     lambda_area: float,
     lambda_iou: float,
     lambda_misclass: float,
@@ -248,7 +252,11 @@ def make_env_factory(
     @param steps_per_episode: Max steps per episode.
     @param eval_K: Number of transforms per evaluation.
     @param grid_cell_px: Grid cell size in pixels.
-    @param uv_drop_threshold: UV drop threshold for success.
+    @param uv_drop_threshold: UV drop threshold for shaping.
+    @param success_conf_threshold: Success threshold for after-conf.
+    @param lambda_efficiency: Efficiency bonus weight (optional).
+    @param efficiency_eps: Denominator epsilon for efficiency bonus.
+    @param transform_strength: Strength of sign transforms (0..1).
     @param lambda_area: Area penalty weight.
     @param lambda_iou: IOU reward weight.
     @param lambda_misclass: Misclassification reward weight.
@@ -289,6 +297,10 @@ def make_env_factory(
                 use_single_color=True,
 
                 uv_drop_threshold=uv_drop_threshold,
+                success_conf_threshold=success_conf_threshold,
+                lambda_efficiency=lambda_efficiency,
+                efficiency_eps=efficiency_eps,
+                transform_strength=transform_strength,
                 day_tolerance=0.05,
                 lambda_day=1.0,
                 lambda_area=float(lambda_area),
@@ -334,9 +346,17 @@ def parse_args():
     ap.add_argument("--eval-K", type=int, default=10)
     ap.add_argument("--grid-cell", type=int, default=2, choices=[2, 4, 8, 16, 32])
     ap.add_argument("--uv-threshold", type=float, default=0.70)
+    ap.add_argument("--success-conf", type=float, default=0.20,
+                    help="Success threshold for after-conf (stop sign).")
     ap.add_argument("--lambda-area", type=float, default=0.30)
     ap.add_argument("--lambda-iou", type=float, default=0.40)
     ap.add_argument("--lambda-misclass", type=float, default=0.60)
+    ap.add_argument("--lambda-efficiency", type=float, default=0.0,
+                    help="Efficiency bonus weight (drop per area).")
+    ap.add_argument("--efficiency-eps", type=float, default=0.02,
+                    help="Epsilon for efficiency denominator.")
+    ap.add_argument("--transform-strength", type=float, default=1.0,
+                    help="Strength of geometric/photometric transforms (0..1).")
     ap.add_argument("--area-cap-frac", type=float, default=0.30,
                     help="Fraction of sign grid allowed for patches; <=0 disables cap.")
     ap.add_argument("--area-cap-penalty", type=float, default=-0.20,
@@ -382,6 +402,12 @@ def parse_args():
                     help="Phase 2 eval_K override (default 3).")
     ap.add_argument("--phase3-eval-K", type=int, default=None,
                     help="Phase 3 eval_K override (default 5 or --eval-K if smaller).")
+    ap.add_argument("--phase1-transform-strength", type=float, default=None,
+                    help="Phase 1 transform strength override (default 0.4).")
+    ap.add_argument("--phase2-transform-strength", type=float, default=None,
+                    help="Phase 2 transform strength override (default 0.7).")
+    ap.add_argument("--phase3-transform-strength", type=float, default=None,
+                    help="Phase 3 transform strength override (default 1.0).")
 
     ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint in --ckpt")
 
@@ -443,7 +469,7 @@ if __name__ == "__main__":
 
     img_size = (640, 640)
 
-    def build_env(eval_K: int, bg_mode: str, use_pole: bool):
+    def build_env(eval_K: int, bg_mode: str, use_pole: bool, transform_strength: Optional[float] = None):
         backgrounds = build_backgrounds(bg_mode, BG_DIR, img_size)
         pole_use = pole_rgba if use_pole else None
 
@@ -467,9 +493,13 @@ if __name__ == "__main__":
                 eval_K=eval_K,
                 grid_cell_px=args.grid_cell,
                 uv_drop_threshold=args.uv_threshold,
+                success_conf_threshold=float(args.success_conf),
                 lambda_area=lambda_area,
                 lambda_iou=float(args.lambda_iou),
                 lambda_misclass=float(args.lambda_misclass),
+                lambda_efficiency=float(args.lambda_efficiency),
+                efficiency_eps=float(args.efficiency_eps),
+                transform_strength=float(args.transform_strength if transform_strength is None else transform_strength),
                 area_cap_frac=area_cap_frac,
                 area_cap_penalty=float(args.area_cap_penalty),
                 area_cap_mode=str(args.area_cap_mode),
@@ -601,22 +631,30 @@ if __name__ == "__main__":
         phase1_eval = int(args.phase1_eval_K) if args.phase1_eval_K is not None else 1
         phase2_eval = int(args.phase2_eval_K) if args.phase2_eval_K is not None else 3
         phase3_eval = int(args.phase3_eval_K) if args.phase3_eval_K is not None else min(5, int(args.eval_K))
+        phase1_tf = float(args.phase1_transform_strength) if args.phase1_transform_strength is not None else 0.4
+        phase2_tf = float(args.phase2_transform_strength) if args.phase2_transform_strength is not None else 0.7
+        phase3_tf = float(args.phase3_transform_strength) if args.phase3_transform_strength is not None else 1.0
         phases = [
-            {"name": "phase1_easy", "steps": p1, "eval_K": phase1_eval, "bg_mode": "solid", "use_pole": False},
-            {"name": "phase2_medium", "steps": p2, "eval_K": phase2_eval, "bg_mode": "dataset", "use_pole": True},
-            {"name": "phase3_full", "steps": p3, "eval_K": phase3_eval, "bg_mode": "dataset", "use_pole": True},
+            {"name": "phase1_easy", "steps": p1, "eval_K": phase1_eval, "bg_mode": "solid", "use_pole": False, "tf": phase1_tf},
+            {"name": "phase2_medium", "steps": p2, "eval_K": phase2_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase2_tf},
+            {"name": "phase3_full", "steps": p3, "eval_K": phase3_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase3_tf},
         ]
 
         for i, ph in enumerate(phases):
             if int(ph["steps"]) <= 0:
                 continue
-            print(f"[CURRICULUM] {ph['name']} steps={ph['steps']} eval_K={ph['eval_K']} bg={ph['bg_mode']} pole={ph['use_pole']}")
+            print(f\"[CURRICULUM] {ph['name']} steps={ph['steps']} eval_K={ph['eval_K']} tf={ph['tf']} bg={ph['bg_mode']} pole={ph['use_pole']}\")
             phase_log_dir = os.path.join(tb_root, ph["name"])
             tb_cb.set_log_dir(phase_log_dir, tag_prefix=f"{run_tag}/{ph['name']}")
             ep_cb.set_log_dir(phase_log_dir)
             step_cb.set_log_dir(phase_log_dir)
 
-            env = build_env(eval_K=int(ph["eval_K"]), bg_mode=ph["bg_mode"], use_pole=bool(ph["use_pole"]))
+            env = build_env(
+                eval_K=int(ph["eval_K"]),
+                bg_mode=ph["bg_mode"],
+                use_pole=bool(ph["use_pole"]),
+                transform_strength=float(ph["tf"]),
+            )
 
             if model is None:
                 policy_kwargs = build_policy_kwargs()
