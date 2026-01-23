@@ -12,6 +12,7 @@ import math
 import sys
 import json
 import itertools
+import time
 from typing import List
 
 import numpy as np
@@ -230,6 +231,8 @@ def main() -> None:
     p.add_argument("--save", action="store_true", help="Save sample images for each percentage.")
     p.add_argument("--out", default="./_debug_area_sweep")
     p.add_argument("--log", default="./_debug_area_sweep/area_sweep.ndjson")
+    p.add_argument("--progress-every", type=int, default=200,
+                   help="Print progress/ETA every N evaluations.")
     args = p.parse_args()
 
     stop_day = Image.open(os.path.join(args.data, "stop_sign.png")).convert("RGBA")
@@ -272,6 +275,17 @@ def main() -> None:
         if args.save:
             os.makedirs(args.out, exist_ok=True)
         os.makedirs(os.path.dirname(args.log), exist_ok=True)
+
+        total_runs = 0
+        for pct in percents:
+            target_n = int(math.ceil(float(pct) * total)) if percents else 0
+            trials = 1 if target_n == 0 else max(1, int(args.trials))
+            total_runs += bg_count * pos_samples * trials
+        total_runs = max(1, total_runs) * max(1, len(combos))
+
+        done_runs = 0
+        t0 = time.perf_counter()
+        last_print = t0
 
         for combo in combos:
             combo_names = "+".join([p.name for p in combo])
@@ -375,6 +389,17 @@ def main() -> None:
                                 overlay = apply_multi_color_overlay(env.sign_rgba_on, "on", env, list(combo), rng)
                                 preview.save(os.path.join(args.out, f"{stem}_uv_on.png"))
                                 overlay.save(os.path.join(args.out, f"{stem}_overlay.png"))
+
+                            done_runs += 1
+                            if int(args.progress_every) > 0 and (done_runs % int(args.progress_every) == 0):
+                                now = time.perf_counter()
+                                elapsed = now - t0
+                                rate = done_runs / max(elapsed, 1e-9)
+                                remaining = max(total_runs - done_runs, 0)
+                                eta = remaining / max(rate, 1e-9)
+                                if now - last_print >= 1.0:
+                                    print(f"[progress] {done_runs}/{total_runs} | {rate:.2f} runs/s | ETA {eta/60.0:.1f} min")
+                                    last_print = now
 
                 arr = np.array(rows, dtype=float)
                 mean = arr.mean(axis=0)
