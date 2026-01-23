@@ -41,6 +41,16 @@ def parse_percents(s: str) -> List[float]:
     return out
 
 
+def parse_int_list(s: str) -> List[int]:
+    out = []
+    for part in s.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        out.append(int(part))
+    return out
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Sweep patch area coverage vs YOLO confidence.")
     p.add_argument("--data", default="./data")
@@ -49,8 +59,12 @@ def main() -> None:
     p.add_argument("--device", default="cuda")
     p.add_argument("--grid-cell", type=int, default=16, choices=[2, 4, 8, 16, 32])
     p.add_argument("--eval-k", type=int, default=5)
+    p.add_argument("--eval-k-list", default="",
+                   help="Comma-separated eval-K values to sweep (overrides --eval-k).")
     p.add_argument("--percentages", default="0,10,20,30,40,50,60,70,80,90,100")
     p.add_argument("--seed", type=int, default=123)
+    p.add_argument("--trials", type=int, default=5,
+                   help="Number of random masks per percentage.")
     p.add_argument("--save", action="store_true", help="Save sample images for each percentage.")
     p.add_argument("--out", default="./_debug_area_sweep")
     args = p.parse_args()
@@ -62,63 +76,84 @@ def main() -> None:
     pole = Image.open(pole_path).convert("RGBA") if os.path.exists(pole_path) else None
     bgs = load_bgs(args.bgdir)
 
-    env = StopSignGridEnv(
-        stop_sign_image=stop_day,
-        stop_sign_uv_image=stop_uv,
-        background_images=bgs,
-        pole_image=pole,
-        yolo_weights=args.yolo,
-        yolo_device=args.device,
-        eval_K=int(args.eval_k),
-        grid_cell_px=int(args.grid_cell),
-        uv_paint=GREEN_GLOW,
-        use_single_color=True,
-    )
-
-    rng = np.random.default_rng(int(args.seed))
-    obs, _ = env.reset()
-    if args.save:
-        os.makedirs(args.out, exist_ok=True)
-        Image.fromarray(obs).save(os.path.join(args.out, "obs_day_baseline.png"))
-
-    valid_coords = env._valid_coords  # (N,2)
-    total = int(valid_coords.shape[0])
-    if total <= 0:
-        print("No valid cells in mask.")
-        return
-
     percents = parse_percents(args.percentages)
-    print(f"valid_cells={total} | eval_K={args.eval_k}")
+    k_list = parse_int_list(args.eval_k_list) if args.eval_k_list.strip() else [int(args.eval_k)]
 
-    for pct in percents:
-        pct = max(0.0, min(1.0, float(pct)))
-        target_n = int(math.ceil(pct * total))
-        env._episode_cells[:] = False
+    for eval_k in k_list:
+        env = StopSignGridEnv(
+            stop_sign_image=stop_day,
+            stop_sign_uv_image=stop_uv,
+            background_images=bgs,
+            pole_image=pole,
+            yolo_weights=args.yolo,
+            yolo_device=args.device,
+            eval_K=int(eval_k),
+            grid_cell_px=int(args.grid_cell),
+            uv_paint=GREEN_GLOW,
+            use_single_color=True,
+        )
 
-        if target_n > 0:
-            picks = rng.choice(total, size=target_n, replace=False)
-            coords = valid_coords[picks]
-            for r, c in coords:
-                env._episode_cells[int(r), int(c)] = True
-
-        area_frac = float(env._episode_cells.sum()) / float(total)
-        eval_seeds = env._transform_seeds[: int(args.eval_k)]
-        metrics = env._eval_overlay_over_K(eval_seeds)
-        c_on = float(metrics.get("c_on", 0.0))
-        c_day = float(metrics.get("c_day", 0.0))
-        mean_iou = float(metrics.get("mean_iou", 0.0))
-        misclass_rate = float(metrics.get("misclass_rate", 0.0))
-        drop_on = float(env._mean_over_K(env._baseline_c0_day_list, int(args.eval_k)) - c_on)
-
-        print(f"area={area_frac:.3f} | c_on={c_on:.3f} | c_day={c_day:.3f} | drop_on={drop_on:.3f} | "
-              f"iou={mean_iou:.3f} | misclass={misclass_rate:.3f}")
-
+        rng = np.random.default_rng(int(args.seed))
+        obs, _ = env.reset()
         if args.save:
-            preview = env._render_variant(kind="on", use_overlay=True, transform_seed=env._transform_seeds[0])
-            overlay = env._render_overlay_pattern(mode="on")
-            stem = f"area_{int(area_frac*100):03d}"
-            preview.save(os.path.join(args.out, f"{stem}_uv_on.png"))
-            overlay.save(os.path.join(args.out, f"{stem}_overlay.png"))
+            os.makedirs(args.out, exist_ok=True)
+            Image.fromarray(obs).save(os.path.join(args.out, f"obs_day_baseline_k{eval_k}.png"))
+
+        valid_coords = env._valid_coords  # (N,2)
+        total = int(valid_coords.shape[0])
+        if total <= 0:
+            print("No valid cells in mask.")
+            return
+
+        print(f"\nvalid_cells={total} | eval_K={eval_k} | trials={int(args.trials)}")
+
+        for pct in percents:
+            pct = max(0.0, min(1.0, float(pct)))
+            target_n = int(math.ceil(pct * total))
+            if target_n == 0:
+                trials = 1
+            else:
+                trials = max(1, int(args.trials))
+
+            rows = []
+            for t in range(trials):
+                env._episode_cells[:] = False
+                if target_n > 0:
+                    picks = rng.choice(total, size=target_n, replace=False)
+                    coords = valid_coords[picks]
+                    for r, c in coords:
+                        env._episode_cells[int(r), int(c)] = True
+
+                area_frac = float(env._episode_cells.sum()) / float(total)
+                eval_seeds = env._transform_seeds[: int(eval_k)]
+                metrics = env._eval_overlay_over_K(eval_seeds)
+                c_on = float(metrics.get("c_on", 0.0))
+                c_day = float(metrics.get("c_day", 0.0))
+                mean_iou = float(metrics.get("mean_iou", 0.0))
+                misclass_rate = float(metrics.get("misclass_rate", 0.0))
+                drop_on = float(env._mean_over_K(env._baseline_c0_day_list, int(eval_k)) - c_on)
+
+                rows.append((area_frac, c_on, c_day, drop_on, mean_iou, misclass_rate))
+
+            arr = np.array(rows, dtype=float)
+            mean = arr.mean(axis=0)
+            std = arr.std(axis=0)
+
+            print(
+                f"area={mean[0]:.3f}±{std[0]:.3f} | "
+                f"c_on={mean[1]:.3f}±{std[1]:.3f} | "
+                f"c_day={mean[2]:.3f}±{std[2]:.3f} | "
+                f"drop_on={mean[3]:.3f}±{std[3]:.3f} | "
+                f"iou={mean[4]:.3f}±{std[4]:.3f} | "
+                f"misclass={mean[5]:.3f}±{std[5]:.3f}"
+            )
+
+            if args.save:
+                preview = env._render_variant(kind="on", use_overlay=True, transform_seed=env._transform_seeds[0])
+                overlay = env._render_overlay_pattern(mode="on")
+                stem = f"area_{int(mean[0]*100):03d}_k{eval_k}"
+                preview.save(os.path.join(args.out, f"{stem}_uv_on.png"))
+                overlay.save(os.path.join(args.out, f"{stem}_overlay.png"))
 
 
 if __name__ == "__main__":
