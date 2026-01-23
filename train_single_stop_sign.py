@@ -433,6 +433,10 @@ def parse_args():
                     help="Minimum adaptive area penalty.")
     ap.add_argument("--area-lagrange-max", type=float, default=5.0,
                     help="Maximum adaptive area penalty.")
+    ap.add_argument("--paint", default="neon_yellow",
+                    help="Paint name (neon_yellow, orange, red, light_blue, medium_blue, dark_blue, purple, green).")
+    ap.add_argument("--paint-list", default="",
+                    help="Comma-separated list of paint names to sample per episode.")
     ap.add_argument("--cell-cover-thresh", type=float, default=0.60,
                     help="Grid cell coverage threshold (0..1). Lower covers edges.")
     ap.add_argument("--transform-strength", type=float, default=1.0,
@@ -795,7 +799,3 @@ if __name__ == "__main__":
     final = os.path.join(args.ckpt, "ppo_grid_uv_final")
     model.save(final)
     print(f" Saved final model to {final}")
-    ap.add_argument("--paint", default="neon_yellow",
-                    help="Paint name (neon_yellow, orange, red, light_blue, medium_blue, dark_blue, purple, green).")
-    ap.add_argument("--paint-list", default="",
-                    help="Comma-separated list of paint names to sample per episode.")
