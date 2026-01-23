@@ -161,7 +161,7 @@ class EpisodeMetricsCallback(BaseCallback):
       - episode/eval_K_used_final, episode/uv_success_final, episode/area_cap_exceeded_final
       - episode/mean_iou_final, episode/misclass_rate_final
       - episode/reward_core_final, episode/reward_raw_total_final
-      - episode/reward_efficiency_final, episode/reward_perceptual_final
+      - episode/reward_efficiency_final, episode/reward_perceptual_final, episode/reward_step_cost_final
       - episode/lambda_area_used_final, episode/lambda_area_dyn_final
       - episode/area_target_frac_final, episode/area_lagrange_lr_final
 
@@ -203,6 +203,7 @@ class EpisodeMetricsCallback(BaseCallback):
                 "reward_raw_total": None,
                 "reward_efficiency": None,
                 "reward_perceptual": None,
+                "reward_step_cost": None,
                 "selected_cells": None,
                 "eval_k": None,
                 "uv_success": None,
@@ -264,6 +265,7 @@ class EpisodeMetricsCallback(BaseCallback):
                     ("reward_raw_total", "reward_raw_total"),
                     ("reward_efficiency", "reward_efficiency"),
                     ("reward_perceptual", "reward_perceptual"),
+                    ("reward_step_cost", "reward_step_cost"),
                     ("selected_cells", "selected_cells"),
                     ("eval_k", "eval_K_used"),
                     ("uv_success", "uv_success"),
@@ -298,6 +300,7 @@ class EpisodeMetricsCallback(BaseCallback):
             reward_raw_total = None
             reward_efficiency = None
             reward_perceptual = None
+            reward_step_cost = None
             selected_cells = None
             eval_k = None
             uv_success = None
@@ -320,6 +323,7 @@ class EpisodeMetricsCallback(BaseCallback):
                 reward_raw_total = info.get("reward_raw_total", None)
                 reward_efficiency = info.get("reward_efficiency", None)
                 reward_perceptual = info.get("reward_perceptual", None)
+                reward_step_cost = info.get("reward_step_cost", None)
                 selected_cells = info.get("selected_cells", None)
                 eval_k = info.get("eval_K_used", None)
                 uv_success = info.get("uv_success", None)
@@ -354,6 +358,8 @@ class EpisodeMetricsCallback(BaseCallback):
                 reward_efficiency = last.get("reward_efficiency", None)
             if reward_perceptual is None:
                 reward_perceptual = last.get("reward_perceptual", None)
+            if reward_step_cost is None:
+                reward_step_cost = last.get("reward_step_cost", None)
             if selected_cells is None:
                 selected_cells = last.get("selected_cells", None)
             if eval_k is None:
@@ -388,6 +394,7 @@ class EpisodeMetricsCallback(BaseCallback):
             reward_raw_total_val = float(reward_raw_total) if reward_raw_total is not None else float("nan")
             reward_efficiency_val = float(reward_efficiency) if reward_efficiency is not None else float("nan")
             reward_perceptual_val = float(reward_perceptual) if reward_perceptual is not None else float("nan")
+            reward_step_cost_val = float(reward_step_cost) if reward_step_cost is not None else float("nan")
             selected_cells_val = float(selected_cells) if selected_cells is not None else float("nan")
             eval_k_val = float(eval_k) if eval_k is not None else float("nan")
             uv_success_val = float(uv_success) if uv_success is not None else float("nan")
@@ -413,6 +420,7 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/reward_raw_total_final", reward_raw_total_val, self._ep_count)
                 self.writer.add_scalar("episode/reward_efficiency_final", reward_efficiency_val, self._ep_count)
                 self.writer.add_scalar("episode/reward_perceptual_final", reward_perceptual_val, self._ep_count)
+                self.writer.add_scalar("episode/reward_step_cost_final", reward_step_cost_val, self._ep_count)
                 self.writer.add_scalar("episode/selected_cells_final", selected_cells_val, self._ep_count)
                 self.writer.add_scalar("episode/eval_K_used_final", eval_k_val, self._ep_count)
                 self.writer.add_scalar("episode/uv_success_final", uv_success_val, self._ep_count)
@@ -437,6 +445,7 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/reward_raw_total_final_vs_timesteps", reward_raw_total_val, self.num_timesteps)
                 self.writer.add_scalar("episode/reward_efficiency_final_vs_timesteps", reward_efficiency_val, self.num_timesteps)
                 self.writer.add_scalar("episode/reward_perceptual_final_vs_timesteps", reward_perceptual_val, self.num_timesteps)
+                self.writer.add_scalar("episode/reward_step_cost_final_vs_timesteps", reward_step_cost_val, self.num_timesteps)
                 self.writer.add_scalar("episode/selected_cells_final_vs_timesteps", selected_cells_val, self.num_timesteps)
                 self.writer.add_scalar("episode/eval_K_used_final_vs_timesteps", eval_k_val, self.num_timesteps)
                 self.writer.add_scalar("episode/uv_success_final_vs_timesteps", uv_success_val, self.num_timesteps)
@@ -558,6 +567,7 @@ class StepMetricsCallback(BaseCallback):
         reward_raw_total = info.get("reward_raw_total", None)
         reward_efficiency = info.get("reward_efficiency", None)
         reward_perceptual = info.get("reward_perceptual", None)
+        reward_step_cost = info.get("reward_step_cost", None)
         lambda_area_used = info.get("lambda_area_used", None)
         lambda_area_dyn = info.get("lambda_area_dyn", None)
         area_target_frac = info.get("area_target_frac", None)
@@ -581,6 +591,7 @@ class StepMetricsCallback(BaseCallback):
             "reward_raw_total": float(reward_raw_total) if reward_raw_total is not None else None,
             "reward_efficiency": float(reward_efficiency) if reward_efficiency is not None else None,
             "reward_perceptual": float(reward_perceptual) if reward_perceptual is not None else None,
+            "reward_step_cost": float(reward_step_cost) if reward_step_cost is not None else None,
             "lambda_area_used": float(lambda_area_used) if lambda_area_used is not None else None,
             "lambda_area_dyn": float(lambda_area_dyn) if lambda_area_dyn is not None else None,
             "area_target_frac": float(area_target_frac) if area_target_frac is not None else None,
@@ -614,6 +625,8 @@ class StepMetricsCallback(BaseCallback):
                 self.writer.add_scalar("step_range/reward_efficiency", row["reward_efficiency"], self.num_timesteps)
             if row["reward_perceptual"] is not None:
                 self.writer.add_scalar("step_range/reward_perceptual", row["reward_perceptual"], self.num_timesteps)
+            if row["reward_step_cost"] is not None:
+                self.writer.add_scalar("step_range/reward_step_cost", row["reward_step_cost"], self.num_timesteps)
             if row["lambda_area_used"] is not None:
                 self.writer.add_scalar("step_range/lambda_area_used", row["lambda_area_used"], self.num_timesteps)
             if row["lambda_area_dyn"] is not None:

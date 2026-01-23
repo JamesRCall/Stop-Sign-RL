@@ -31,6 +31,8 @@ AREA_TARGET="${AREA_TARGET:-0.25}"
 AREA_LAGRANGE_LR="${AREA_LAGRANGE_LR:-0.04}"
 AREA_LAGRANGE_MIN="${AREA_LAGRANGE_MIN:-0.0}"
 AREA_LAGRANGE_MAX="${AREA_LAGRANGE_MAX:-5.0}"
+STEP_COST="${STEP_COST:-0.0}"
+STEP_COST_AFTER_TARGET="${STEP_COST_AFTER_TARGET:-0.01}"
 AREA_CAP_FRAC="${AREA_CAP_FRAC:-0.30}"
 AREA_CAP_PENALTY="${AREA_CAP_PENALTY:--0.20}"
 AREA_CAP_MODE="${AREA_CAP_MODE:-soft}"
@@ -54,6 +56,9 @@ PHASE3_TRANSFORM_STRENGTH="${PHASE3_TRANSFORM_STRENGTH:-}"
 PHASE1_LAMBDA_DAY="${PHASE1_LAMBDA_DAY:-}"
 PHASE2_LAMBDA_DAY="${PHASE2_LAMBDA_DAY:-}"
 PHASE3_LAMBDA_DAY="${PHASE3_LAMBDA_DAY:-}"
+PHASE1_STEP_COST="${PHASE1_STEP_COST:-}"
+PHASE2_STEP_COST="${PHASE2_STEP_COST:-}"
+PHASE3_STEP_COST="${PHASE3_STEP_COST:-}"
 
 YOLO_VERSION="${YOLO_VERSION:-8}"
 YOLO_WEIGHTS="${YOLO_WEIGHTS:-}"
@@ -110,6 +115,8 @@ Options:
   --area-lagrange-lr X         (default: $AREA_LAGRANGE_LR)
   --area-lagrange-min X        (default: $AREA_LAGRANGE_MIN)
   --area-lagrange-max X        (default: $AREA_LAGRANGE_MAX)
+  --step-cost X                (default: $STEP_COST)
+  --step-cost-after-target X   (default: $STEP_COST_AFTER_TARGET)
   --success-conf X            (default: $SUCCESS_CONF)
   --transform-strength X      (default: $TRANSFORM_STRENGTH)
   --paint NAME                (default: $PAINT)
@@ -121,6 +128,9 @@ Options:
   --phase1-lambda-day X
   --phase2-lambda-day X
   --phase3-lambda-day X
+  --phase1-step-cost X
+  --phase2-step-cost X
+  --phase3-step-cost X
   --area-cap-frac F           (default: $AREA_CAP_FRAC)
   --area-cap-penalty P        (default: $AREA_CAP_PENALTY)
   --area-cap-mode {soft|hard} (default: $AREA_CAP_MODE)
@@ -187,6 +197,8 @@ while [[ $# -gt 0 ]]; do
     --area-lagrange-lr) AREA_LAGRANGE_LR="$2"; shift 2;;
     --area-lagrange-min) AREA_LAGRANGE_MIN="$2"; shift 2;;
     --area-lagrange-max) AREA_LAGRANGE_MAX="$2"; shift 2;;
+    --step-cost) STEP_COST="$2"; shift 2;;
+    --step-cost-after-target) STEP_COST_AFTER_TARGET="$2"; shift 2;;
     --success-conf) SUCCESS_CONF="$2"; shift 2;;
     --transform-strength) TRANSFORM_STRENGTH="$2"; shift 2;;
     --paint) PAINT="$2"; shift 2;;
@@ -198,6 +210,9 @@ while [[ $# -gt 0 ]]; do
     --phase1-lambda-day) PHASE1_LAMBDA_DAY="$2"; shift 2;;
     --phase2-lambda-day) PHASE2_LAMBDA_DAY="$2"; shift 2;;
     --phase3-lambda-day) PHASE3_LAMBDA_DAY="$2"; shift 2;;
+    --phase1-step-cost) PHASE1_STEP_COST="$2"; shift 2;;
+    --phase2-step-cost) PHASE2_STEP_COST="$2"; shift 2;;
+    --phase3-step-cost) PHASE3_STEP_COST="$2"; shift 2;;
     --area-cap-frac) AREA_CAP_FRAC="$2"; shift 2;;
     --area-cap-penalty) AREA_CAP_PENALTY="$2"; shift 2;;
     --area-cap-mode) AREA_CAP_MODE="$2"; shift 2;;
@@ -392,6 +407,15 @@ fi
 if [[ -n "${PHASE3_LAMBDA_DAY}" ]]; then
   EXTRA_ARGS+=(--phase3-lambda-day "${PHASE3_LAMBDA_DAY}")
 fi
+if [[ -n "${PHASE1_STEP_COST}" ]]; then
+  EXTRA_ARGS+=(--phase1-step-cost "${PHASE1_STEP_COST}")
+fi
+if [[ -n "${PHASE2_STEP_COST}" ]]; then
+  EXTRA_ARGS+=(--phase2-step-cost "${PHASE2_STEP_COST}")
+fi
+if [[ -n "${PHASE3_STEP_COST}" ]]; then
+  EXTRA_ARGS+=(--phase3-step-cost "${PHASE3_STEP_COST}")
+fi
 if [[ -n "${PAINT_LIST}" ]]; then
   EXTRA_ARGS+=(--paint-list "${PAINT_LIST}")
 fi
@@ -400,7 +424,7 @@ echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
 echo "        yolo-version=${YOLO_VERSION} yolo-weights=${YOLO_WEIGHTS:-<default>}"
 echo "        num-envs=${NUM_ENVS} vec=${VEC} eval_K=${EVAL_K} grid=${GRID_CELL}"
-echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} area-target=${AREA_TARGET:-<cap>} lagrange-lr=${AREA_LAGRANGE_LR} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
+echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} step-cost=${STEP_COST} step-cost-after-target=${STEP_COST_AFTER_TARGET} area-target=${AREA_TARGET:-<cap>} lagrange-lr=${AREA_LAGRANGE_LR} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
 echo "        cap-ramp=${AREA_CAP_START}->${AREA_CAP_END} over ${AREA_CAP_STEPS} steps"
 echo "        lambda-ramp=${LAMBDA_AREA_START}->${LAMBDA_AREA_END} over ${LAMBDA_AREA_STEPS} steps"
 echo "        n-steps=${N_STEPS} batch=${BATCH} total-steps=${TOTAL_STEPS}"
@@ -423,6 +447,8 @@ python "${PY_MAIN}" \
   --efficiency-eps "${EFFICIENCY_EPS}" \
   --lambda-perceptual "${LAMBDA_PERCEPTUAL}" \
   --lambda-day "${LAMBDA_DAY}" \
+  --step-cost "${STEP_COST}" \
+  --step-cost-after-target "${STEP_COST_AFTER_TARGET}" \
   --area-lagrange-lr "${AREA_LAGRANGE_LR}" \
   --area-lagrange-min "${AREA_LAGRANGE_MIN}" \
   --area-lagrange-max "${AREA_LAGRANGE_MAX}" \

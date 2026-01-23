@@ -275,6 +275,8 @@ def make_env_factory(
     area_lagrange_lr: float,
     area_lagrange_min: float,
     area_lagrange_max: float,
+    step_cost: float,
+    step_cost_after_target: float,
     lambda_iou: float,
     lambda_misclass: float,
     area_cap_frac: Optional[float],
@@ -309,6 +311,8 @@ def make_env_factory(
     @param area_lagrange_lr: Lagrange multiplier update rate.
     @param area_lagrange_min: Minimum adaptive area penalty.
     @param area_lagrange_max: Maximum adaptive area penalty.
+    @param step_cost: Per-step penalty (global).
+    @param step_cost_after_target: Additional per-step penalty after target area.
     @param lambda_iou: IOU reward weight.
     @param lambda_misclass: Misclassification reward weight.
     @param area_cap_frac: Area cap fraction (or None).
@@ -369,6 +373,8 @@ def make_env_factory(
                 area_lagrange_lr=float(area_lagrange_lr),
                 area_lagrange_min=float(area_lagrange_min),
                 area_lagrange_max=float(area_lagrange_max),
+                step_cost=float(step_cost),
+                step_cost_after_target=float(step_cost_after_target),
                 lambda_iou=float(lambda_iou),
                 lambda_misclass=float(lambda_misclass),
                 lambda_perceptual=float(lambda_perceptual),
@@ -433,6 +439,10 @@ def parse_args():
                     help="Minimum adaptive area penalty.")
     ap.add_argument("--area-lagrange-max", type=float, default=5.0,
                     help="Maximum adaptive area penalty.")
+    ap.add_argument("--step-cost", type=float, default=0.0,
+                    help="Per-step penalty (global).")
+    ap.add_argument("--step-cost-after-target", type=float, default=0.01,
+                    help="Additional per-step penalty when area exceeds the target.")
     ap.add_argument("--paint", default="neon_yellow",
                     help="Paint name (neon_yellow, orange, red, light_blue, medium_blue, dark_blue, purple, green).")
     ap.add_argument("--paint-list", default="",
@@ -498,6 +508,12 @@ def parse_args():
                     help="Phase 2 transform strength override (default 0.7).")
     ap.add_argument("--phase3-transform-strength", type=float, default=None,
                     help="Phase 3 transform strength override (default 1.0).")
+    ap.add_argument("--phase1-step-cost", type=float, default=None,
+                    help="Phase 1 per-step penalty override.")
+    ap.add_argument("--phase2-step-cost", type=float, default=None,
+                    help="Phase 2 per-step penalty override.")
+    ap.add_argument("--phase3-step-cost", type=float, default=None,
+                    help="Phase 3 per-step penalty override.")
 
     ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint in --ckpt")
 
@@ -590,6 +606,8 @@ if __name__ == "__main__":
                 area_lagrange_lr=float(args.area_lagrange_lr),
                 area_lagrange_min=float(args.area_lagrange_min),
                 area_lagrange_max=float(args.area_lagrange_max),
+                step_cost=float(args.step_cost),
+                step_cost_after_target=float(args.step_cost_after_target),
                 lambda_iou=float(args.lambda_iou),
                 lambda_misclass=float(args.lambda_misclass),
                 lambda_efficiency=float(args.lambda_efficiency),
@@ -735,22 +753,26 @@ if __name__ == "__main__":
         phase1_ld = float(args.phase1_lambda_day) if args.phase1_lambda_day is not None else 0.0
         phase2_ld = float(args.phase2_lambda_day) if args.phase2_lambda_day is not None else 0.5
         phase3_ld = float(args.phase3_lambda_day) if args.phase3_lambda_day is not None else 1.0
+        phase1_sc = float(args.phase1_step_cost) if args.phase1_step_cost is not None else 0.0
+        phase2_sc = float(args.phase2_step_cost) if args.phase2_step_cost is not None else 0.0
+        phase3_sc = float(args.phase3_step_cost) if args.phase3_step_cost is not None else max(0.0, float(args.step_cost_after_target))
         phases = [
-            {"name": "phase1_easy", "steps": p1, "eval_K": phase1_eval, "bg_mode": "solid", "use_pole": False, "tf": phase1_tf, "lambda_day": phase1_ld},
-            {"name": "phase2_medium", "steps": p2, "eval_K": phase2_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase2_tf, "lambda_day": phase2_ld},
-            {"name": "phase3_full", "steps": p3, "eval_K": phase3_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase3_tf, "lambda_day": phase3_ld},
+            {"name": "phase1_easy", "steps": p1, "eval_K": phase1_eval, "bg_mode": "solid", "use_pole": False, "tf": phase1_tf, "lambda_day": phase1_ld, "step_cost": phase1_sc},
+            {"name": "phase2_medium", "steps": p2, "eval_K": phase2_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase2_tf, "lambda_day": phase2_ld, "step_cost": phase2_sc},
+            {"name": "phase3_full", "steps": p3, "eval_K": phase3_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase3_tf, "lambda_day": phase3_ld, "step_cost": phase3_sc},
         ]
 
         for i, ph in enumerate(phases):
             if int(ph["steps"]) <= 0:
                 continue
-            print(f"[CURRICULUM] {ph['name']} steps={ph['steps']} eval_K={ph['eval_K']} tf={ph['tf']} lambda_day={ph['lambda_day']} bg={ph['bg_mode']} pole={ph['use_pole']}")
+            print(f"[CURRICULUM] {ph['name']} steps={ph['steps']} eval_K={ph['eval_K']} tf={ph['tf']} lambda_day={ph['lambda_day']} step_cost={ph['step_cost']} bg={ph['bg_mode']} pole={ph['use_pole']}")
             phase_log_dir = os.path.join(tb_root, ph["name"])
             tb_cb.set_log_dir(phase_log_dir, tag_prefix=f"{run_tag}/{ph['name']}")
             ep_cb.set_log_dir(phase_log_dir)
             step_cb.set_log_dir(phase_log_dir)
 
             args.lambda_day = float(ph["lambda_day"])
+            args.step_cost = float(ph["step_cost"])
             env = build_env(
                 eval_K=int(ph["eval_K"]),
                 bg_mode=ph["bg_mode"],

@@ -100,6 +100,7 @@ From `train_single_stop_sign.py`:
 - `--lambda-area` area penalty strength (encourages minimal patches)
 - `--lambda-efficiency` efficiency bonus (drop per area)
 - `--area-target`, `--area-lagrange-lr/min/max` adaptive area penalty target and bounds
+- `--step-cost`, `--step-cost-after-target` per-step penalties
 - `--lambda-area-start`, `--lambda-area-end`, `--lambda-area-steps` (curriculum)
 - `--area-cap-frac` cap on total patch area (<= 0 disables)
 - `--area-cap-penalty` reward penalty when cap would be exceeded
@@ -111,6 +112,7 @@ From `train_single_stop_sign.py`:
 - `--multiphase` enable 3-phase curriculum (solid/no pole -> dataset + pole)
 - `--phase1-steps`, `--phase2-steps`, `--phase3-steps` (phase lengths; 0 = auto split)
 - `--phase1-eval-K`, `--phase2-eval-K`, `--phase3-eval-K` (per-phase eval_K overrides)
+- `--phase1-step-cost`, `--phase2-step-cost`, `--phase3-step-cost` (phase overrides)
 - `--bg-mode` (`dataset` or `solid`) and `--no-pole` for single-phase
 - `--obs-size`, `--obs-margin`, `--obs-include-mask` (cropped observation + mask channel)
 - `--ent-coef`, `--ent-coef-start`, `--ent-coef-end`, `--ent-coef-steps` (entropy coefficient schedule)
@@ -131,6 +133,7 @@ Highlights:
   confidence minus UV-on overlay confidence.
 - Reward includes an efficiency bonus (drop per area) and an optional adaptive
   area penalty that nudges toward a target patch fraction.
+- Optional per-step penalties can apply globally or only after the area target.
 - Observations are cropped around the sign with an optional overlay-mask channel
   (controlled by `--obs-*` flags).
 - Training uses a lightweight custom CNN extractor tuned for sign crops.

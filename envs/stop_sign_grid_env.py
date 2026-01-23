@@ -101,6 +101,8 @@ class StopSignGridEnv(gym.Env):
         area_lagrange_lr: float = 0.0,
         area_lagrange_min: float = 0.0,
         area_lagrange_max: float = 5.0,
+        step_cost: float = 0.0,
+        step_cost_after_target: float = 0.0,
         lambda_iou: float = 0.4,
         lambda_misclass: float = 0.6,
         lambda_efficiency: float = 0.0,
@@ -195,6 +197,8 @@ class StopSignGridEnv(gym.Env):
         self.area_lagrange_min = float(area_lagrange_min)
         self.area_lagrange_max = float(area_lagrange_max)
         self._lambda_area_dyn = float(lambda_area)
+        self.step_cost = float(step_cost)
+        self.step_cost_after_target = float(step_cost_after_target)
         self.lambda_iou = float(lambda_iou)
         self.lambda_misclass = float(lambda_misclass)
         self.lambda_efficiency = float(lambda_efficiency)
@@ -444,10 +448,15 @@ class StopSignGridEnv(gym.Env):
                 )
             )
             lambda_area_used = float(self._lambda_area_dyn)
+        step_cost_penalty = float(self.step_cost)
+        if self.step_cost_after_target > 0.0 and area_target is not None and area_frac > float(area_target):
+            step_cost_penalty += float(self.step_cost_after_target)
+
         raw_core = (
             drop_blend
             - self.lambda_day * pen_day
             - lambda_area_used * area_frac
+            - step_cost_penalty
             + self.lambda_iou * (1.0 - mean_iou)
             + self.lambda_misclass * misclass_rate
             + self.lambda_efficiency * efficiency
@@ -498,12 +507,15 @@ class StopSignGridEnv(gym.Env):
             "reward_core": float(raw_core),
             "reward_efficiency": float(self.lambda_efficiency * efficiency),
             "reward_perceptual": float(-self.lambda_perceptual * perceptual),
+            "reward_step_cost": float(-step_cost_penalty),
             "reward_raw_total": float(raw_total),
             "reward": float(reward),
             "lambda_area_used": float(lambda_area_used),
             "lambda_area_dyn": float(self._lambda_area_dyn),
             "area_target_frac": float(area_target) if area_target is not None else None,
             "area_lagrange_lr": float(self.area_lagrange_lr),
+            "step_cost": float(self.step_cost),
+            "step_cost_after_target": float(self.step_cost_after_target),
             "mean_iou": float(mean_iou),
             "misclass_rate": float(misclass_rate),
             "mean_target_conf": float(mean_target_conf),
