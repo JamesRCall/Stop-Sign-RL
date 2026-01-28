@@ -423,23 +423,25 @@ def parse_args():
                     help="Penalty for daylight visibility (lower is better).")
     ap.add_argument("--lambda-day", type=float, default=0.0,
                     help="Penalty weight for daylight drop.")
-    ap.add_argument("--lambda-efficiency", type=float, default=0.50,
+    ap.add_argument("--lambda-efficiency", type=float, default=0.40,
                     help="Efficiency bonus weight (drop per area).")
     ap.add_argument("--efficiency-eps", type=float, default=0.02,
                     help="Epsilon for efficiency denominator.")
-    ap.add_argument("--area-target", type=float, default=0.20,
+    ap.add_argument("--area-target", type=float, default=0.25,
                     help="Target area fraction for adaptive area penalty.")
-    ap.add_argument("--area-lagrange-lr", type=float, default=0.03,
+    ap.add_argument("--area-lagrange-lr", type=float, default=0.08,
                     help="Adaptive area penalty learning rate (0 disables).")
     ap.add_argument("--area-lagrange-min", type=float, default=0.0,
                     help="Minimum adaptive area penalty.")
-    ap.add_argument("--area-lagrange-max", type=float, default=50.0,
+    ap.add_argument("--area-lagrange-max", type=float, default=30.0,
                     help="Maximum adaptive area penalty.")
-    ap.add_argument("--area-lagrange-max-step", type=float, default=0.02,
+    ap.add_argument("--area-lagrange-max-step", type=float, default=0.01,
                     help="Max per-step change for adaptive area penalty.")
-    ap.add_argument("--step-cost", type=float, default=0.01,
+    ap.add_argument("--area-lagrange-ema-beta", type=float, default=0.9,
+                    help="EMA smoothing for adaptive area updates (0..1).")
+    ap.add_argument("--step-cost", type=float, default=0.005,
                     help="Per-step penalty (global).")
-    ap.add_argument("--step-cost-after-target", type=float, default=0.10,
+    ap.add_argument("--step-cost-after-target", type=float, default=0.06,
                     help="Additional per-step penalty when area exceeds the target.")
     ap.add_argument("--paint", default="yellow",
                     help="Paint name (red, green, yellow, blue, white, orange).")
@@ -605,6 +607,7 @@ if __name__ == "__main__":
                 area_lagrange_min=float(args.area_lagrange_min),
                 area_lagrange_max=float(args.area_lagrange_max),
                 area_lagrange_max_step=float(args.area_lagrange_max_step),
+                area_lagrange_ema_beta=float(args.area_lagrange_ema_beta),
                 step_cost=float(args.step_cost),
                 step_cost_after_target=float(args.step_cost_after_target),
                 lambda_iou=float(args.lambda_iou),

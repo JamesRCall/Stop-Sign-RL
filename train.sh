@@ -23,17 +23,18 @@ VEC="${VEC:-dummy}"                 # must be dummy for CUDA+YOLO in current arc
 EVAL_K="${EVAL_K:-3}"
 GRID_CELL="${GRID_CELL:-16}"
 LAMBDA_AREA="${LAMBDA_AREA:-0.30}"
-LAMBDA_EFFICIENCY="${LAMBDA_EFFICIENCY:-0.50}"
+LAMBDA_EFFICIENCY="${LAMBDA_EFFICIENCY:-0.40}"
 EFFICIENCY_EPS="${EFFICIENCY_EPS:-0.02}"
 LAMBDA_PERCEPTUAL="${LAMBDA_PERCEPTUAL:-0.0}"
 LAMBDA_DAY="${LAMBDA_DAY:-0.0}"
-AREA_TARGET="${AREA_TARGET:-0.20}"
-AREA_LAGRANGE_LR="${AREA_LAGRANGE_LR:-0.03}"
+AREA_TARGET="${AREA_TARGET:-0.25}"
+AREA_LAGRANGE_LR="${AREA_LAGRANGE_LR:-0.08}"
 AREA_LAGRANGE_MIN="${AREA_LAGRANGE_MIN:-0.0}"
-AREA_LAGRANGE_MAX="${AREA_LAGRANGE_MAX:-50.0}"
-AREA_LAGRANGE_MAX_STEP="${AREA_LAGRANGE_MAX_STEP:-0.02}"
-STEP_COST="${STEP_COST:-0.01}"
-STEP_COST_AFTER_TARGET="${STEP_COST_AFTER_TARGET:-0.10}"
+AREA_LAGRANGE_MAX="${AREA_LAGRANGE_MAX:-30.0}"
+AREA_LAGRANGE_MAX_STEP="${AREA_LAGRANGE_MAX_STEP:-0.01}"
+AREA_LAGRANGE_EMA_BETA="${AREA_LAGRANGE_EMA_BETA:-0.9}"
+STEP_COST="${STEP_COST:-0.005}"
+STEP_COST_AFTER_TARGET="${STEP_COST_AFTER_TARGET:-0.06}"
 AREA_CAP_FRAC="${AREA_CAP_FRAC:-0.30}"
 AREA_CAP_PENALTY="${AREA_CAP_PENALTY:--0.20}"
 AREA_CAP_MODE="${AREA_CAP_MODE:-soft}"
@@ -117,6 +118,7 @@ Options:
   --area-lagrange-min X        (default: $AREA_LAGRANGE_MIN)
   --area-lagrange-max X        (default: $AREA_LAGRANGE_MAX)
   --area-lagrange-max-step X   (default: $AREA_LAGRANGE_MAX_STEP)
+  --area-lagrange-ema-beta X   (default: $AREA_LAGRANGE_EMA_BETA)
   --step-cost X                (default: $STEP_COST)
   --step-cost-after-target X   (default: $STEP_COST_AFTER_TARGET)
   --success-conf X            (default: $SUCCESS_CONF)
@@ -200,6 +202,7 @@ while [[ $# -gt 0 ]]; do
     --area-lagrange-min) AREA_LAGRANGE_MIN="$2"; shift 2;;
     --area-lagrange-max) AREA_LAGRANGE_MAX="$2"; shift 2;;
     --area-lagrange-max-step) AREA_LAGRANGE_MAX_STEP="$2"; shift 2;;
+    --area-lagrange-ema-beta) AREA_LAGRANGE_EMA_BETA="$2"; shift 2;;
     --step-cost) STEP_COST="$2"; shift 2;;
     --step-cost-after-target) STEP_COST_AFTER_TARGET="$2"; shift 2;;
     --success-conf) SUCCESS_CONF="$2"; shift 2;;
@@ -469,6 +472,7 @@ python "${PY_MAIN}" \
   --area-lagrange-min "${AREA_LAGRANGE_MIN}" \
   --area-lagrange-max "${AREA_LAGRANGE_MAX}" \
   --area-lagrange-max-step "${AREA_LAGRANGE_MAX_STEP}" \
+  --area-lagrange-ema-beta "${AREA_LAGRANGE_EMA_BETA}" \
   --success-conf "${SUCCESS_CONF}" \
   --transform-strength "${TRANSFORM_STRENGTH}" \
   --paint "${PAINT}" \
