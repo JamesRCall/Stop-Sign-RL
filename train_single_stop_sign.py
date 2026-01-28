@@ -423,21 +423,21 @@ def parse_args():
                     help="Penalty for daylight visibility (lower is better).")
     ap.add_argument("--lambda-day", type=float, default=0.0,
                     help="Penalty weight for daylight drop.")
-    ap.add_argument("--lambda-efficiency", type=float, default=0.50,
+    ap.add_argument("--lambda-efficiency", type=float, default=0.35,
                     help="Efficiency bonus weight (drop per area).")
     ap.add_argument("--efficiency-eps", type=float, default=0.02,
                     help="Epsilon for efficiency denominator.")
     ap.add_argument("--area-target", type=float, default=0.20,
                     help="Target area fraction for adaptive area penalty.")
-    ap.add_argument("--area-lagrange-lr", type=float, default=0.20,
+    ap.add_argument("--area-lagrange-lr", type=float, default=0.10,
                     help="Adaptive area penalty learning rate (0 disables).")
     ap.add_argument("--area-lagrange-min", type=float, default=0.0,
                     help="Minimum adaptive area penalty.")
-    ap.add_argument("--area-lagrange-max", type=float, default=40.0,
+    ap.add_argument("--area-lagrange-max", type=float, default=20.0,
                     help="Maximum adaptive area penalty.")
-    ap.add_argument("--step-cost", type=float, default=0.01,
+    ap.add_argument("--step-cost", type=float, default=0.005,
                     help="Per-step penalty (global).")
-    ap.add_argument("--step-cost-after-target", type=float, default=0.03,
+    ap.add_argument("--step-cost-after-target", type=float, default=0.04,
                     help="Additional per-step penalty when area exceeds the target.")
     ap.add_argument("--paint", default="yellow",
                     help="Paint name (red, green, yellow, blue, white, orange).")
