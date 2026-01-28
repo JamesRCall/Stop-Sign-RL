@@ -271,6 +271,8 @@ def make_env_factory(
     area_lagrange_lr: float,
     area_lagrange_min: float,
     area_lagrange_max: float,
+    area_lagrange_max_step: float,
+    area_lagrange_ema_beta: float,
     step_cost: float,
     step_cost_after_target: float,
     lambda_iou: float,
@@ -307,6 +309,8 @@ def make_env_factory(
     @param area_lagrange_lr: Lagrange multiplier update rate.
     @param area_lagrange_min: Minimum adaptive area penalty.
     @param area_lagrange_max: Maximum adaptive area penalty.
+    @param area_lagrange_max_step: Max per-step change for adaptive area penalty.
+    @param area_lagrange_ema_beta: EMA smoothing for adaptive area updates.
     @param step_cost: Per-step penalty (global).
     @param step_cost_after_target: Additional per-step penalty after target area.
     @param lambda_iou: IOU reward weight.
@@ -369,6 +373,8 @@ def make_env_factory(
                 area_lagrange_lr=float(area_lagrange_lr),
                 area_lagrange_min=float(area_lagrange_min),
                 area_lagrange_max=float(area_lagrange_max),
+                area_lagrange_max_step=float(area_lagrange_max_step),
+                area_lagrange_ema_beta=float(area_lagrange_ema_beta),
                 step_cost=float(step_cost),
                 step_cost_after_target=float(step_cost_after_target),
                 lambda_iou=float(lambda_iou),
