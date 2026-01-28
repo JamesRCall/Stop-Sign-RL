@@ -455,10 +455,17 @@ class StopSignGridEnv(gym.Env):
             excess = (float(area_frac) - float(area_target)) / max(float(area_target), 1e-6)
             step_cost_penalty += float(self.step_cost_after_target) * (1.0 + max(0.0, excess))
 
+        excess_penalty = 0.0
+        if area_target is not None and area_frac > float(area_target):
+            excess = float(area_frac) - float(area_target)
+            # Stronger push against exceeding the target.
+            excess_penalty = (lambda_area_used * 2.0 * excess) + (lambda_area_used * (excess ** 2))
+
         raw_core = (
             drop_blend
             - self.lambda_day * pen_day
             - lambda_area_used * area_frac
+            - excess_penalty
             - step_cost_penalty
             + self.lambda_iou * (1.0 - mean_iou)
             + self.lambda_misclass * misclass_rate
@@ -470,7 +477,7 @@ class StopSignGridEnv(gym.Env):
         shaping = 0.35 * math.tanh(3.0 * (conf_thr - c_on))
         conf_success = self._is_drop_success(c_on, area_frac, conf_thr)
         attack_success = bool(conf_success)
-        success_bonus = (0.2 * (1.0 - float(area_frac))) if conf_success else 0.0
+        success_bonus = (0.2 * ((1.0 - float(area_frac)) ** 2)) if conf_success else 0.0
 
         raw_total = raw_core + shaping + success_bonus
         if cap_exceeded and self.area_cap_mode == "soft":
