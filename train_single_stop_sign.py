@@ -404,7 +404,7 @@ def parse_args():
     ap.add_argument("--uv-threshold", type=float, default=0.75)
     ap.add_argument("--success-conf", type=float, default=0.20,
                     help="Success threshold for after-conf (stop sign).")
-    ap.add_argument("--lambda-area", type=float, default=0.30)
+    ap.add_argument("--lambda-area", type=float, default=0.40)
     ap.add_argument("--lambda-iou", type=float, default=0.40)
     ap.add_argument("--lambda-misclass", type=float, default=0.60)
     ap.add_argument("--lambda-perceptual", type=float, default=0.0,
@@ -417,9 +417,9 @@ def parse_args():
                     help="Epsilon for efficiency denominator.")
     ap.add_argument("--area-target", type=float, default=0.25,
                     help="Target area fraction for adaptive area penalty.")
-    ap.add_argument("--step-cost", type=float, default=0.005,
+    ap.add_argument("--step-cost", type=float, default=0.008,
                     help="Per-step penalty (global).")
-    ap.add_argument("--step-cost-after-target", type=float, default=0.06,
+    ap.add_argument("--step-cost-after-target", type=float, default=0.08,
                     help="Additional per-step penalty when area exceeds the target.")
     ap.add_argument("--paint", default="yellow",
                     help="Paint name (red, green, yellow, blue, white, orange).")
