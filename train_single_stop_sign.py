@@ -404,7 +404,7 @@ def parse_args():
     ap.add_argument("--uv-threshold", type=float, default=0.75)
     ap.add_argument("--success-conf", type=float, default=0.20,
                     help="Success threshold for after-conf (stop sign).")
-    ap.add_argument("--lambda-area", type=float, default=0.40)
+    ap.add_argument("--lambda-area", type=float, default=0.50)
     ap.add_argument("--lambda-iou", type=float, default=0.40)
     ap.add_argument("--lambda-misclass", type=float, default=0.60)
     ap.add_argument("--lambda-perceptual", type=float, default=0.0,
@@ -419,7 +419,7 @@ def parse_args():
                     help="Target area fraction for adaptive area penalty.")
     ap.add_argument("--step-cost", type=float, default=0.008,
                     help="Per-step penalty (global).")
-    ap.add_argument("--step-cost-after-target", type=float, default=0.08,
+    ap.add_argument("--step-cost-after-target", type=float, default=0.10,
                     help="Additional per-step penalty when area exceeds the target.")
     ap.add_argument("--paint", default="yellow",
                     help="Paint name (red, green, yellow, blue, white, orange).")
@@ -725,12 +725,12 @@ if __name__ == "__main__":
         phase1_tf = float(args.phase1_transform_strength) if args.phase1_transform_strength is not None else 0.4
         phase2_tf = float(args.phase2_transform_strength) if args.phase2_transform_strength is not None else 0.7
         phase3_tf = float(args.phase3_transform_strength) if args.phase3_transform_strength is not None else 1.0
-        phase1_ld = float(args.phase1_lambda_day) if args.phase1_lambda_day is not None else 0.0
-        phase2_ld = float(args.phase2_lambda_day) if args.phase2_lambda_day is not None else 0.5
-        phase3_ld = float(args.phase3_lambda_day) if args.phase3_lambda_day is not None else 1.0
-        phase1_sc = float(args.phase1_step_cost) if args.phase1_step_cost is not None else 0.0
-        phase2_sc = float(args.phase2_step_cost) if args.phase2_step_cost is not None else 0.0
-        phase3_sc = float(args.phase3_step_cost) if args.phase3_step_cost is not None else max(0.0, float(args.step_cost_after_target))
+        phase1_ld = float(args.lambda_day)
+        phase2_ld = float(args.lambda_day)
+        phase3_ld = float(args.lambda_day)
+        phase1_sc = float(args.step_cost)
+        phase2_sc = float(args.step_cost)
+        phase3_sc = float(args.step_cost)
         phases = [
             {"name": "phase1_easy", "steps": p1, "eval_K": phase1_eval, "bg_mode": "solid", "use_pole": False, "tf": phase1_tf, "lambda_day": phase1_ld, "step_cost": phase1_sc},
             {"name": "phase2_medium", "steps": p2, "eval_K": phase2_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase2_tf, "lambda_day": phase2_ld, "step_cost": phase2_sc},
