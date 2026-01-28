@@ -39,16 +39,16 @@ AREA_CAP_MODE="${AREA_CAP_MODE:-soft}"
 AREA_CAP_START="${AREA_CAP_START:-0.80}"
 AREA_CAP_END="${AREA_CAP_END:-0.30}"
 AREA_CAP_STEPS="${AREA_CAP_STEPS:-500000}"
-LAMBDA_AREA_START="${LAMBDA_AREA_START:-0.10}"
-LAMBDA_AREA_END="${LAMBDA_AREA_END:-0.30}"
-LAMBDA_AREA_STEPS="${LAMBDA_AREA_STEPS:-200000}"
+LAMBDA_AREA_START="${LAMBDA_AREA_START:-}"
+LAMBDA_AREA_END="${LAMBDA_AREA_END:-}"
+LAMBDA_AREA_STEPS="${LAMBDA_AREA_STEPS:-0}"
 OBS_SIZE="${OBS_SIZE:-224}"
 OBS_MARGIN="${OBS_MARGIN:-0.10}"
 OBS_INCLUDE_MASK="${OBS_INCLUDE_MASK:-1}"
 CELL_COVER_THRESH="${CELL_COVER_THRESH:-0.60}"
 SUCCESS_CONF="${SUCCESS_CONF:-0.20}"
 TRANSFORM_STRENGTH="${TRANSFORM_STRENGTH:-1.0}"
-PAINT="${PAINT:-neon_yellow}"
+PAINT="${PAINT:-yellow}"
 PAINT_LIST="${PAINT_LIST:-}"
 PHASE1_TRANSFORM_STRENGTH="${PHASE1_TRANSFORM_STRENGTH:-}"
 PHASE2_TRANSFORM_STRENGTH="${PHASE2_TRANSFORM_STRENGTH:-}"
@@ -419,6 +419,15 @@ fi
 if [[ -n "${PAINT_LIST}" ]]; then
   EXTRA_ARGS+=(--paint-list "${PAINT_LIST}")
 fi
+if [[ -n "${LAMBDA_AREA_START}" ]]; then
+  EXTRA_ARGS+=(--lambda-area-start "${LAMBDA_AREA_START}")
+fi
+if [[ -n "${LAMBDA_AREA_END}" ]]; then
+  EXTRA_ARGS+=(--lambda-area-end "${LAMBDA_AREA_END}")
+fi
+if [[ -n "${LAMBDA_AREA_STEPS}" && "${LAMBDA_AREA_STEPS}" -gt 0 ]]; then
+  EXTRA_ARGS+=(--lambda-area-steps "${LAMBDA_AREA_STEPS}")
+fi
 
 echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
@@ -426,7 +435,11 @@ echo "        yolo-version=${YOLO_VERSION} yolo-weights=${YOLO_WEIGHTS:-<default
 echo "        num-envs=${NUM_ENVS} vec=${VEC} eval_K=${EVAL_K} grid=${GRID_CELL}"
 echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} step-cost=${STEP_COST} step-cost-after-target=${STEP_COST_AFTER_TARGET} area-target=${AREA_TARGET:-<cap>} lagrange-lr=${AREA_LAGRANGE_LR} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
 echo "        cap-ramp=${AREA_CAP_START}->${AREA_CAP_END} over ${AREA_CAP_STEPS} steps"
-echo "        lambda-ramp=${LAMBDA_AREA_START}->${LAMBDA_AREA_END} over ${LAMBDA_AREA_STEPS} steps"
+if [[ -n "${LAMBDA_AREA_START}" || -n "${LAMBDA_AREA_END}" || ( -n "${LAMBDA_AREA_STEPS}" && "${LAMBDA_AREA_STEPS}" -gt 0 ) ]]; then
+  echo "        lambda-ramp=${LAMBDA_AREA_START:-<unset>}->${LAMBDA_AREA_END:-<unset>} over ${LAMBDA_AREA_STEPS} steps"
+else
+  echo "        lambda-ramp=disabled"
+fi
 echo "        n-steps=${N_STEPS} batch=${BATCH} total-steps=${TOTAL_STEPS}"
 echo "        tb=${TB_DIR} ckpt=${CKPT_DIR} overlays=${OVR_DIR}"
 echo ""
@@ -462,9 +475,6 @@ python "${PY_MAIN}" \
   --area-cap-start "${AREA_CAP_START}" \
   --area-cap-end "${AREA_CAP_END}" \
   --area-cap-steps "${AREA_CAP_STEPS}" \
-  --lambda-area-start "${LAMBDA_AREA_START}" \
-  --lambda-area-end "${LAMBDA_AREA_END}" \
-  --lambda-area-steps "${LAMBDA_AREA_STEPS}" \
   --ent-coef-steps "${ENT_COEF_STEPS}" \
   --obs-size "${OBS_SIZE}" \
   --obs-margin "${OBS_MARGIN}" \
