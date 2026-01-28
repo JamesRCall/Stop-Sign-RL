@@ -98,11 +98,6 @@ class StopSignGridEnv(gym.Env):
         lambda_day: float = 1.0,
         lambda_area: float = 0.3,
         area_target_frac: Optional[float] = None,
-        area_lagrange_lr: float = 0.0,
-        area_lagrange_min: float = 0.0,
-        area_lagrange_max: float = 5.0,
-        area_lagrange_max_step: float = 0.02,
-        area_lagrange_ema_beta: float = 0.9,
         step_cost: float = 0.0,
         step_cost_after_target: float = 0.0,
         lambda_iou: float = 0.4,
@@ -195,13 +190,6 @@ class StopSignGridEnv(gym.Env):
         self.lambda_day = float(lambda_day)
         self.lambda_area = float(lambda_area)
         self.area_target_frac = float(area_target_frac) if area_target_frac is not None else None
-        self.area_lagrange_lr = float(area_lagrange_lr)
-        self.area_lagrange_min = float(area_lagrange_min)
-        self.area_lagrange_max = float(area_lagrange_max)
-        self.area_lagrange_max_step = float(area_lagrange_max_step)
-        self.area_lagrange_ema_beta = float(area_lagrange_ema_beta)
-        self._lambda_area_dyn = float(lambda_area)
-        self._area_excess_ema = 0.0
         self.step_cost = float(step_cost)
         self.step_cost_after_target = float(step_cost_after_target)
         self.lambda_iou = float(lambda_iou)
@@ -222,8 +210,6 @@ class StopSignGridEnv(gym.Env):
         if self.area_target_frac is not None:
             if not (0.0 < self.area_target_frac <= 1.0):
                 raise ValueError("area_target_frac must be in (0, 1]")
-        if self.area_lagrange_max < self.area_lagrange_min:
-            raise ValueError("area_lagrange_max must be >= area_lagrange_min")
 
 
         # detector
@@ -443,22 +429,8 @@ class StopSignGridEnv(gym.Env):
         eff_drop = max(0.0, float(drop_on))
         eff_denom = max(float(area_frac), float(self.efficiency_eps))
         efficiency = math.log1p(eff_drop / eff_denom)
-        lambda_area_used = float(self.lambda_area)
         area_target = self.area_target_frac if self.area_target_frac is not None else self.area_cap_frac
-        if self.area_lagrange_lr > 0.0 and area_target is not None and float(area_target) > 0.0:
-            violation = max(0.0, float(area_frac) - float(area_target))
-            beta = float(np.clip(self.area_lagrange_ema_beta, 0.0, 0.99))
-            self._area_excess_ema = (beta * self._area_excess_ema) + ((1.0 - beta) * violation)
-            delta = float(self.area_lagrange_lr * self._area_excess_ema)
-            delta = float(np.clip(delta, -self.area_lagrange_max_step, self.area_lagrange_max_step))
-            self._lambda_area_dyn = float(
-                np.clip(
-                    self._lambda_area_dyn + delta,
-                    self.area_lagrange_min,
-                    self.area_lagrange_max,
-                )
-            )
-            lambda_area_used = float(self._lambda_area_dyn)
+        lambda_area_used = float(self.lambda_area)
         step_cost_penalty = float(self.step_cost)
         if self.step_cost_after_target > 0.0 and area_target is not None and area_frac > float(area_target):
             excess = (float(area_frac) - float(area_target)) / max(float(area_target), 1e-6)
@@ -526,10 +498,7 @@ class StopSignGridEnv(gym.Env):
             "reward_raw_total": float(raw_total),
             "reward": float(reward),
             "lambda_area_used": float(lambda_area_used),
-            "lambda_area_dyn": float(self._lambda_area_dyn),
-            "area_excess_ema": float(self._area_excess_ema),
             "area_target_frac": float(area_target) if area_target is not None else None,
-            "area_lagrange_lr": float(self.area_lagrange_lr),
             "step_cost": float(self.step_cost),
             "step_cost_after_target": float(self.step_cost_after_target),
             "mean_iou": float(mean_iou),
@@ -768,7 +737,6 @@ class StopSignGridEnv(gym.Env):
         @param value: New lambda_area value.
         """
         self.lambda_area = float(value)
-        self._lambda_area_dyn = float(value)
 
     def _eval_over_K(self) -> Tuple[float, float, float, float]:
         imgs_plain_day = []

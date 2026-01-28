@@ -28,11 +28,6 @@ EFFICIENCY_EPS="${EFFICIENCY_EPS:-0.02}"
 LAMBDA_PERCEPTUAL="${LAMBDA_PERCEPTUAL:-0.0}"
 LAMBDA_DAY="${LAMBDA_DAY:-0.0}"
 AREA_TARGET="${AREA_TARGET:-0.25}"
-AREA_LAGRANGE_LR="${AREA_LAGRANGE_LR:-0.08}"
-AREA_LAGRANGE_MIN="${AREA_LAGRANGE_MIN:-0.0}"
-AREA_LAGRANGE_MAX="${AREA_LAGRANGE_MAX:-30.0}"
-AREA_LAGRANGE_MAX_STEP="${AREA_LAGRANGE_MAX_STEP:-0.01}"
-AREA_LAGRANGE_EMA_BETA="${AREA_LAGRANGE_EMA_BETA:-0.9}"
 STEP_COST="${STEP_COST:-0.005}"
 STEP_COST_AFTER_TARGET="${STEP_COST_AFTER_TARGET:-0.06}"
 AREA_CAP_FRAC="${AREA_CAP_FRAC:-0.30}"
@@ -114,11 +109,6 @@ Options:
   --lambda-perceptual X       (default: $LAMBDA_PERCEPTUAL)
   --lambda-day X              (default: $LAMBDA_DAY)
   --area-target F             (default: $AREA_TARGET)
-  --area-lagrange-lr X         (default: $AREA_LAGRANGE_LR)
-  --area-lagrange-min X        (default: $AREA_LAGRANGE_MIN)
-  --area-lagrange-max X        (default: $AREA_LAGRANGE_MAX)
-  --area-lagrange-max-step X   (default: $AREA_LAGRANGE_MAX_STEP)
-  --area-lagrange-ema-beta X   (default: $AREA_LAGRANGE_EMA_BETA)
   --step-cost X                (default: $STEP_COST)
   --step-cost-after-target X   (default: $STEP_COST_AFTER_TARGET)
   --success-conf X            (default: $SUCCESS_CONF)
@@ -198,11 +188,6 @@ while [[ $# -gt 0 ]]; do
     --lambda-perceptual) LAMBDA_PERCEPTUAL="$2"; shift 2;;
     --lambda-day) LAMBDA_DAY="$2"; shift 2;;
     --area-target) AREA_TARGET="$2"; shift 2;;
-    --area-lagrange-lr) AREA_LAGRANGE_LR="$2"; shift 2;;
-    --area-lagrange-min) AREA_LAGRANGE_MIN="$2"; shift 2;;
-    --area-lagrange-max) AREA_LAGRANGE_MAX="$2"; shift 2;;
-    --area-lagrange-max-step) AREA_LAGRANGE_MAX_STEP="$2"; shift 2;;
-    --area-lagrange-ema-beta) AREA_LAGRANGE_EMA_BETA="$2"; shift 2;;
     --step-cost) STEP_COST="$2"; shift 2;;
     --step-cost-after-target) STEP_COST_AFTER_TARGET="$2"; shift 2;;
     --success-conf) SUCCESS_CONF="$2"; shift 2;;
@@ -439,7 +424,7 @@ echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
 echo "        yolo-version=${YOLO_VERSION} yolo-weights=${YOLO_WEIGHTS:-<default>}"
 echo "        num-envs=${NUM_ENVS} vec=${VEC} eval_K=${EVAL_K} grid=${GRID_CELL}"
-echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} step-cost=${STEP_COST} step-cost-after-target=${STEP_COST_AFTER_TARGET} area-target=${AREA_TARGET:-<cap>} lagrange-lr=${AREA_LAGRANGE_LR} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
+echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} step-cost=${STEP_COST} step-cost-after-target=${STEP_COST_AFTER_TARGET} area-target=${AREA_TARGET:-<cap>} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
 echo "        cap-ramp=${AREA_CAP_START}->${AREA_CAP_END} over ${AREA_CAP_STEPS} steps"
 if [[ -n "${LAMBDA_AREA_START}" || -n "${LAMBDA_AREA_END}" || ( -n "${LAMBDA_AREA_STEPS}" && "${LAMBDA_AREA_STEPS}" -gt 0 ) ]]; then
   echo "        lambda-ramp=${LAMBDA_AREA_START:-<unset>}->${LAMBDA_AREA_END:-<unset>} over ${LAMBDA_AREA_STEPS} steps"
@@ -468,11 +453,6 @@ python "${PY_MAIN}" \
   --lambda-day "${LAMBDA_DAY}" \
   --step-cost "${STEP_COST}" \
   --step-cost-after-target "${STEP_COST_AFTER_TARGET}" \
-  --area-lagrange-lr "${AREA_LAGRANGE_LR}" \
-  --area-lagrange-min "${AREA_LAGRANGE_MIN}" \
-  --area-lagrange-max "${AREA_LAGRANGE_MAX}" \
-  --area-lagrange-max-step "${AREA_LAGRANGE_MAX_STEP}" \
-  --area-lagrange-ema-beta "${AREA_LAGRANGE_EMA_BETA}" \
   --success-conf "${SUCCESS_CONF}" \
   --transform-strength "${TRANSFORM_STRENGTH}" \
   --paint "${PAINT}" \

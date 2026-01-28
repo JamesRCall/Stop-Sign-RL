@@ -268,11 +268,6 @@ def make_env_factory(
     transform_strength: float,
     lambda_area: float,
     area_target_frac: Optional[float],
-    area_lagrange_lr: float,
-    area_lagrange_min: float,
-    area_lagrange_max: float,
-    area_lagrange_max_step: float,
-    area_lagrange_ema_beta: float,
     step_cost: float,
     step_cost_after_target: float,
     lambda_iou: float,
@@ -306,11 +301,6 @@ def make_env_factory(
     @param transform_strength: Strength of sign transforms (0..1).
     @param lambda_area: Area penalty weight.
     @param area_target_frac: Target area fraction for adaptive penalty.
-    @param area_lagrange_lr: Lagrange multiplier update rate.
-    @param area_lagrange_min: Minimum adaptive area penalty.
-    @param area_lagrange_max: Maximum adaptive area penalty.
-    @param area_lagrange_max_step: Max per-step change for adaptive area penalty.
-    @param area_lagrange_ema_beta: EMA smoothing for adaptive area updates.
     @param step_cost: Per-step penalty (global).
     @param step_cost_after_target: Additional per-step penalty after target area.
     @param lambda_iou: IOU reward weight.
@@ -319,9 +309,6 @@ def make_env_factory(
     @param area_cap_penalty: Penalty when cap exceeded.
     @param area_cap_mode: "soft" or "hard" cap mode.
     @param area_target_frac: Target area fraction for adaptive penalty.
-    @param area_lagrange_lr: Lagrange multiplier update rate.
-    @param area_lagrange_min: Minimum adaptive area penalty.
-    @param area_lagrange_max: Maximum adaptive area penalty.
     @param yolo_wts: YOLO weights path.
     @param yolo_device: YOLO device spec.
     @param obs_size: Cropped observation size.
@@ -370,11 +357,6 @@ def make_env_factory(
                 lambda_day=float(args.lambda_day),
                 lambda_area=float(lambda_area),
                 area_target_frac=area_target_frac,
-                area_lagrange_lr=float(area_lagrange_lr),
-                area_lagrange_min=float(area_lagrange_min),
-                area_lagrange_max=float(area_lagrange_max),
-                area_lagrange_max_step=float(area_lagrange_max_step),
-                area_lagrange_ema_beta=float(area_lagrange_ema_beta),
                 step_cost=float(step_cost),
                 step_cost_after_target=float(step_cost_after_target),
                 lambda_iou=float(lambda_iou),
@@ -435,16 +417,6 @@ def parse_args():
                     help="Epsilon for efficiency denominator.")
     ap.add_argument("--area-target", type=float, default=0.25,
                     help="Target area fraction for adaptive area penalty.")
-    ap.add_argument("--area-lagrange-lr", type=float, default=0.08,
-                    help="Adaptive area penalty learning rate (0 disables).")
-    ap.add_argument("--area-lagrange-min", type=float, default=0.0,
-                    help="Minimum adaptive area penalty.")
-    ap.add_argument("--area-lagrange-max", type=float, default=30.0,
-                    help="Maximum adaptive area penalty.")
-    ap.add_argument("--area-lagrange-max-step", type=float, default=0.01,
-                    help="Max per-step change for adaptive area penalty.")
-    ap.add_argument("--area-lagrange-ema-beta", type=float, default=0.9,
-                    help="EMA smoothing for adaptive area updates (0..1).")
     ap.add_argument("--step-cost", type=float, default=0.005,
                     help="Per-step penalty (global).")
     ap.add_argument("--step-cost-after-target", type=float, default=0.06,
@@ -609,11 +581,6 @@ if __name__ == "__main__":
                 success_conf_threshold=float(args.success_conf),
                 lambda_area=lambda_area,
                 area_target_frac=(float(args.area_target) if args.area_target is not None else None),
-                area_lagrange_lr=float(args.area_lagrange_lr),
-                area_lagrange_min=float(args.area_lagrange_min),
-                area_lagrange_max=float(args.area_lagrange_max),
-                area_lagrange_max_step=float(args.area_lagrange_max_step),
-                area_lagrange_ema_beta=float(args.area_lagrange_ema_beta),
                 step_cost=float(args.step_cost),
                 step_cost_after_target=float(args.step_cost_after_target),
                 lambda_iou=float(args.lambda_iou),
