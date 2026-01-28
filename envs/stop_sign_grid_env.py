@@ -8,7 +8,7 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from detectors.yolo_wrapper import DetectorWrapper
-from utils.uv_paint import UVPaint, VIOLET_GLOW  # you can swap the paint in train file
+from utils.uv_paint import UVPaint, YELLOW_GLOW  # you can swap the paint in train file
 
 
 class StopSignGridEnv(gym.Env):
@@ -87,7 +87,7 @@ class StopSignGridEnv(gym.Env):
         area_cap_frac: Optional[float] = None,
 
         # Paint (single pair)
-        uv_paint: UVPaint = VIOLET_GLOW,
+        uv_paint: UVPaint = YELLOW_GLOW,
         uv_paint_list: Optional[List[UVPaint]] = None,
         use_single_color: bool = True,
 
@@ -432,7 +432,9 @@ class StopSignGridEnv(gym.Env):
         # 3) Reward using raw UV drop (no smoothing for core objective)
         pen_day = max(0.0, drop_day - self.day_tolerance)
         area_frac = self._area_frac_selected()
-        drop_blend = float(drop_on)
+        conf_thr = self.success_conf_threshold
+        max_drop = max(0.0, float(c0_day - conf_thr))
+        drop_blend = min(float(drop_on), max_drop)
         eff_drop = max(0.0, float(drop_on))
         eff_denom = max(float(area_frac), float(self.efficiency_eps))
         efficiency = math.log1p(eff_drop / eff_denom)
@@ -450,7 +452,8 @@ class StopSignGridEnv(gym.Env):
             lambda_area_used = float(self._lambda_area_dyn)
         step_cost_penalty = float(self.step_cost)
         if self.step_cost_after_target > 0.0 and area_target is not None and area_frac > float(area_target):
-            step_cost_penalty += float(self.step_cost_after_target)
+            excess = (float(area_frac) - float(area_target)) / max(float(area_target), 1e-6)
+            step_cost_penalty += float(self.step_cost_after_target) * (1.0 + max(0.0, excess))
 
         raw_core = (
             drop_blend
@@ -464,11 +467,10 @@ class StopSignGridEnv(gym.Env):
         perceptual = self._perceptual_delta()
         raw_core -= self.lambda_perceptual * perceptual
 
-        conf_thr = self.success_conf_threshold
         shaping = 0.35 * math.tanh(3.0 * (conf_thr - c_on))
         conf_success = self._is_drop_success(c_on, area_frac, conf_thr)
         attack_success = bool(conf_success)
-        success_bonus = 0.2 if conf_success else 0.0
+        success_bonus = (0.2 * (1.0 - float(area_frac))) if conf_success else 0.0
 
         raw_total = raw_core + shaping + success_bonus
         if cap_exceeded and self.area_cap_mode == "soft":

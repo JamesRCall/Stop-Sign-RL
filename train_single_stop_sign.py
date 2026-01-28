@@ -14,14 +14,12 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 from envs.stop_sign_grid_env import StopSignGridEnv
 from utils.uv_paint import (
-    GREEN_GLOW,
-    NEON_YELLOW_GLOW,
-    ORANGE_GLOW,
+    WHITE_GLOW,
     RED_GLOW,
-    BLUE_LIGHT_GLOW,
-    BLUE_MED_GLOW,
-    BLUE_DARK_GLOW,
-    PURPLE_GLOW,
+    GREEN_GLOW,
+    YELLOW_GLOW,
+    BLUE_GLOW,
+    ORANGE_GLOW,
     UVPaint,
 )
 from utils.save_callbacks import SaveImprovingOverlaysCallback
@@ -87,14 +85,12 @@ def resolve_paint_list(paint_name: str, paint_list: Optional[str]) -> List[UVPai
     @return: List of UVPaints (length >= 1).
     """
     mapping = {
-        "green": GREEN_GLOW,
-        "neon_yellow": NEON_YELLOW_GLOW,
-        "orange": ORANGE_GLOW,
+        "white": WHITE_GLOW,
         "red": RED_GLOW,
-        "light_blue": BLUE_LIGHT_GLOW,
-        "medium_blue": BLUE_MED_GLOW,
-        "dark_blue": BLUE_DARK_GLOW,
-        "purple": PURPLE_GLOW,
+        "green": GREEN_GLOW,
+        "yellow": YELLOW_GLOW,
+        "blue": BLUE_GLOW,
+        "orange": ORANGE_GLOW,
     }
     paints = []
     if paint_list:
@@ -103,8 +99,8 @@ def resolve_paint_list(paint_name: str, paint_list: Optional[str]) -> List[UVPai
             if key in mapping:
                 paints.append(mapping[key])
     if not paints:
-        key = str(paint_name or "neon_yellow").strip().lower()
-        paints = [mapping.get(key, NEON_YELLOW_GLOW)]
+        key = str(paint_name or "yellow").strip().lower()
+        paints = [mapping.get(key, YELLOW_GLOW)]
     return paints
 
 
@@ -333,7 +329,7 @@ def make_env_factory(
     @return: Callable that builds a monitored env.
     """
     def _init():
-        paint_list = list(uv_paints) if uv_paints else [NEON_YELLOW_GLOW]
+        paint_list = list(uv_paints) if uv_paints else [YELLOW_GLOW]
         return Monitor(
             StopSignGridEnv(
                 stop_sign_image=stop_plain,
@@ -427,24 +423,24 @@ def parse_args():
                     help="Penalty for daylight visibility (lower is better).")
     ap.add_argument("--lambda-day", type=float, default=0.0,
                     help="Penalty weight for daylight drop.")
-    ap.add_argument("--lambda-efficiency", type=float, default=0.25,
+    ap.add_argument("--lambda-efficiency", type=float, default=0.50,
                     help="Efficiency bonus weight (drop per area).")
     ap.add_argument("--efficiency-eps", type=float, default=0.02,
                     help="Epsilon for efficiency denominator.")
     ap.add_argument("--area-target", type=float, default=0.20,
                     help="Target area fraction for adaptive area penalty.")
-    ap.add_argument("--area-lagrange-lr", type=float, default=0.08,
+    ap.add_argument("--area-lagrange-lr", type=float, default=0.20,
                     help="Adaptive area penalty learning rate (0 disables).")
     ap.add_argument("--area-lagrange-min", type=float, default=0.0,
                     help="Minimum adaptive area penalty.")
-    ap.add_argument("--area-lagrange-max", type=float, default=10.0,
+    ap.add_argument("--area-lagrange-max", type=float, default=40.0,
                     help="Maximum adaptive area penalty.")
-    ap.add_argument("--step-cost", type=float, default=0.0,
+    ap.add_argument("--step-cost", type=float, default=0.01,
                     help="Per-step penalty (global).")
     ap.add_argument("--step-cost-after-target", type=float, default=0.03,
                     help="Additional per-step penalty when area exceeds the target.")
-    ap.add_argument("--paint", default="neon_yellow",
-                    help="Paint name (neon_yellow, orange, red, light_blue, medium_blue, dark_blue, purple, green).")
+    ap.add_argument("--paint", default="yellow",
+                    help="Paint name (red, green, yellow, blue, white, orange).")
     ap.add_argument("--paint-list", default="",
                     help="Comma-separated list of paint names to sample per episode.")
     ap.add_argument("--cell-cover-thresh", type=float, default=0.60,
