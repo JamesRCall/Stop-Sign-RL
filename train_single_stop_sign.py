@@ -435,6 +435,8 @@ def parse_args():
                     help="Minimum adaptive area penalty.")
     ap.add_argument("--area-lagrange-max", type=float, default=50.0,
                     help="Maximum adaptive area penalty.")
+    ap.add_argument("--area-lagrange-max-step", type=float, default=0.02,
+                    help="Max per-step change for adaptive area penalty.")
     ap.add_argument("--step-cost", type=float, default=0.01,
                     help="Per-step penalty (global).")
     ap.add_argument("--step-cost-after-target", type=float, default=0.10,
@@ -602,6 +604,7 @@ if __name__ == "__main__":
                 area_lagrange_lr=float(args.area_lagrange_lr),
                 area_lagrange_min=float(args.area_lagrange_min),
                 area_lagrange_max=float(args.area_lagrange_max),
+                area_lagrange_max_step=float(args.area_lagrange_max_step),
                 step_cost=float(args.step_cost),
                 step_cost_after_target=float(args.step_cost_after_target),
                 lambda_iou=float(args.lambda_iou),

@@ -101,6 +101,7 @@ class StopSignGridEnv(gym.Env):
         area_lagrange_lr: float = 0.0,
         area_lagrange_min: float = 0.0,
         area_lagrange_max: float = 5.0,
+        area_lagrange_max_step: float = 0.02,
         step_cost: float = 0.0,
         step_cost_after_target: float = 0.0,
         lambda_iou: float = 0.4,
@@ -196,6 +197,7 @@ class StopSignGridEnv(gym.Env):
         self.area_lagrange_lr = float(area_lagrange_lr)
         self.area_lagrange_min = float(area_lagrange_min)
         self.area_lagrange_max = float(area_lagrange_max)
+        self.area_lagrange_max_step = float(area_lagrange_max_step)
         self._lambda_area_dyn = float(lambda_area)
         self.step_cost = float(step_cost)
         self.step_cost_after_target = float(step_cost_after_target)
@@ -442,9 +444,11 @@ class StopSignGridEnv(gym.Env):
         area_target = self.area_target_frac if self.area_target_frac is not None else self.area_cap_frac
         if self.area_lagrange_lr > 0.0 and area_target is not None and float(area_target) > 0.0:
             violation = float(area_frac) - float(area_target)
+            delta = float(self.area_lagrange_lr * violation)
+            delta = float(np.clip(delta, -self.area_lagrange_max_step, self.area_lagrange_max_step))
             self._lambda_area_dyn = float(
                 np.clip(
-                    self._lambda_area_dyn + (self.area_lagrange_lr * violation),
+                    self._lambda_area_dyn + delta,
                     self.area_lagrange_min,
                     self.area_lagrange_max,
                 )
@@ -459,7 +463,7 @@ class StopSignGridEnv(gym.Env):
         if area_target is not None and area_frac > float(area_target):
             excess = float(area_frac) - float(area_target)
             # Stronger push against exceeding the target.
-            excess_penalty = (lambda_area_used * 2.5 * excess) + (lambda_area_used * (excess ** 2))
+            excess_penalty = (lambda_area_used * 3.5 * excess) + (lambda_area_used * (excess ** 2))
 
         raw_core = (
             drop_blend

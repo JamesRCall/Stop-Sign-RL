@@ -31,6 +31,7 @@ AREA_TARGET="${AREA_TARGET:-0.20}"
 AREA_LAGRANGE_LR="${AREA_LAGRANGE_LR:-0.03}"
 AREA_LAGRANGE_MIN="${AREA_LAGRANGE_MIN:-0.0}"
 AREA_LAGRANGE_MAX="${AREA_LAGRANGE_MAX:-50.0}"
+AREA_LAGRANGE_MAX_STEP="${AREA_LAGRANGE_MAX_STEP:-0.02}"
 STEP_COST="${STEP_COST:-0.01}"
 STEP_COST_AFTER_TARGET="${STEP_COST_AFTER_TARGET:-0.10}"
 AREA_CAP_FRAC="${AREA_CAP_FRAC:-0.30}"
@@ -115,6 +116,7 @@ Options:
   --area-lagrange-lr X         (default: $AREA_LAGRANGE_LR)
   --area-lagrange-min X        (default: $AREA_LAGRANGE_MIN)
   --area-lagrange-max X        (default: $AREA_LAGRANGE_MAX)
+  --area-lagrange-max-step X   (default: $AREA_LAGRANGE_MAX_STEP)
   --step-cost X                (default: $STEP_COST)
   --step-cost-after-target X   (default: $STEP_COST_AFTER_TARGET)
   --success-conf X            (default: $SUCCESS_CONF)
@@ -197,6 +199,7 @@ while [[ $# -gt 0 ]]; do
     --area-lagrange-lr) AREA_LAGRANGE_LR="$2"; shift 2;;
     --area-lagrange-min) AREA_LAGRANGE_MIN="$2"; shift 2;;
     --area-lagrange-max) AREA_LAGRANGE_MAX="$2"; shift 2;;
+    --area-lagrange-max-step) AREA_LAGRANGE_MAX_STEP="$2"; shift 2;;
     --step-cost) STEP_COST="$2"; shift 2;;
     --step-cost-after-target) STEP_COST_AFTER_TARGET="$2"; shift 2;;
     --success-conf) SUCCESS_CONF="$2"; shift 2;;
@@ -465,6 +468,7 @@ python "${PY_MAIN}" \
   --area-lagrange-lr "${AREA_LAGRANGE_LR}" \
   --area-lagrange-min "${AREA_LAGRANGE_MIN}" \
   --area-lagrange-max "${AREA_LAGRANGE_MAX}" \
+  --area-lagrange-max-step "${AREA_LAGRANGE_MAX_STEP}" \
   --success-conf "${SUCCESS_CONF}" \
   --transform-strength "${TRANSFORM_STRENGTH}" \
   --paint "${PAINT}" \
