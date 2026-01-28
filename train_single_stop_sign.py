@@ -429,7 +429,7 @@ def parse_args():
                     help="Epsilon for efficiency denominator.")
     ap.add_argument("--area-target", type=float, default=0.20,
                     help="Target area fraction for adaptive area penalty.")
-    ap.add_argument("--area-lagrange-lr", type=float, default=0.25,
+    ap.add_argument("--area-lagrange-lr", type=float, default=0.03,
                     help="Adaptive area penalty learning rate (0 disables).")
     ap.add_argument("--area-lagrange-min", type=float, default=0.0,
                     help="Minimum adaptive area penalty.")
