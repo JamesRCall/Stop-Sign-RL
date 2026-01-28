@@ -440,7 +440,7 @@ class StopSignGridEnv(gym.Env):
         if area_target is not None and area_frac > float(area_target):
             excess = float(area_frac) - float(area_target)
             # Stronger push against exceeding the target.
-            excess_penalty = (lambda_area_used * 3.5 * excess) + (lambda_area_used * (excess ** 2))
+            excess_penalty = (lambda_area_used * 4.5 * excess) + (lambda_area_used * (excess ** 2))
 
         raw_core = (
             drop_blend
