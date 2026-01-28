@@ -482,10 +482,7 @@ class StopSignGridEnv(gym.Env):
 
         if conf_success:
             terminated = True
-        if terminated and self.area_cap_frac is not None and area_frac > self.area_cap_frac:
-            conf_success = False
-            attack_success = False
-            cap_exceeded = True
+        # Success is purely confidence-based; cap only affects reward (soft mode)
 
         truncated = (self._step >= self.steps_per_episode)
 
@@ -852,8 +849,7 @@ class StopSignGridEnv(gym.Env):
 
     def _is_drop_success(self, after_conf: float, area_frac: float, threshold: float) -> bool:
         conf_ok = float(after_conf) <= float(threshold)
-        within_cap = (self.area_cap_frac is None) or (float(area_frac) <= float(self.area_cap_frac))
-        return conf_ok and within_cap
+        return conf_ok
 
 
     def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
