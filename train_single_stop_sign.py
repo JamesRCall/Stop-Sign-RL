@@ -368,7 +368,7 @@ def make_env_factory(
 
             steps_per_episode=steps_per_episode,
             eval_K=eval_K,
-            detector_debug=True,
+                detector_debug=False,
 
             grid_cell_px=grid_cell_px,
             # Optional cap: if area_cap_frac is set and max_cells is None, the env derives
@@ -750,7 +750,7 @@ if __name__ == "__main__":
     
     saver = SaveImprovingOverlaysCallback(
         save_dir=args.overlays, threshold=0.0, mode="minimal",
-        max_saved=50, verbose=1, tb_callback=tb_cb
+        max_saved=0, verbose=0, tb_callback=tb_cb
     )
 
     # checkpoint cadence
