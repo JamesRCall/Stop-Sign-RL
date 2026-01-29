@@ -179,6 +179,9 @@ NUM_ENVS_SET=0
 VEC_SET=0
 N_STEPS_SET=0
 BATCH_SET=0
+TB_SET=0
+CKPT_SET=0
+OVR_SET=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -241,9 +244,9 @@ while [[ $# -gt 0 ]]; do
     --step-log-keep) STEP_LOG_KEEP="$2"; shift 2;;
     --step-log-500) STEP_LOG_500="$2"; shift 2;;
 
-    --tb) TB_DIR="$2"; shift 2;;
-    --ckpt) CKPT_DIR="$2"; shift 2;;
-    --overlays) OVR_DIR="$2"; shift 2;;
+    --tb) TB_DIR="$2"; TB_SET=1; shift 2;;
+    --ckpt) CKPT_DIR="$2"; CKPT_SET=1; shift 2;;
+    --overlays) OVR_DIR="$2"; OVR_SET=1; shift 2;;
     --multiphase) MULTIPHASE="1"; shift 1;;
     --resume) RESUME="1"; shift 1;;
     --check-env) CHECK_ENV="1"; shift 1;;
@@ -257,6 +260,32 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown option: $1"; usage; exit 1;;
   esac
 done
+
+# ==============================
+# Run directories (avoid overwriting old runs)
+# ==============================
+TB_ROOT="${TB_DIR}"
+CKPT_ROOT="${CKPT_DIR}"
+OVR_ROOT="${OVR_DIR}"
+
+if [[ "${RESUME}" == "1" && "${CKPT_SET}" -eq 0 ]]; then
+  latest_ckpt_dir="$(ls -td "${CKPT_ROOT}"/*/ 2>/dev/null | head -n 1 || true)"
+  if [[ -n "${latest_ckpt_dir}" ]]; then
+    CKPT_DIR="${latest_ckpt_dir%/}"
+    run_id="$(basename "${CKPT_DIR}")"
+    [[ "${TB_SET}" -eq 0 ]] && TB_DIR="${TB_ROOT}/${run_id}"
+    [[ "${OVR_SET}" -eq 0 ]] && OVR_DIR="${OVR_ROOT}/${run_id}"
+  else
+    echo "WARN: --resume set but no checkpoint folders found in ${CKPT_ROOT}. Starting new run."
+  fi
+fi
+
+if [[ "${RESUME}" != "1" && "${CKPT_SET}" -eq 0 && "${TB_SET}" -eq 0 && "${OVR_SET}" -eq 0 ]]; then
+  run_id="$(date +%Y%m%d_%H%M%S)"
+  TB_DIR="${TB_ROOT}/${run_id}"
+  CKPT_DIR="${CKPT_ROOT}/${run_id}"
+  OVR_DIR="${OVR_ROOT}/${run_id}"
+fi
 
 mkdir -p "$TB_DIR" "$CKPT_DIR" "$OVR_DIR" ./_runs
 

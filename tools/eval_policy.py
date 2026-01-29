@@ -102,6 +102,7 @@ def parse_args():
     ap.add_argument("--deterministic", type=int, default=1)
     ap.add_argument("--tb", default="./_runs/tb_eval", help="TensorBoard log dir (optional).")
     ap.add_argument("--tb-tag", default="eval", help="TensorBoard tag prefix.")
+    ap.add_argument("--log-images", type=int, default=10, help="Max eval images to log to TensorBoard.")
 
     # Env settings (match training defaults)
     ap.add_argument("--episode-steps", type=int, default=300)
@@ -162,6 +163,7 @@ def main():
         os.makedirs(tb_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=tb_dir)
 
+    image_budget = int(max(0, args.log_images))
     successes = 0
     steps_list = []
     area_list = []
@@ -194,6 +196,13 @@ def main():
                     1.0 if last_info.get("uv_success", False) else 0.0,
                     ep_idx,
                 )
+                if image_budget > 0 and isinstance(last_info, dict):
+                    img = last_info.get("composited_pil", None)
+                    if img is not None:
+                        from utils.tb_callbacks import pil_to_chw_uint8
+                        chw = pil_to_chw_uint8(img)
+                        writer.add_image(f"{tag}/eval_overlay_img", chw, ep_idx, dataformats="CHW")
+                        image_budget -= 1
                 writer.flush()
 
     def _mean(vals):
