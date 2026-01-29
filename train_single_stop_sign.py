@@ -199,6 +199,31 @@ class LinearRampModelAttrCallback(BaseCallback):
         return True
 
 
+class SaveVecNormalizeCallback(BaseCallback):
+    """
+    Periodically save VecNormalize stats alongside checkpoints.
+
+    @param save_freq: Save frequency in training steps.
+    @param save_dir: Directory to save vecnormalize.pkl.
+    @param verbose: Verbosity level.
+    """
+    def __init__(self, save_freq: int, save_dir: str, verbose: int = 0):
+        super().__init__(verbose)
+        self.save_freq = max(int(save_freq), 1)
+        self.save_dir = str(save_dir)
+
+    def _on_step(self) -> bool:
+        if (self.n_calls % self.save_freq) != 0:
+            return True
+        venv = self.model.get_env()
+        if isinstance(venv, VecNormalize):
+            os.makedirs(self.save_dir, exist_ok=True)
+            vec_path = os.path.join(self.save_dir, "vecnormalize.pkl")
+            venv.save(vec_path)
+            if self.verbose:
+                print(f"[VECNORM] Saved stats to {vec_path}")
+        return True
+
 def load_backgrounds(folder: str) -> List[Image.Image]:
     """
     Load a small set of background images from a folder.
@@ -734,6 +759,7 @@ if __name__ == "__main__":
     else:
         SAVE_FREQ = max(int(args.n_steps) * int(args.num_envs) * max(args.save_freq_updates, 1), 1)
     ckpt_cb = CheckpointCallback(save_freq=SAVE_FREQ, save_path=args.ckpt, name_prefix="grid")
+    vec_cb = SaveVecNormalizeCallback(save_freq=SAVE_FREQ, save_dir=args.ckpt, verbose=0)
 
     progress = ProgressETACallback(total_timesteps=int(total_steps), log_every_sec=15, verbose=1)
 
@@ -756,7 +782,7 @@ if __name__ == "__main__":
         ent_steps = int(args.ent_coef_steps) if int(args.ent_coef_steps) > 0 else int(total_steps)
         ramp_callbacks.append(LinearRampModelAttrCallback("ent_coef", ent_start, ent_end, ent_steps, verbose=0))
 
-    callback_list = CallbackList([tb_cb, ep_cb, step_cb, saver, ckpt_cb, progress] + ramp_callbacks)
+    callback_list = CallbackList([tb_cb, ep_cb, step_cb, saver, ckpt_cb, vec_cb, progress] + ramp_callbacks)
 
     if not args.multiphase:
         phase_tag = "single"
