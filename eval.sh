@@ -33,6 +33,15 @@ Options:
 EOF
 }
 
+TB_PID=""
+
+cleanup() {
+  echo ""
+  echo "[CLEANUP] Stopping background services..."
+  [[ -n "${TB_PID}" ]] && kill "${TB_PID}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --episodes) EPISODES="$2"; shift 2;;
