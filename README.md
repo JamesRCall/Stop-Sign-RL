@@ -368,10 +368,13 @@ Important `train.sh` knobs:
 |-- tools/
 |   |-- debug_grid_env.py
 |   |-- area_sweep_debug.py
+|   |-- area_sweep_analyze.py
+|   |-- eval_policy.py
 |   |-- replay_area_sweep.py
 |   |-- test_stop_sign_confidence.py
 |   |-- cleanup_runs.py
 |   |-- detector_server.py
+|   |-- parse_tb_events.py
 |
 |-- utils/
 |   |-- save_callbacks.py
@@ -382,10 +385,11 @@ Important `train.sh` knobs:
 |   |-- yolo11n.pt
 |   |-- yolo8n.pt
 |
-|-- runs/
+|-- _runs/
 |   |-- checkpoints/
 |   |-- overlays/
 |   |-- tb/
+|   |-- tb_eval/
 |
 |-- train_single_stop_sign.py
 |-- train.sh
