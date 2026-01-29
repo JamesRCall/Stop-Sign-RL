@@ -42,11 +42,10 @@ class StopSignGridEnv(gym.Env):
     Reward (per step, normalized):
       Let raw_core = drop_on
                      - lambda_day * max(0, drop_day - day_tolerance)
-                     - lambda_area_used * area_frac
+                     - lambda_area * area_frac
                      + lambda_iou * (1 - mean_iou)
                      + lambda_misclass * misclass_rate
                      + lambda_efficiency * log1p(drop_on / area_frac).
-      lambda_area_used can be adaptive (Lagrangian) when area_target_frac is set.
 
       Add a smooth shaping bonus as after-conf approaches the success threshold,
       plus a small success bonus once success criteria are met, then squash:
@@ -317,8 +316,7 @@ class StopSignGridEnv(gym.Env):
         idx = int(action)
         idx = max(0, min(idx, self._n_valid - 1))
         free_mask = self._valid_cells & (~self._episode_cells)
-        coords = np.argwhere(free_mask)
-        if coords.size == 0:
+        if not np.any(free_mask):
             # no free cells left
             terminated = True
             truncated = (self._step >= self.steps_per_episode)
@@ -338,8 +336,23 @@ class StopSignGridEnv(gym.Env):
             }
             return obs, -1.0, bool(terminated), bool(truncated), info
 
-        pick = coords[idx % coords.shape[0]]
+        pick = self._valid_coords[idx]
         r, c = int(pick[0]), int(pick[1])
+        if not free_mask[r, c]:
+            # invalid action (duplicate or not free); should be prevented by action masking
+            terminated = False
+            truncated = (self._step >= self.steps_per_episode)
+            obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
+            info = {
+                "objective": "grid_uv",
+                "note": "invalid_action",
+                "selected_cells": int(self._episode_cells.sum()),
+                "total_area_mask_frac": float(self._area_frac_selected()),
+                "uv_success": False,
+                "attack_success": False,
+                "area_cap_exceeded": False,
+            }
+            return obs, -0.05, bool(terminated), bool(truncated), info
 
         selected_cells = int(self._episode_cells.sum())
         valid_total = int(self._valid_cells.sum())
@@ -369,6 +382,8 @@ class StopSignGridEnv(gym.Env):
 
         terminated = False
         max_cells_reached = False
+        if not np.any(self._valid_cells & (~self._episode_cells)):
+            terminated = True
         if self.max_cells is not None:
             if int(self._episode_cells.sum()) >= self.max_cells:
                 terminated = True
@@ -565,6 +580,15 @@ class StopSignGridEnv(gym.Env):
 
 
         return obs, float(reward), bool(terminated), bool(truncated), info
+
+    def action_masks(self) -> np.ndarray:
+        """
+        Action mask for MaskablePPO: True where the action (cell) is still free.
+        """
+        if self._episode_cells is None or self._n_valid <= 0:
+            return np.ones(self._n_valid, dtype=bool)
+        coords = self._valid_coords
+        return (~self._episode_cells[coords[:, 0], coords[:, 1]]).astype(bool)
 
 
     # ----------------------------- helpers -----------------------------------
@@ -1029,7 +1053,7 @@ class StopSignGridEnv(gym.Env):
         bg_rgba = bg_rgb.resize((W, H), Image.BILINEAR).convert("RGBA")
 
         # Distance variance with a safer minimum size to avoid missed detections.
-        target_w = int(rng.uniform(0.18 * W, 0.60 * W))
+        target_w = int(rng.uniform(0.30 * W, 0.50 * W))
         scale = target_w / max(1, group_rgba.width)
         group = group_rgba.resize((target_w, int(group_rgba.height * scale)), Image.BILINEAR)
 

@@ -47,6 +47,7 @@ SUCCESS_CONF="${SUCCESS_CONF:-0.20}"
 TRANSFORM_STRENGTH="${TRANSFORM_STRENGTH:-1.0}"
 PAINT="${PAINT:-yellow}"
 PAINT_LIST="${PAINT_LIST:-}"
+CNN="${CNN:-custom}"
 PHASE1_TRANSFORM_STRENGTH="${PHASE1_TRANSFORM_STRENGTH:-}"
 PHASE2_TRANSFORM_STRENGTH="${PHASE2_TRANSFORM_STRENGTH:-}"
 PHASE3_TRANSFORM_STRENGTH="${PHASE3_TRANSFORM_STRENGTH:-}"
@@ -115,6 +116,7 @@ Options:
   --transform-strength X      (default: $TRANSFORM_STRENGTH)
   --paint NAME                (default: $PAINT)
   --paint-list LIST           (comma-separated)
+  --cnn {custom|nature}       (default: $CNN)
   --cell-cover-thresh X       (default: $CELL_COVER_THRESH)
   --phase1-transform-strength X
   --phase2-transform-strength X
@@ -194,6 +196,7 @@ while [[ $# -gt 0 ]]; do
     --transform-strength) TRANSFORM_STRENGTH="$2"; shift 2;;
     --paint) PAINT="$2"; shift 2;;
     --paint-list) PAINT_LIST="$2"; shift 2;;
+    --cnn) CNN="$2"; shift 2;;
     --cell-cover-thresh) CELL_COVER_THRESH="$2"; shift 2;;
     --phase1-transform-strength) PHASE1_TRANSFORM_STRENGTH="$2"; shift 2;;
     --phase2-transform-strength) PHASE2_TRANSFORM_STRENGTH="$2"; shift 2;;
@@ -424,7 +427,7 @@ echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
 echo "        yolo-version=${YOLO_VERSION} yolo-weights=${YOLO_WEIGHTS:-<default>}"
 echo "        num-envs=${NUM_ENVS} vec=${VEC} eval_K=${EVAL_K} grid=${GRID_CELL}"
-echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} step-cost=${STEP_COST} step-cost-after-target=${STEP_COST_AFTER_TARGET} area-target=${AREA_TARGET:-<cap>} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
+echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} step-cost=${STEP_COST} step-cost-after-target=${STEP_COST_AFTER_TARGET} area-target=${AREA_TARGET:-<cap>} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} cnn=${CNN} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
 echo "        cap-ramp=${AREA_CAP_START}->${AREA_CAP_END} over ${AREA_CAP_STEPS} steps"
 if [[ -n "${LAMBDA_AREA_START}" || -n "${LAMBDA_AREA_END}" || ( -n "${LAMBDA_AREA_STEPS}" && "${LAMBDA_AREA_STEPS}" -gt 0 ) ]]; then
   echo "        lambda-ramp=${LAMBDA_AREA_START:-<unset>}->${LAMBDA_AREA_END:-<unset>} over ${LAMBDA_AREA_STEPS} steps"
@@ -456,6 +459,7 @@ python "${PY_MAIN}" \
   --success-conf "${SUCCESS_CONF}" \
   --transform-strength "${TRANSFORM_STRENGTH}" \
   --paint "${PAINT}" \
+  --cnn "${CNN}" \
   --cell-cover-thresh "${CELL_COVER_THRESH}" \
   --area-cap-frac "${AREA_CAP_FRAC}" \
   --area-cap-penalty "${AREA_CAP_PENALTY}" \

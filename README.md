@@ -17,7 +17,7 @@ Core ideas:
 - UV paint pair: daylight color/alpha vs UV-on color/alpha.
 - Matched transforms and backgrounds across daylight/UV variants for fair comparison.
 - Reward that targets UV confidence drop while penalizing daylight drop and patch area.
-- Efficiency bonus (drop per area) and optional adaptive area penalty to favor minimal patches.
+- Efficiency bonus (drop per area) and fixed area penalties to favor minimal patches.
 - Early termination on success or area cap.
 
 ---
@@ -99,9 +99,8 @@ From `train_single_stop_sign.py`:
 - `--uv-threshold` UV drop threshold for success
 - `--lambda-area` area penalty strength (encourages minimal patches)
 - `--lambda-efficiency` efficiency bonus (drop per area)
-- `--area-target` (default 0.20) and `--area-lagrange-lr/min/max` adaptive area penalty target and bounds
-- `--step-cost` (default 0.0) and `--step-cost-after-target` (default 0.03) per-step penalties
-- `--step-cost`, `--step-cost-after-target` per-step penalties
+- `--area-target` (default 0.25) target area fraction used for excess penalties
+- `--step-cost` (default 0.012) and `--step-cost-after-target` (default 0.14) per-step penalties
 - `--lambda-area-start`, `--lambda-area-end`, `--lambda-area-steps` (curriculum)
 - `--area-cap-frac` cap on total patch area (<= 0 disables)
 - `--area-cap-penalty` reward penalty when cap would be exceeded
@@ -113,7 +112,7 @@ From `train_single_stop_sign.py`:
 - `--multiphase` enable 3-phase curriculum (solid/no pole -> dataset + pole)
 - `--phase1-steps`, `--phase2-steps`, `--phase3-steps` (phase lengths; 0 = auto split)
 - `--phase1-eval-K`, `--phase2-eval-K`, `--phase3-eval-K` (per-phase eval_K overrides)
-- `--phase1-step-cost`, `--phase2-step-cost`, `--phase3-step-cost` (phase overrides)
+- Phase penalties are uniform across phases (background/pole/transform are the only curriculum changes).
 - `--bg-mode` (`dataset` or `solid`) and `--no-pole` for single-phase
 - `--obs-size`, `--obs-margin`, `--obs-include-mask` (cropped observation + mask channel)
 - `--ent-coef`, `--ent-coef-start`, `--ent-coef-end`, `--ent-coef-steps` (entropy coefficient schedule)
@@ -132,8 +131,8 @@ Highlights:
 - Discrete action space over valid grid cells inside the sign octagon.
 - UV-on reward uses raw UV drop (`drop_on`) computed as the day baseline
   confidence minus UV-on overlay confidence.
-- Reward includes an efficiency bonus (drop per area) and an optional adaptive
-  area penalty that nudges toward a target patch fraction.
+- Reward includes an efficiency bonus (drop per area) plus fixed area penalties
+  that push toward a target patch fraction.
 - Optional per-step penalties can apply globally or only after the area target.
 - Observations are cropped around the sign with an optional overlay-mask channel
   (controlled by `--obs-*` flags).
@@ -154,13 +153,6 @@ Definitions:
 - `mean_iou`: mean IoU between target box and top detection
 - `misclass`: misclassification rate
 
-Adaptive area penalty:
-- `lambda_area_used = lambda_area` by default
-- If `area_lagrange_lr > 0` and `area_target` is set:
-  - `lambda_area_dyn = clip(lambda_area_dyn + area_lagrange_lr * (area - area_target),
-    area_lagrange_min, area_lagrange_max)`
-  - `lambda_area_used = lambda_area_dyn`
-
 Efficiency bonus:
 ```
 eff = log1p(max(0, drop_on) / max(area, efficiency_eps))
@@ -168,10 +160,14 @@ eff = log1p(max(0, drop_on) / max(area, efficiency_eps))
 
 Core reward:
 ```
+drop_cap = max(0, c0_day - success_conf)
+drop_on = min(drop_on, drop_cap)
 pen_day  = max(0, drop_day - day_tolerance)
 raw_core = drop_on
          - lambda_day * pen_day
-         - lambda_area_used * area
+         - lambda_area * area
+         - excess_penalty
+         - step_cost_penalty
          + lambda_iou * (1 - mean_iou)
          + lambda_misclass * misclass
          + lambda_efficiency * eff
@@ -181,8 +177,21 @@ raw_core = drop_on
 Shaping + success:
 ```
 shaping       = 0.35 * tanh(3.0 * (success_conf - c_on))
-success_bonus = 0.2 if c_on <= success_conf and within_cap else 0
+success_bonus = 0.2 * (1 - area)^2 if c_on <= success_conf else 0
 raw_total     = raw_core + shaping + success_bonus
+```
+
+Excess penalty (when `area > area_target`):
+```
+excess = area - area_target
+excess_penalty = lambda_area * (4.5 * excess + excess^2)
+```
+
+Step cost (global + target-scaled):
+```
+step_cost_penalty = step_cost
+if area > area_target:
+  step_cost_penalty += step_cost_after_target * (1 + (area - area_target)/area_target)
 ```
 
 Soft cap override (if enabled and exceeded):
@@ -229,8 +238,8 @@ Episode metrics currently include:
 - `episode/uv_success_final`, `episode/area_cap_exceeded_final`
 - `episode/reward_core_final`, `episode/reward_raw_total_final`
 - `episode/reward_efficiency_final`, `episode/reward_perceptual_final`
-- `episode/lambda_area_used_final`, `episode/lambda_area_dyn_final`
-- `episode/area_target_frac_final`, `episode/area_lagrange_lr_final`
+- `episode/lambda_area_used_final`
+- `episode/area_target_frac_final`
 - `episode/area_reward_corr` (rolling correlation between area and reward)
 
 Step metrics:
@@ -238,7 +247,7 @@ Step metrics:
   `runs/tb/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics.ndjson`
 - 500-step snapshots in
   `runs/tb/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics_500.ndjson`
-- Step scalars include reward components and adaptive area weights when present.
+- Step scalars include reward components and area weights.
 
 ---
 
@@ -268,6 +277,8 @@ Trace replay:
 
 - `tools/debug_grid_env.py` runs the env step-by-step and saves UV-on previews.
 - `tools/area_sweep_debug.py` sweeps coverage levels and logs confidence/IoU/misclass stats.
+- `tools/area_sweep_analyze.py` summarizes sweep results and generates plots.
+- `tools/combination_counts.py` prints color-combination counts for the current palette.
 - `tools/replay_area_sweep.py` replays logged sweep cases and saves images.
 - `tools/test_stop_sign_confidence.py` checks detector confidence on a single image.
 - `tools/cleanup_runs.py` removes old run outputs (dry-run by default).

@@ -6,8 +6,9 @@ from PIL import Image
 import torch
 import numpy as np
 
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecTransposeImage
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.maskable.wrappers import ActionMasker
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecTransposeImage, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -63,12 +64,16 @@ class StopSignFeatureExtractor(BaseFeaturesExtractor):
         return self.linear(self.cnn(observations))
 
 
-def build_policy_kwargs() -> dict:
+def build_policy_kwargs(cnn_arch: str) -> dict:
     """
     Build PPO policy kwargs for the custom CNN extractor.
 
+    @param cnn_arch: "custom" or "nature".
     @return: Dict of policy kwargs.
     """
+    arch = str(cnn_arch or "custom").strip().lower()
+    if arch == "nature":
+        return {}
     return {
         "features_extractor_class": StopSignFeatureExtractor,
         "features_extractor_kwargs": {"features_dim": 512},
@@ -300,7 +305,7 @@ def make_env_factory(
     @param efficiency_eps: Denominator epsilon for efficiency bonus.
     @param transform_strength: Strength of sign transforms (0..1).
     @param lambda_area: Area penalty weight.
-    @param area_target_frac: Target area fraction for adaptive penalty.
+    @param area_target_frac: Target area fraction for excess penalties.
     @param step_cost: Per-step penalty (global).
     @param step_cost_after_target: Additional per-step penalty after target area.
     @param lambda_iou: IOU reward weight.
@@ -308,7 +313,7 @@ def make_env_factory(
     @param area_cap_frac: Area cap fraction (or None).
     @param area_cap_penalty: Penalty when cap exceeded.
     @param area_cap_mode: "soft" or "hard" cap mode.
-    @param area_target_frac: Target area fraction for adaptive penalty.
+    @param area_target_frac: Target area fraction for excess penalties.
     @param yolo_wts: YOLO weights path.
     @param yolo_device: YOLO device spec.
     @param obs_size: Cropped observation size.
@@ -321,52 +326,53 @@ def make_env_factory(
     """
     def _init():
         paint_list = list(uv_paints) if uv_paints else [YELLOW_GLOW]
-        return Monitor(
-            StopSignGridEnv(
-                stop_sign_image=stop_plain,
-                stop_sign_uv_image=stop_uv,
-                background_images=backgrounds,
-                pole_image=pole_rgba,
-                yolo_weights=yolo_wts,
-                yolo_device=yolo_device,
-                img_size=(640, 640),
-                obs_size=(int(obs_size[0]), int(obs_size[1])),
-                obs_margin=float(obs_margin),
-                obs_include_mask=bool(obs_include_mask),
+        env = StopSignGridEnv(
+            stop_sign_image=stop_plain,
+            stop_sign_uv_image=stop_uv,
+            background_images=backgrounds,
+            pole_image=pole_rgba,
+            yolo_weights=yolo_wts,
+            yolo_device=yolo_device,
+            img_size=(640, 640),
+            obs_size=(int(obs_size[0]), int(obs_size[1])),
+            obs_margin=float(obs_margin),
+            obs_include_mask=bool(obs_include_mask),
 
-                steps_per_episode=steps_per_episode,
-                eval_K=eval_K,
-                detector_debug=True,
+            steps_per_episode=steps_per_episode,
+            eval_K=eval_K,
+            detector_debug=True,
 
-                grid_cell_px=grid_cell_px,
-                # Optional cap: if area_cap_frac is set and max_cells is None, the env derives
-                # max_cells = ceil(area_cap_frac * valid_total) and terminates with
-                # info["note"]="max_cells_reached" once selected_cells hits that cap.
-                max_cells=None,  # leave None because we terminate by threshold
-                uv_paint=paint_list[0],
-                uv_paint_list=paint_list if len(paint_list) > 1 else None,
-                use_single_color=True,
-                cell_cover_thresh=float(cell_cover_thresh),
+            grid_cell_px=grid_cell_px,
+            # Optional cap: if area_cap_frac is set and max_cells is None, the env derives
+            # max_cells = ceil(area_cap_frac * valid_total) and terminates with
+            # info["note"]="max_cells_reached" once selected_cells hits that cap.
+            max_cells=None,  # leave None because we terminate by threshold
+            uv_paint=paint_list[0],
+            uv_paint_list=paint_list if len(paint_list) > 1 else None,
+            use_single_color=True,
+            cell_cover_thresh=float(cell_cover_thresh),
 
-                uv_drop_threshold=uv_drop_threshold,
-                success_conf_threshold=success_conf_threshold,
-                lambda_efficiency=lambda_efficiency,
-                efficiency_eps=efficiency_eps,
-                transform_strength=transform_strength,
-                day_tolerance=0.05,
-                lambda_day=float(args.lambda_day),
-                lambda_area=float(lambda_area),
-                area_target_frac=area_target_frac,
-                step_cost=float(step_cost),
-                step_cost_after_target=float(step_cost_after_target),
-                lambda_iou=float(lambda_iou),
-                lambda_misclass=float(lambda_misclass),
-                lambda_perceptual=float(lambda_perceptual),
-                area_cap_frac=area_cap_frac,
-                area_cap_penalty=area_cap_penalty,
-                area_cap_mode=area_cap_mode,
-            )
+            uv_drop_threshold=uv_drop_threshold,
+            success_conf_threshold=success_conf_threshold,
+            lambda_efficiency=lambda_efficiency,
+            efficiency_eps=efficiency_eps,
+            transform_strength=transform_strength,
+            day_tolerance=0.05,
+            lambda_day=float(args.lambda_day),
+            lambda_area=float(lambda_area),
+            area_target_frac=area_target_frac,
+            step_cost=float(step_cost),
+            step_cost_after_target=float(step_cost_after_target),
+            lambda_iou=float(lambda_iou),
+            lambda_misclass=float(lambda_misclass),
+            lambda_perceptual=float(lambda_perceptual),
+            area_cap_frac=area_cap_frac,
+            area_cap_penalty=area_cap_penalty,
+            area_cap_mode=area_cap_mode,
         )
+        env = Monitor(env)
+        env = ActionMasker(env, lambda e: e.unwrapped.action_masks())
+        return env
     return _init
 
 
@@ -389,6 +395,8 @@ def parse_args():
                     help="Background mode for single-phase training.")
     ap.add_argument("--no-pole", action="store_true",
                     help="Disable pole for single-phase training.")
+    ap.add_argument("--cnn", choices=["custom", "nature"], default="custom",
+                    help="Feature extractor: custom CNN or SB3 NatureCNN.")
 
     ap.add_argument("--num-envs", type=int, default=8)
     ap.add_argument("--vec", choices=["dummy", "subproc"], default="subproc")
@@ -416,7 +424,7 @@ def parse_args():
     ap.add_argument("--efficiency-eps", type=float, default=0.02,
                     help="Epsilon for efficiency denominator.")
     ap.add_argument("--area-target", type=float, default=0.25,
-                    help="Target area fraction for adaptive area penalty.")
+                    help="Target area fraction for excess penalties.")
     ap.add_argument("--step-cost", type=float, default=0.012,
                     help="Per-step penalty (global).")
     ap.add_argument("--step-cost-after-target", type=float, default=0.14,
@@ -602,7 +610,9 @@ if __name__ == "__main__":
             ) for _ in range(args.num_envs)
         ]
         v = SubprocVecEnv(fns) if args.vec == "subproc" else DummyVecEnv(fns)
-        return VecTransposeImage(v)
+        v = VecTransposeImage(v)
+        v = VecNormalize(v, norm_obs=True, norm_reward=False, clip_obs=5.0)
+        return v
 
     def resolve_phase_steps(total: int) -> Tuple[int, int, int]:
         p1 = int(args.phase1_steps) if int(args.phase1_steps) > 0 else int(0.4 * total)
@@ -684,8 +694,8 @@ if __name__ == "__main__":
         step_cb.set_log_dir(phase_log_dir)
 
         env = build_env(eval_K=int(args.eval_K), bg_mode=args.bg_mode, use_pole=not args.no_pole)
-        policy_kwargs = build_policy_kwargs()
-        model = PPO(
+        policy_kwargs = build_policy_kwargs(args.cnn)
+        model = MaskablePPO(
             "CnnPolicy",
             env,
             verbose=2,
@@ -707,7 +717,7 @@ if __name__ == "__main__":
             ckpt = find_latest_checkpoint(args.ckpt)
             if ckpt:
                 print(f" Resuming from: {ckpt}")
-                model = PPO.load(ckpt, env=env, device="auto")
+                model = MaskablePPO.load(ckpt, env=env, device="auto")
                 model.n_steps = int(args.n_steps)
                 model.batch_size = int(args.batch_size)
                 model.ent_coef = float(args.ent_coef)
@@ -756,8 +766,8 @@ if __name__ == "__main__":
             )
 
             if model is None:
-                policy_kwargs = build_policy_kwargs()
-                model = PPO(
+                policy_kwargs = build_policy_kwargs(args.cnn)
+                model = MaskablePPO(
                     "CnnPolicy",
                     env,
                     verbose=2,
@@ -778,10 +788,10 @@ if __name__ == "__main__":
                     ckpt = find_latest_checkpoint(args.ckpt)
                     if ckpt:
                         print(f" Resuming from: {ckpt}")
-                        model = PPO.load(ckpt, env=env, device="auto")
-                        model.n_steps = int(args.n_steps)
-                        model.batch_size = int(args.batch_size)
-                        model.ent_coef = float(args.ent_coef)
+                    model = MaskablePPO.load(ckpt, env=env, device="auto")
+                    model.n_steps = int(args.n_steps)
+                    model.batch_size = int(args.batch_size)
+                    model.ent_coef = float(args.ent_coef)
             else:
                 model.set_env(env)
 
