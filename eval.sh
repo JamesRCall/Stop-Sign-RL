@@ -12,6 +12,8 @@ TB_TAG="${TB_TAG:-eval}"
 CKPT_DIR="${CKPT_DIR:-./_runs/checkpoints}"
 MODEL="${MODEL:-}"
 VECNORM="${VECNORM:-}"
+TB_PORT="${TB_PORT:-6007}"
+START_TB="${START_TB:-1}"
 
 usage() {
   cat <<EOF
@@ -22,6 +24,8 @@ Options:
   --deterministic {0|1} (default: $DETERMINISTIC)
   --tb DIR             (default: $TB_DIR)
   --tb-tag TAG         (default: $TB_TAG)
+  --tb-port PORT       (default: $TB_PORT)
+  --no-tb              (do not auto-start TensorBoard)
   --ckpt DIR           (default: $CKPT_DIR)
   --model PATH         (default: latest in --ckpt)
   --vecnorm PATH       (optional VecNormalize stats .pkl)
@@ -35,6 +39,8 @@ while [[ $# -gt 0 ]]; do
     --deterministic) DETERMINISTIC="$2"; shift 2;;
     --tb) TB_DIR="$2"; shift 2;;
     --tb-tag) TB_TAG="$2"; shift 2;;
+    --tb-port) TB_PORT="$2"; shift 2;;
+    --no-tb) START_TB="0"; shift 1;;
     --ckpt) CKPT_DIR="$2"; shift 2;;
     --model) MODEL="$2"; shift 2;;
     --vecnorm) VECNORM="$2"; shift 2;;
@@ -54,6 +60,15 @@ fi
 echo "[EVAL] Running evaluation:"
 echo "       episodes=${EPISODES} deterministic=${DETERMINISTIC} tb=${TB_DIR} tag=${TB_TAG}"
 echo ""
+
+if [[ "${START_TB}" == "1" ]]; then
+  echo "[TB] Starting TensorBoard on port ${TB_PORT}, logdir=${TB_DIR}"
+  tensorboard --logdir "${TB_DIR}" --port "${TB_PORT}" > "${TB_DIR}/tensorboard.log" 2>&1 &
+  TB_PID=$!
+  sleep 2
+  echo "[TB] PID=${TB_PID} | log: ${TB_DIR}/tensorboard.log"
+  echo "[TB] Open: http://localhost:${TB_PORT}"
+fi
 
 YOLO_DEVICE="${YOLO_DEVICE}" \
 python tools/eval_policy.py \
