@@ -7,7 +7,7 @@ import torch
 import numpy as np
 
 from sb3_contrib import MaskablePPO
-from sb3_contrib.common.maskable.wrappers import ActionMasker
+from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecTransposeImage, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
