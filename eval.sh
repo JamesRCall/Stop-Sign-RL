@@ -142,7 +142,7 @@ done
 if [[ -z "${MODEL}" ]]; then
   if [[ -d "${CKPT_DIR}" ]]; then
     # Newest zip anywhere under CKPT_DIR (including subfolders).
-    MODEL="$(find "${CKPT_DIR}" -type f -name "*.zip" -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2-)"
+    MODEL="$(ls -t "${CKPT_DIR}"/*.zip "${CKPT_DIR}"/*/*.zip 2>/dev/null | head -n 1 || true)"
     if [[ -n "${MODEL}" ]]; then
       CKPT_DIR="$(dirname "${MODEL}")"
     fi
