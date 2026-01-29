@@ -85,6 +85,7 @@ STEP_LOG_500="${STEP_LOG_500:-500}"
 PY_MAIN="${PY_MAIN:-train_single_stop_sign.py}"
 MULTIPHASE="${MULTIPHASE:-0}"
 RESUME="${RESUME:-0}"
+CHECK_ENV="${CHECK_ENV:-1}"
 
 # Monitoring
 MON_INTERVAL="${MON_INTERVAL:-5}"
@@ -163,6 +164,8 @@ Options:
   --overlays DIR              (default: $OVR_DIR)
   --multiphase                (enable 3-phase curriculum)
   --resume                    (resume from latest checkpoint)
+  --check-env                 (run SB3 env checker before training)
+  --no-check-env              (skip SB3 env checker)
 
   --port P                    (default: $PORT)
   --mon-interval SEC          (default: $MON_INTERVAL)
@@ -243,6 +246,8 @@ while [[ $# -gt 0 ]]; do
     --overlays) OVR_DIR="$2"; shift 2;;
     --multiphase) MULTIPHASE="1"; shift 1;;
     --resume) RESUME="1"; shift 1;;
+    --check-env) CHECK_ENV="1"; shift 1;;
+    --no-check-env) CHECK_ENV="0"; shift 1;;
 
     --port) PORT="$2"; shift 2;;
     --mon-interval) MON_INTERVAL="$2"; shift 2;;
@@ -354,16 +359,6 @@ start_detector_server() {
   export YOLO_DEVICE="server://127.0.0.1:${DET_SERVER_PORT}"
 }
 
-# ==============================
-# Start services
-# ==============================
-start_detector_server
-start_tensorboard
-start_monitor
-
-# ==============================
-# Run training
-# ==============================
 EXTRA_ARGS=()
 if [[ -n "${YOLO_WEIGHTS}" ]]; then
   EXTRA_ARGS+=(--yolo-weights "${YOLO_WEIGHTS}")
@@ -423,6 +418,50 @@ if [[ -n "${LAMBDA_AREA_STEPS}" && "${LAMBDA_AREA_STEPS}" -gt 0 ]]; then
   EXTRA_ARGS+=(--lambda-area-steps "${LAMBDA_AREA_STEPS}")
 fi
 
+if [[ "${CHECK_ENV}" == "1" ]]; then
+  echo "[CHECK] Running SB3 env checker..."
+  python "${PY_MAIN}" \
+    --detector-device "${YOLO_DEVICE}" \
+    --yolo-version "${YOLO_VERSION}" \
+    --num-envs 1 \
+    --vec dummy \
+    --eval-K "${EVAL_K}" \
+    --grid-cell "${GRID_CELL}" \
+    --lambda-area "${LAMBDA_AREA}" \
+    --lambda-efficiency "${LAMBDA_EFFICIENCY}" \
+    --efficiency-eps "${EFFICIENCY_EPS}" \
+    --lambda-perceptual "${LAMBDA_PERCEPTUAL}" \
+    --lambda-day "${LAMBDA_DAY}" \
+    --step-cost "${STEP_COST}" \
+    --step-cost-after-target "${STEP_COST_AFTER_TARGET}" \
+    --success-conf "${SUCCESS_CONF}" \
+    --transform-strength "${TRANSFORM_STRENGTH}" \
+    --paint "${PAINT}" \
+    --cnn "${CNN}" \
+    --cell-cover-thresh "${CELL_COVER_THRESH}" \
+    --area-cap-frac "${AREA_CAP_FRAC}" \
+    --area-cap-penalty "${AREA_CAP_PENALTY}" \
+    --area-cap-mode "${AREA_CAP_MODE}" \
+    --area-cap-start "${AREA_CAP_START}" \
+    --area-cap-end "${AREA_CAP_END}" \
+    --area-cap-steps "${AREA_CAP_STEPS}" \
+    --obs-size "${OBS_SIZE}" \
+    --obs-margin "${OBS_MARGIN}" \
+    --obs-include-mask "${OBS_INCLUDE_MASK}" \
+    --check-env \
+    "${EXTRA_ARGS[@]}"
+fi
+
+# ==============================
+# Start services
+# ==============================
+start_detector_server
+start_tensorboard
+start_monitor
+
+# ==============================
+# Run training
+# ==============================
 echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
 echo "        yolo-version=${YOLO_VERSION} yolo-weights=${YOLO_WEIGHTS:-<default>}"
