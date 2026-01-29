@@ -877,4 +877,10 @@ if __name__ == "__main__":
 
     final = os.path.join(args.ckpt, "ppo_grid_uv_final")
     model.save(final)
+    # Save VecNormalize stats if present for evaluation.
+    venv = model.get_env()
+    if isinstance(venv, VecNormalize):
+        vec_path = os.path.join(args.ckpt, "vecnormalize.pkl")
+        venv.save(vec_path)
+        print(f" Saved VecNormalize stats to {vec_path}")
     print(f" Saved final model to {final}")

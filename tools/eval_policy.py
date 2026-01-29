@@ -32,6 +32,7 @@ def make_env(
     stop_uv: Image.Image,
     pole_rgba: Optional[Image.Image],
     img_size: Tuple[int, int],
+    use_vecnorm: bool,
 ):
     backgrounds = build_backgrounds(args.bg_mode, args.bgdir, img_size)
     paint_list = resolve_paint_list(args.paint, args.paint_list)
@@ -75,8 +76,11 @@ def make_env(
     env = ActionMasker(env, lambda e: e.unwrapped.action_masks())
     v = DummyVecEnv([lambda: env])
     v = VecTransposeImage(v)
-    if args.vecnorm:
-        v = VecNormalize.load(args.vecnorm, v)
+    if use_vecnorm:
+        if args.vecnorm:
+            v = VecNormalize.load(args.vecnorm, v)
+        else:
+            v = VecNormalize(v, norm_obs=True, norm_reward=False, clip_obs=5.0)
         v.training = False
         v.norm_reward = False
     return v
@@ -143,8 +147,14 @@ def main():
     pole_rgba = Image.open(pole_path).convert("RGBA") if (not args.no_pole and os.path.exists(pole_path)) else None
     img_size = (640, 640)
 
-    env = make_env(args, stop_plain, stop_uv, pole_rgba, img_size)
-    model = MaskablePPO.load(args.model, env=env, device="auto")
+    model = MaskablePPO.load(args.model, env=None, device="auto")
+    obs_space = model.observation_space
+    use_vecnorm = hasattr(obs_space, "low") and float(np.min(obs_space.low)) < 0.0
+    if use_vecnorm and not args.vecnorm:
+        print("[EVAL] WARN: model expects normalized obs but no vecnorm stats provided; using fresh VecNormalize.")
+
+    env = make_env(args, stop_plain, stop_uv, pole_rgba, img_size, use_vecnorm=use_vecnorm)
+    model.set_env(env)
 
     writer = None
     if args.tb:

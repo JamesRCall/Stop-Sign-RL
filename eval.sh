@@ -12,8 +12,8 @@ TB_TAG="${TB_TAG:-eval}"
 CKPT_DIR="${CKPT_DIR:-./_runs/checkpoints}"
 MODEL="${MODEL:-}"
 VECNORM="${VECNORM:-}"
-TB_PORT="${TB_PORT:-6007}"
 START_TB="${START_TB:-1}"
+PORT="${PORT:-6006}"
 
 usage() {
   cat <<EOF
@@ -24,7 +24,7 @@ Options:
   --deterministic {0|1} (default: $DETERMINISTIC)
   --tb DIR             (default: $TB_DIR)
   --tb-tag TAG         (default: $TB_TAG)
-  --tb-port PORT       (default: $TB_PORT)
+  --port PORT          (default: $PORT)
   --no-tb              (do not auto-start TensorBoard)
   --ckpt DIR           (default: $CKPT_DIR)
   --model PATH         (default: latest in --ckpt)
@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
     --deterministic) DETERMINISTIC="$2"; shift 2;;
     --tb) TB_DIR="$2"; shift 2;;
     --tb-tag) TB_TAG="$2"; shift 2;;
-    --tb-port) TB_PORT="$2"; shift 2;;
+    --port) PORT="$2"; shift 2;;
     --no-tb) START_TB="0"; shift 1;;
     --ckpt) CKPT_DIR="$2"; shift 2;;
     --model) MODEL="$2"; shift 2;;
@@ -48,6 +48,13 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown option: $1"; usage; exit 1;;
   esac
 done
+
+if [[ -z "${VECNORM}" ]]; then
+  DEFAULT_VN="${CKPT_DIR}/vecnormalize.pkl"
+  if [[ -f "${DEFAULT_VN}" ]]; then
+    VECNORM="${DEFAULT_VN}"
+  fi
+fi
 
 EXTRA_ARGS=()
 if [[ -n "${MODEL}" ]]; then
@@ -62,12 +69,13 @@ echo "       episodes=${EPISODES} deterministic=${DETERMINISTIC} tb=${TB_DIR} ta
 echo ""
 
 if [[ "${START_TB}" == "1" ]]; then
-  echo "[TB] Starting TensorBoard on port ${TB_PORT}, logdir=${TB_DIR}"
-  tensorboard --logdir "${TB_DIR}" --port "${TB_PORT}" > "${TB_DIR}/tensorboard.log" 2>&1 &
+  mkdir -p "${TB_DIR}"
+  echo "[TB] Starting TensorBoard on port ${PORT}, logdir=${TB_DIR}"
+  tensorboard --logdir "${TB_DIR}" --port "${PORT}" > "${TB_DIR}/tensorboard.log" 2>&1 &
   TB_PID=$!
   sleep 2
   echo "[TB] PID=${TB_PID} | log: ${TB_DIR}/tensorboard.log"
-  echo "[TB] Open: http://localhost:${TB_PORT}"
+  echo "[TB] Open: http://localhost:${PORT}"
 fi
 
 YOLO_DEVICE="${YOLO_DEVICE}" \
