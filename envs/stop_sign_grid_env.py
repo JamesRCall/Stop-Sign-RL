@@ -74,7 +74,7 @@ class StopSignGridEnv(gym.Env):
 
 
         # Episodes
-        steps_per_episode: int = 7000,
+        steps_per_episode: int = 300,
         eval_K: int = 3,
         eval_K_min: Optional[int] = None,
         eval_K_max: Optional[int] = None,

@@ -409,7 +409,7 @@ def parse_args():
     ap.add_argument("--ent-coef", type=float, default=0.005,
                     help="Entropy coefficient for PPO.")
 
-    ap.add_argument("--episode-steps", type=int, default=7000)
+    ap.add_argument("--episode-steps", type=int, default=300)
     ap.add_argument("--eval-K", type=int, default=10)
     ap.add_argument("--grid-cell", type=int, default=2, choices=[2, 4, 8, 16, 32])
     ap.add_argument("--uv-threshold", type=float, default=0.75)
