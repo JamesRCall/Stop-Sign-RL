@@ -65,8 +65,8 @@ DET_SERVER_PORT="${DET_SERVER_PORT:-5009}"
 DET_SERVER_DEVICE="${DET_SERVER_DEVICE:-cuda:0}"
 DET_SERVER_MODEL="${DET_SERVER_MODEL:-}"
 
-N_STEPS="${N_STEPS:-512}"
-BATCH="${BATCH:-512}"              # default to rollout size for num_envs=1
+N_STEPS="${N_STEPS:-1024}"
+BATCH="${BATCH:-1024}"              # default to rollout size for num_envs=1
 TOTAL_STEPS="${TOTAL_STEPS:-800000}"
 ENT_COEF="${ENT_COEF:-0.001}"
 ENT_COEF_START="${ENT_COEF_START:-}"

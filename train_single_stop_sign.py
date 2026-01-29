@@ -403,7 +403,7 @@ def parse_args():
 
     ap.add_argument("--num-envs", type=int, default=8)
     ap.add_argument("--vec", choices=["dummy", "subproc"], default="subproc")
-    ap.add_argument("--n-steps", type=int, default=256)
+    ap.add_argument("--n-steps", type=int, default=1024)
     ap.add_argument("--batch-size", type=int, default=1024)
     ap.add_argument("--total-steps", type=int, default=800_000)
     ap.add_argument("--ent-coef", type=float, default=0.001,
