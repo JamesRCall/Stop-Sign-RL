@@ -281,7 +281,17 @@ if [[ "${RESUME}" == "1" && "${CKPT_SET}" -eq 0 ]]; then
 fi
 
 if [[ "${RESUME}" != "1" && "${CKPT_SET}" -eq 0 && "${TB_SET}" -eq 0 && "${OVR_SET}" -eq 0 ]]; then
-  run_id="$(date +%Y%m%d_%H%M%S)"
+  prefix="yolo${YOLO_VERSION}_"
+  max_id=0
+  for d in "${CKPT_ROOT}/${prefix}"*; do
+    [[ -d "${d}" ]] || continue
+    base="$(basename "${d}")"
+    num="${base##${prefix}}"
+    if [[ "${num}" =~ ^[0-9]+$ ]]; then
+      (( num > max_id )) && max_id="${num}"
+    fi
+  done
+  run_id="${prefix}$((max_id + 1))"
   TB_DIR="${TB_ROOT}/${run_id}"
   CKPT_DIR="${CKPT_ROOT}/${run_id}"
   OVR_DIR="${OVR_ROOT}/${run_id}"
