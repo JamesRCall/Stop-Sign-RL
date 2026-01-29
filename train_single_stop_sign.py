@@ -73,13 +73,15 @@ def build_policy_kwargs(cnn_arch: str) -> dict:
     @return: Dict of policy kwargs.
     """
     arch = str(cnn_arch or "custom").strip().lower()
+    kwargs = {"normalize_images": False}
     if arch == "nature":
-        return {}
-    return {
+        return kwargs
+    kwargs.update({
         "features_extractor_class": StopSignFeatureExtractor,
         "features_extractor_kwargs": {"features_dim": 512},
         "net_arch": {"pi": [256, 256], "vf": [256, 256]},
-    }
+    })
+    return kwargs
 
 
 def resolve_paint_list(paint_name: str, paint_list: Optional[str]) -> List[UVPaint]:
@@ -674,9 +676,7 @@ if __name__ == "__main__":
         ]
         v = SubprocVecEnv(fns) if args.vec == "subproc" else DummyVecEnv(fns)
         v = VecTransposeImage(v)
-        # NatureCNN expects image-like spaces; VecNormalize would break that.
-        if str(args.cnn).lower() != "nature":
-            v = VecNormalize(v, norm_obs=True, norm_reward=False, clip_obs=5.0)
+        v = VecNormalize(v, norm_obs=True, norm_reward=False, clip_obs=5.0)
         return v
 
     def resolve_phase_steps(total: int) -> Tuple[int, int, int]:
