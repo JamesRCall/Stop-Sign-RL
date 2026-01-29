@@ -7,10 +7,7 @@ from pathlib import Path
 
 
 DEFAULT_TARGETS = [
-    "runs",
     "_runs",
-    "_renders",
-    "_debug_grid",
 ]
 
 
