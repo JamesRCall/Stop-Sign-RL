@@ -4,6 +4,8 @@ area_sweep_debug.py
 
 Sweep different area-cover percentages and report YOLO confidence for each.
 Thorough mode can iterate backgrounds and placements and log detailed rows.
+
+Tip: pass grid/paint/transform settings that match your training run.
 """
 import argparse
 import os

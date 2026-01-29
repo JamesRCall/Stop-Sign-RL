@@ -1,4 +1,7 @@
-"""UV paint definitions and color helpers."""
+"""UV paint definitions and color helpers.
+
+Used by StopSignGridEnv to map day vs UV-on colors/alpha.
+"""
 from dataclasses import dataclass
 from typing import Tuple
 

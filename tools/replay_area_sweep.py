@@ -3,6 +3,8 @@
 replay_area_sweep.py
 
 Re-render hard cases from area_sweep.ndjson using stored seeds.
+
+Expected inputs are typically under _runs or a run-id subfolder.
 """
 import argparse
 import json

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 Analyze area sweep NDJSON logs and generate summary tables + plots.
+
+Note: run outputs are typically under _runs/ or a run-id subfolder.
 """
 import argparse
 import json

@@ -1,4 +1,7 @@
-"""TensorBoard callbacks for overlay images and training metrics."""
+"""TensorBoard callbacks for overlay images and training metrics.
+
+Logs into the run-specific TB directory set by train.sh (e.g. _runs/tb/<run_id>).
+"""
 import os
 import numpy as np
 from PIL import Image

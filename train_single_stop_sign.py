@@ -1,4 +1,9 @@
-"""Train PPO on the stop-sign grid environment with optional curricula."""
+"""Train MaskablePPO on the stop-sign grid environment with optional curricula.
+
+Notes:
+  - Action masking is enabled (duplicate grid cells are masked out).
+  - Observations are VecNormalize'd; stats are saved alongside checkpoints.
+"""
 
 import os, glob, time, argparse
 from typing import List, Optional, Tuple
@@ -67,7 +72,7 @@ class StopSignFeatureExtractor(BaseFeaturesExtractor):
 
 def build_policy_kwargs(cnn_arch: str) -> dict:
     """
-    Build PPO policy kwargs for the custom CNN extractor.
+    Build policy kwargs for the custom CNN extractor (or NatureCNN).
 
     @param cnn_arch: "custom" or "nature".
     @return: Dict of policy kwargs.
@@ -368,7 +373,7 @@ def make_env_factory(
 
             steps_per_episode=steps_per_episode,
             eval_K=eval_K,
-                detector_debug=False,
+            detector_debug=False,
 
             grid_cell_px=grid_cell_px,
             # Optional cap: if area_cap_frac is set and max_cells is None, the env derives
@@ -736,7 +741,7 @@ if __name__ == "__main__":
     model = None
 
     # callbacks
-    # Save top minimal-area successes, keep top-1000, log to TB
+    # Save top minimal-area successes; disabled by default via max_saved=0.
     tb_cb = TensorboardOverlayCallback(tb_root, tag_prefix=run_tag, max_images=25, verbose=1)
     
     ep_cb = EpisodeMetricsCallback(tb_root, verbose=1)

@@ -1,4 +1,9 @@
-"""Quick evaluation script for the stop-sign grid PPO policy."""
+"""Quick evaluation script for the stop-sign grid PPO policy.
+
+Loads the newest checkpoint (or a specified model), runs deterministic eval
+episodes, and logs scalars (and optional images) to TensorBoard.
+If VecNormalize was used in training, pass or auto-detect the saved stats.
+"""
 import os
 import sys
 import argparse

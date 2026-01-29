@@ -46,8 +46,10 @@ def _safe_float(x, default=0.0) -> float:
 
 class SaveImprovingOverlaysCallback(BaseCallback):
     """
-    Keep only the top-K overlays (max_saved, default 50).
+    Keep only the top-K overlays (max_saved).
     When full, evict the current worst and insert the new better one.
+
+    Set max_saved=0 to disable saving entirely (used for faster training).
 
     Scoring:
       - mode == "adversary": smaller after_conf is better

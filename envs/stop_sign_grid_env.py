@@ -21,11 +21,13 @@ class StopSignGridEnv(gym.Env):
 
     Per step:
       - Add 1 new grid cell (grid_cell_px square) to a running episode mask.
-      - Duplicate cells are disallowed: action is remapped to a free cell deterministically.
-      - Render three matched variants on the same background/pole/placement/transforms:
-          0) Plain (no overlay) baseline for day and UV-on
-          1) Daylight overlay (pre-activation color/alpha)
-          2) UV-on overlay (activated color/alpha)
+      - Duplicate cells are disallowed: invalid actions return a small penalty.
+        Use action masking (MaskablePPO) to prevent duplicates entirely.
+      - Render four matched variants on the same background/pole/placement/transforms:
+          0) Plain (no overlay) baseline for day
+          1) Plain (no overlay) baseline for UV-on
+          2) Daylight overlay (pre-activation color/alpha)
+          3) UV-on overlay (activated color/alpha)
       - For robustness, evaluate each variant across K matched sign-only transforms
         with identical placement and background.
       - Compute mean confidences over K runs:
@@ -38,6 +40,9 @@ class StopSignGridEnv(gym.Env):
     Observation:
       Cropped RGB image around the sign (daylight composite) with optional
       overlay-mask channel (H,W,3 or H,W,4) uint8.
+
+    Masking:
+      action_masks() returns a boolean mask of valid (free) cells for MaskablePPO.
 
     Reward (per step, normalized):
       Let raw_core = drop_on

@@ -1,4 +1,4 @@
-"""Cleanup helper for run/output folders."""
+"""Cleanup helper for run/output folders (defaults to wiping _runs)."""
 
 import argparse
 import os

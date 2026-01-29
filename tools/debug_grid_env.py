@@ -1,4 +1,7 @@
-"""Manual step-through of the grid env with image dumps for debugging."""
+"""Manual step-through of the grid env with image dumps for debugging.
+
+Use the same grid size and paint as your training run to compare behavior.
+"""
 import os, glob, argparse
 from PIL import Image, ImageDraw
 import numpy as np

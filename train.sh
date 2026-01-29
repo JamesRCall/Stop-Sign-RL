@@ -281,6 +281,7 @@ if [[ "${RESUME}" == "1" && "${CKPT_SET}" -eq 0 ]]; then
 fi
 
 if [[ "${RESUME}" != "1" && "${CKPT_SET}" -eq 0 && "${TB_SET}" -eq 0 && "${OVR_SET}" -eq 0 ]]; then
+  # Auto-increment per YOLO version: yolo8_1, yolo8_2, yolo11_1, ...
   prefix="yolo${YOLO_VERSION}_"
   max_id=0
   for d in "${CKPT_ROOT}/${prefix}"*; do
