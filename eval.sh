@@ -139,6 +139,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "${MODEL}" ]]; then
+  if [[ -d "${CKPT_DIR}" ]]; then
+    # Newest zip anywhere under CKPT_DIR (including subfolders).
+    MODEL="$(find "${CKPT_DIR}" -type f -name "*.zip" -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2-)"
+    if [[ -n "${MODEL}" ]]; then
+      CKPT_DIR="$(dirname "${MODEL}")"
+    fi
+  fi
+fi
+
 if [[ -z "${VECNORM}" ]]; then
   DEFAULT_VN="${CKPT_DIR}/vecnormalize.pkl"
   if [[ -f "${DEFAULT_VN}" ]]; then
