@@ -8,7 +8,7 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from detectors.yolo_wrapper import DetectorWrapper
-from utils.uv_paint import UVPaint, VIOLET_GLOW  # you can swap the paint in train file
+from utils.uv_paint import UVPaint, YELLOW_GLOW  # you can swap the paint in train file
 
 
 class StopSignGridEnv(gym.Env):
@@ -21,11 +21,13 @@ class StopSignGridEnv(gym.Env):
 
     Per step:
       - Add 1 new grid cell (grid_cell_px square) to a running episode mask.
-      - Duplicate cells are disallowed: action is remapped to a free cell deterministically.
-      - Render three matched variants on the same background/pole/placement/transforms:
-          0) Plain (no overlay) baseline for day and UV-on
-          1) Daylight overlay (pre-activation color/alpha)
-          2) UV-on overlay (activated color/alpha)
+      - Duplicate cells are disallowed: invalid actions return a small penalty.
+        Use action masking (MaskablePPO) to prevent duplicates entirely.
+      - Render four matched variants on the same background/pole/placement/transforms:
+          0) Plain (no overlay) baseline for day
+          1) Plain (no overlay) baseline for UV-on
+          2) Daylight overlay (pre-activation color/alpha)
+          3) UV-on overlay (activated color/alpha)
       - For robustness, evaluate each variant across K matched sign-only transforms
         with identical placement and background.
       - Compute mean confidences over K runs:
@@ -39,14 +41,16 @@ class StopSignGridEnv(gym.Env):
       Cropped RGB image around the sign (daylight composite) with optional
       overlay-mask channel (H,W,3 or H,W,4) uint8.
 
+    Masking:
+      action_masks() returns a boolean mask of valid (free) cells for MaskablePPO.
+
     Reward (per step, normalized):
       Let raw_core = drop_on
                      - lambda_day * max(0, drop_day - day_tolerance)
-                     - lambda_area_used * area_frac
+                     - lambda_area * area_frac
                      + lambda_iou * (1 - mean_iou)
                      + lambda_misclass * misclass_rate
                      + lambda_efficiency * log1p(drop_on / area_frac).
-      lambda_area_used can be adaptive (Lagrangian) when area_target_frac is set.
 
       Add a smooth shaping bonus as after-conf approaches the success threshold,
       plus a small success bonus once success criteria are met, then squash:
@@ -75,7 +79,7 @@ class StopSignGridEnv(gym.Env):
 
 
         # Episodes
-        steps_per_episode: int = 7000,
+        steps_per_episode: int = 300,
         eval_K: int = 3,
         eval_K_min: Optional[int] = None,
         eval_K_max: Optional[int] = None,
@@ -87,7 +91,7 @@ class StopSignGridEnv(gym.Env):
         area_cap_frac: Optional[float] = None,
 
         # Paint (single pair)
-        uv_paint: UVPaint = VIOLET_GLOW,
+        uv_paint: UVPaint = YELLOW_GLOW,
         uv_paint_list: Optional[List[UVPaint]] = None,
         use_single_color: bool = True,
 
@@ -98,9 +102,8 @@ class StopSignGridEnv(gym.Env):
         lambda_day: float = 1.0,
         lambda_area: float = 0.3,
         area_target_frac: Optional[float] = None,
-        area_lagrange_lr: float = 0.0,
-        area_lagrange_min: float = 0.0,
-        area_lagrange_max: float = 5.0,
+        step_cost: float = 0.0,
+        step_cost_after_target: float = 0.0,
         lambda_iou: float = 0.4,
         lambda_misclass: float = 0.6,
         lambda_efficiency: float = 0.0,
@@ -191,10 +194,8 @@ class StopSignGridEnv(gym.Env):
         self.lambda_day = float(lambda_day)
         self.lambda_area = float(lambda_area)
         self.area_target_frac = float(area_target_frac) if area_target_frac is not None else None
-        self.area_lagrange_lr = float(area_lagrange_lr)
-        self.area_lagrange_min = float(area_lagrange_min)
-        self.area_lagrange_max = float(area_lagrange_max)
-        self._lambda_area_dyn = float(lambda_area)
+        self.step_cost = float(step_cost)
+        self.step_cost_after_target = float(step_cost_after_target)
         self.lambda_iou = float(lambda_iou)
         self.lambda_misclass = float(lambda_misclass)
         self.lambda_efficiency = float(lambda_efficiency)
@@ -213,8 +214,6 @@ class StopSignGridEnv(gym.Env):
         if self.area_target_frac is not None:
             if not (0.0 < self.area_target_frac <= 1.0):
                 raise ValueError("area_target_frac must be in (0, 1]")
-        if self.area_lagrange_max < self.area_lagrange_min:
-            raise ValueError("area_lagrange_max must be >= area_lagrange_min")
 
 
         # detector
@@ -322,8 +321,7 @@ class StopSignGridEnv(gym.Env):
         idx = int(action)
         idx = max(0, min(idx, self._n_valid - 1))
         free_mask = self._valid_cells & (~self._episode_cells)
-        coords = np.argwhere(free_mask)
-        if coords.size == 0:
+        if not np.any(free_mask):
             # no free cells left
             terminated = True
             truncated = (self._step >= self.steps_per_episode)
@@ -343,8 +341,23 @@ class StopSignGridEnv(gym.Env):
             }
             return obs, -1.0, bool(terminated), bool(truncated), info
 
-        pick = coords[idx % coords.shape[0]]
+        pick = self._valid_coords[idx]
         r, c = int(pick[0]), int(pick[1])
+        if not free_mask[r, c]:
+            # invalid action (duplicate or not free); should be prevented by action masking
+            terminated = False
+            truncated = (self._step >= self.steps_per_episode)
+            obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
+            info = {
+                "objective": "grid_uv",
+                "note": "invalid_action",
+                "selected_cells": int(self._episode_cells.sum()),
+                "total_area_mask_frac": float(self._area_frac_selected()),
+                "uv_success": False,
+                "attack_success": False,
+                "area_cap_exceeded": False,
+            }
+            return obs, -0.05, bool(terminated), bool(truncated), info
 
         selected_cells = int(self._episode_cells.sum())
         valid_total = int(self._valid_cells.sum())
@@ -374,6 +387,8 @@ class StopSignGridEnv(gym.Env):
 
         terminated = False
         max_cells_reached = False
+        if not np.any(self._valid_cells & (~self._episode_cells)):
+            terminated = True
         if self.max_cells is not None:
             if int(self._episode_cells.sum()) >= self.max_cells:
                 terminated = True
@@ -428,26 +443,31 @@ class StopSignGridEnv(gym.Env):
         # 3) Reward using raw UV drop (no smoothing for core objective)
         pen_day = max(0.0, drop_day - self.day_tolerance)
         area_frac = self._area_frac_selected()
-        drop_blend = float(drop_on)
+        conf_thr = self.success_conf_threshold
+        max_drop = max(0.0, float(c0_day - conf_thr))
+        drop_blend = min(float(drop_on), max_drop)
         eff_drop = max(0.0, float(drop_on))
         eff_denom = max(float(area_frac), float(self.efficiency_eps))
         efficiency = math.log1p(eff_drop / eff_denom)
-        lambda_area_used = float(self.lambda_area)
         area_target = self.area_target_frac if self.area_target_frac is not None else self.area_cap_frac
-        if self.area_lagrange_lr > 0.0 and area_target is not None and float(area_target) > 0.0:
-            violation = float(area_frac) - float(area_target)
-            self._lambda_area_dyn = float(
-                np.clip(
-                    self._lambda_area_dyn + (self.area_lagrange_lr * violation),
-                    self.area_lagrange_min,
-                    self.area_lagrange_max,
-                )
-            )
-            lambda_area_used = float(self._lambda_area_dyn)
+        lambda_area_used = float(self.lambda_area)
+        step_cost_penalty = float(self.step_cost)
+        if self.step_cost_after_target > 0.0 and area_target is not None and area_frac > float(area_target):
+            excess = (float(area_frac) - float(area_target)) / max(float(area_target), 1e-6)
+            step_cost_penalty += float(self.step_cost_after_target) * (1.0 + max(0.0, excess))
+
+        excess_penalty = 0.0
+        if area_target is not None and area_frac > float(area_target):
+            excess = float(area_frac) - float(area_target)
+            # Stronger push against exceeding the target.
+            excess_penalty = (lambda_area_used * 4.5 * excess) + (lambda_area_used * (excess ** 2))
+
         raw_core = (
             drop_blend
             - self.lambda_day * pen_day
             - lambda_area_used * area_frac
+            - excess_penalty
+            - step_cost_penalty
             + self.lambda_iou * (1.0 - mean_iou)
             + self.lambda_misclass * misclass_rate
             + self.lambda_efficiency * efficiency
@@ -455,11 +475,10 @@ class StopSignGridEnv(gym.Env):
         perceptual = self._perceptual_delta()
         raw_core -= self.lambda_perceptual * perceptual
 
-        conf_thr = self.success_conf_threshold
         shaping = 0.35 * math.tanh(3.0 * (conf_thr - c_on))
         conf_success = self._is_drop_success(c_on, area_frac, conf_thr)
         attack_success = bool(conf_success)
-        success_bonus = 0.2 if conf_success else 0.0
+        success_bonus = (0.2 * ((1.0 - float(area_frac)) ** 2)) if conf_success else 0.0
 
         raw_total = raw_core + shaping + success_bonus
         if cap_exceeded and self.area_cap_mode == "soft":
@@ -473,10 +492,7 @@ class StopSignGridEnv(gym.Env):
 
         if conf_success:
             terminated = True
-        if terminated and self.area_cap_frac is not None and area_frac > self.area_cap_frac:
-            conf_success = False
-            attack_success = False
-            cap_exceeded = True
+        # Success is purely confidence-based; cap only affects reward (soft mode)
 
         truncated = (self._step >= self.steps_per_episode)
 
@@ -498,12 +514,13 @@ class StopSignGridEnv(gym.Env):
             "reward_core": float(raw_core),
             "reward_efficiency": float(self.lambda_efficiency * efficiency),
             "reward_perceptual": float(-self.lambda_perceptual * perceptual),
+            "reward_step_cost": float(-step_cost_penalty),
             "reward_raw_total": float(raw_total),
             "reward": float(reward),
             "lambda_area_used": float(lambda_area_used),
-            "lambda_area_dyn": float(self._lambda_area_dyn),
             "area_target_frac": float(area_target) if area_target is not None else None,
-            "area_lagrange_lr": float(self.area_lagrange_lr),
+            "step_cost": float(self.step_cost),
+            "step_cost_after_target": float(self.step_cost_after_target),
             "mean_iou": float(mean_iou),
             "misclass_rate": float(misclass_rate),
             "mean_target_conf": float(mean_target_conf),
@@ -568,6 +585,15 @@ class StopSignGridEnv(gym.Env):
 
 
         return obs, float(reward), bool(terminated), bool(truncated), info
+
+    def action_masks(self) -> np.ndarray:
+        """
+        Action mask for MaskablePPO: True where the action (cell) is still free.
+        """
+        if self._episode_cells is None or self._n_valid <= 0:
+            return np.ones(self._n_valid, dtype=bool)
+        coords = self._valid_coords
+        return (~self._episode_cells[coords[:, 0], coords[:, 1]]).astype(bool)
 
 
     # ----------------------------- helpers -----------------------------------
@@ -740,7 +766,6 @@ class StopSignGridEnv(gym.Env):
         @param value: New lambda_area value.
         """
         self.lambda_area = float(value)
-        self._lambda_area_dyn = float(value)
 
     def _eval_over_K(self) -> Tuple[float, float, float, float]:
         imgs_plain_day = []
@@ -840,8 +865,7 @@ class StopSignGridEnv(gym.Env):
 
     def _is_drop_success(self, after_conf: float, area_frac: float, threshold: float) -> bool:
         conf_ok = float(after_conf) <= float(threshold)
-        within_cap = (self.area_cap_frac is None) or (float(area_frac) <= float(self.area_cap_frac))
-        return conf_ok and within_cap
+        return conf_ok
 
 
     def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
@@ -1034,7 +1058,7 @@ class StopSignGridEnv(gym.Env):
         bg_rgba = bg_rgb.resize((W, H), Image.BILINEAR).convert("RGBA")
 
         # Distance variance with a safer minimum size to avoid missed detections.
-        target_w = int(rng.uniform(0.18 * W, 0.60 * W))
+        target_w = int(rng.uniform(0.30 * W, 0.50 * W))
         scale = target_w / max(1, group_rgba.width)
         group = group_rgba.resize((target_w, int(group_rgba.height * scale)), Image.BILINEAR)
 

@@ -4,6 +4,8 @@ area_sweep_debug.py
 
 Sweep different area-cover percentages and report YOLO confidence for each.
 Thorough mode can iterate backgrounds and placements and log detailed rows.
+
+Tip: pass grid/paint/transform settings that match your training run.
 """
 import argparse
 import os
@@ -24,12 +26,12 @@ if ROOT not in sys.path:
 
 from envs.stop_sign_grid_env import StopSignGridEnv, _iou_xyxy
 from utils.uv_paint import (
-    GREEN_GLOW, VIOLET_GLOW, BLUE_GLOW, YELLOW_GLOW,
-    RED_GLOW, ORANGE_GLOW, CYAN_GLOW, MAGENTA_GLOW, PINK_GLOW, LIME_GLOW,
-    CHARTREUSE_GLOW, SKY_GLOW, NAVY_GLOW, GOLD_GLOW, AMBER_GLOW, CORAL_GLOW,
-    MAROON_GLOW, OLIVE_GLOW, MINT_GLOW, AQUA_GLOW, PURPLE_GLOW, INDIGO_GLOW,
-    SLATE_GLOW, BROWN_GLOW, TAN_GLOW, PEACH_GLOW, STEEL_GLOW, LAVENDER_GLOW,
-    NEON_YELLOW_GLOW, BLUE_LIGHT_GLOW, BLUE_MED_GLOW, BLUE_DARK_GLOW,
+    WHITE_GLOW,
+    RED_GLOW,
+    GREEN_GLOW,
+    YELLOW_GLOW,
+    BLUE_GLOW,
+    ORANGE_GLOW,
     UVPaint,
 )
 
@@ -73,38 +75,12 @@ def parse_paint_list(s: str) -> List[str]:
 
 def get_paint_map() -> dict:
     return {
-        "green": GREEN_GLOW,
-        "violet": VIOLET_GLOW,
-        "blue": BLUE_GLOW,
-        "yellow": YELLOW_GLOW,
+        "white": WHITE_GLOW,
         "red": RED_GLOW,
+        "green": GREEN_GLOW,
+        "yellow": YELLOW_GLOW,
+        "blue": BLUE_GLOW,
         "orange": ORANGE_GLOW,
-        "cyan": CYAN_GLOW,
-        "magenta": MAGENTA_GLOW,
-        "pink": PINK_GLOW,
-        "lime": LIME_GLOW,
-        "chartreuse": CHARTREUSE_GLOW,
-        "sky": SKY_GLOW,
-        "navy": NAVY_GLOW,
-        "gold": GOLD_GLOW,
-        "amber": AMBER_GLOW,
-        "coral": CORAL_GLOW,
-        "maroon": MAROON_GLOW,
-        "olive": OLIVE_GLOW,
-        "mint": MINT_GLOW,
-        "aqua": AQUA_GLOW,
-        "purple": PURPLE_GLOW,
-        "indigo": INDIGO_GLOW,
-        "slate": SLATE_GLOW,
-        "brown": BROWN_GLOW,
-        "tan": TAN_GLOW,
-        "peach": PEACH_GLOW,
-        "steel": STEEL_GLOW,
-        "lavender": LAVENDER_GLOW,
-        "neon_yellow": NEON_YELLOW_GLOW,
-        "light_blue": BLUE_LIGHT_GLOW,
-        "medium_blue": BLUE_MED_GLOW,
-        "dark_blue": BLUE_DARK_GLOW,
     }
 
 
@@ -229,9 +205,9 @@ def main() -> None:
     p.add_argument("--eval-k", type=int, default=5)
     p.add_argument("--eval-k-list", default="",
                    help="Comma-separated eval-K values to sweep (overrides --eval-k).")
-    p.add_argument("--percentages", default="0,10,20,30,40,50,60,70,80,90,100")
+    p.add_argument("--percentages", default="10,25,50,75,100")
     p.add_argument("--seed", type=int, default=123)
-    p.add_argument("--trials", type=int, default=5,
+    p.add_argument("--trials", type=int, default=3,
                    help="Number of random masks per percentage.")
     p.add_argument("--full-cover", action="store_true",
                    help="Force 100% coverage instead of percentage sweep.")
@@ -245,13 +221,15 @@ def main() -> None:
                    help="Threshold to flag and optionally save high-confidence cases.")
     p.add_argument(
         "--paint-list",
-        default="neon_yellow,orange,red,light_blue,medium_blue,dark_blue,purple,green",
+        default="red,green,yellow,blue,white,orange",
         help="Comma-separated paint names to test.",
     )
     p.add_argument("--combo-list", default="",
                    help="Comma-separated explicit combos (e.g., neon_yellow+orange,orange+dark_blue).")
     p.add_argument("--combo-sizes", default="1",
                    help="Comma-separated combo sizes to test (e.g., 1,2,3).")
+    p.add_argument("--all-combos", action="store_true",
+                   help="Use all non-empty combinations from paint-list.")
     p.add_argument("--combo-limit", type=int, default=0,
                    help="Limit number of color combos (0 = no limit).")
     p.add_argument("--save", action="store_true", help="Save sample images for each percentage.")
@@ -281,12 +259,15 @@ def main() -> None:
     combo_sizes = [s for s in combo_sizes if s > 0]
     if not combo_sizes:
         combo_sizes = [1]
+    if args.all_combos:
+        combo_sizes = list(range(1, max(1, len(paints)) + 1))
     combos = []
     if args.combo_list.strip():
         combos = parse_combo_list(args.combo_list, paint_map)
     else:
         for k in combo_sizes:
-            for combo in itertools.combinations(paints, min(k, len(paints))):
+            k = min(k, len(paints))
+            for combo in itertools.combinations(paints, k):
                 combos.append(combo)
 
         if args.combo_limit and len(combos) > int(args.combo_limit):
@@ -311,6 +292,7 @@ def main() -> None:
         t0 = time.perf_counter()
         last_print = t0
 
+        print(f"Total combos: {len(combos)}")
         for combo in combos:
             combo_names = "+".join([p.name for p in combo])
             env = StopSignGridEnv(
@@ -351,12 +333,12 @@ def main() -> None:
                 f"paint_combo={combo_names} cell_thresh={float(args.cell_cover_thresh):.2f}"
             )
 
-            for pct in percents:
-                pct = max(0.0, min(1.0, float(pct)))
-                target_n = int(math.ceil(pct * total))
-                if target_n == 0:
-                    trials = 1
-                else:
+                for pct in percents:
+                    pct = max(0.0, min(1.0, float(pct)))
+                    target_n = int(math.ceil(pct * total))
+                    if target_n == 0:
+                        trials = 1
+                    else:
                     trials = max(1, int(args.trials))
 
                 rows = []
@@ -397,10 +379,14 @@ def main() -> None:
                             rec = {
                                 "eval_k": int(eval_k),
                                 "paint_combo": combo_names,
+                                "combo_size": int(len(combo)),
                                 "bg_idx": int(bg_idx),
                                 "place_seed": int(env._place_seed),
                                 "mask_seed": int(mask_seed),
                                 "transform_seeds": [int(s) for s in env._transform_seeds],
+                                "target_pct": float(pct),
+                                "target_n": int(target_n),
+                                "total_cells": int(total),
                                 "area_frac": float(area_frac),
                                 "c_on": float(c_on),
                                 "c_day": float(c_day),

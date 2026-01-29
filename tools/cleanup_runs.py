@@ -1,4 +1,4 @@
-"""Cleanup helper for run/output folders."""
+"""Cleanup helper for run/output folders (defaults to wiping _runs)."""
 
 import argparse
 import os
@@ -7,10 +7,7 @@ from pathlib import Path
 
 
 DEFAULT_TARGETS = [
-    "runs",
     "_runs",
-    "_renders",
-    "_debug_grid",
 ]
 
 

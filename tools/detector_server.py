@@ -1,4 +1,7 @@
-"""Simple TCP detector server for shared YOLO inference."""
+"""Simple TCP detector server for shared YOLO inference.
+
+Use with --detector-device server://HOST:PORT in training.
+"""
 
 import argparse
 import io

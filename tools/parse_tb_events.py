@@ -1,4 +1,7 @@
-"""Parse TensorBoard event files and export selected scalars to JSON."""
+"""Parse TensorBoard event files and export selected scalars to JSON.
+
+Event files are typically under _runs/tb/<run_id>/...
+"""
 
 import argparse
 import json

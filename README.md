@@ -17,7 +17,7 @@ Core ideas:
 - UV paint pair: daylight color/alpha vs UV-on color/alpha.
 - Matched transforms and backgrounds across daylight/UV variants for fair comparison.
 - Reward that targets UV confidence drop while penalizing daylight drop and patch area.
-- Efficiency bonus (drop per area) and optional adaptive area penalty to favor minimal patches.
+- Efficiency bonus (drop per area) and fixed area penalties to favor minimal patches.
 - Early termination on success or area cap.
 
 ---
@@ -25,7 +25,7 @@ Core ideas:
 ## Requirements
 
 - Python 3.10+ recommended.
-- PyTorch and stable-baselines3 (via requirements).
+- PyTorch, stable-baselines3, and sb3-contrib (MaskablePPO).
 - YOLO weights in `weights/` (see below).
 
 ---
@@ -41,6 +41,12 @@ pip install -r requirements.txt
 ```
 
 Alternate: `enviornment.yml` is included if you prefer conda.
+
+If you installed requirements before action masking was added, you may need:
+
+```bash
+python -m pip install sb3-contrib
+```
 
 ---
 
@@ -62,28 +68,34 @@ YOLO weights go in `weights/`:
 
 ## Quick Start
 
-Minimal run:
+Minimal run (train.sh defaults):
 
 ```bash
-python train_single_stop_sign.py --data ./data --bgdir ./data/backgrounds
+bash train.sh
 ```
 
-Recommended single-machine run:
+Recommended single-machine run (YOLOv8, GPU, dummy vec):
 
 ```bash
-bash train.sh --yolo-weights ./weights/yolo8n.pt --multiphase
+YOLO_DEVICE=cuda:0 VEC=dummy NUM_ENVS=1 bash train.sh
 ```
 
-Resume from latest checkpoint:
+Resume from latest run folder:
 
 ```bash
-python train_single_stop_sign.py --resume
+YOLO_DEVICE=cuda:0 VEC=dummy NUM_ENVS=1 bash train.sh --resume
 ```
 
 Use a specific YOLO version/weights:
 
 ```bash
-python train_single_stop_sign.py --yolo-version 8 --yolo-weights ./weights/yolo8n.pt
+YOLO_VERSION=8 YOLO_WEIGHTS=./weights/yolo8n.pt bash train.sh
+```
+
+Evaluation (deterministic policy, logs to TensorBoard):
+
+```bash
+bash eval.sh
 ```
 
 ---
@@ -92,14 +104,15 @@ python train_single_stop_sign.py --yolo-version 8 --yolo-weights ./weights/yolo8
 
 From `train_single_stop_sign.py`:
 
-- `--num-envs` (default 8) and `--vec` (`dummy` or `subproc`)
-- `--n-steps`, `--batch-size`, `--total-steps` (PPO training control)
-- `--episode-steps` (max steps per episode)
-- `--grid-cell` (2, 4, 8, 16, 32) grid size in pixels
+- `--num-envs` (default 1 in `train.sh`) and `--vec` (`dummy` or `subproc`)
+- `--n-steps`, `--batch-size`, `--total-steps` (PPO training control; `train.sh` defaults 1024/1024)
+- `--episode-steps` (max steps per episode; default 300)
+- `--grid-cell` (2, 4, 8, 16, 32) grid size in pixels (default 16)
 - `--uv-threshold` UV drop threshold for success
 - `--lambda-area` area penalty strength (encourages minimal patches)
 - `--lambda-efficiency` efficiency bonus (drop per area)
-- `--area-target`, `--area-lagrange-lr/min/max` adaptive area penalty target and bounds
+- `--area-target` (default 0.25) target area fraction used for excess penalties
+- `--step-cost` (default 0.012) and `--step-cost-after-target` (default 0.14) per-step penalties
 - `--lambda-area-start`, `--lambda-area-end`, `--lambda-area-steps` (curriculum)
 - `--area-cap-frac` cap on total patch area (<= 0 disables)
 - `--area-cap-penalty` reward penalty when cap would be exceeded
@@ -111,13 +124,16 @@ From `train_single_stop_sign.py`:
 - `--multiphase` enable 3-phase curriculum (solid/no pole -> dataset + pole)
 - `--phase1-steps`, `--phase2-steps`, `--phase3-steps` (phase lengths; 0 = auto split)
 - `--phase1-eval-K`, `--phase2-eval-K`, `--phase3-eval-K` (per-phase eval_K overrides)
+- Phase penalties are uniform across phases (background/pole/transform are the only curriculum changes).
 - `--bg-mode` (`dataset` or `solid`) and `--no-pole` for single-phase
 - `--obs-size`, `--obs-margin`, `--obs-include-mask` (cropped observation + mask channel)
-- `--ent-coef`, `--ent-coef-start`, `--ent-coef-end`, `--ent-coef-steps` (entropy coefficient schedule)
+- `--ent-coef`, `--ent-coef-start`, `--ent-coef-end`, `--ent-coef-steps` (entropy coefficient schedule; default 0.001)
 - `--detector-device` (e.g., `cpu`, `cuda`, or `auto`)
 - `--step-log-every`, `--step-log-keep`, `--step-log-500` (step logging control)
+- `--cnn` (`custom` or `nature`) choose feature extractor
 - `--ckpt`, `--overlays`, `--tb` output paths (TB logs grouped under `grid_uv_yolo<ver>`)
 - `--save-freq-steps` or `--save-freq-updates` checkpoint cadence
+- `--check-env` runs SB3 env checker before training (enabled by default in `train.sh`)
 
 ---
 
@@ -127,16 +143,19 @@ The environment is implemented in `envs/stop_sign_grid_env.py`.
 
 Highlights:
 - Discrete action space over valid grid cells inside the sign octagon.
+- Action masking prevents duplicate cell selections (MaskablePPO).
 - UV-on reward uses raw UV drop (`drop_on`) computed as the day baseline
   confidence minus UV-on overlay confidence.
-- Reward includes an efficiency bonus (drop per area) and an optional adaptive
-  area penalty that nudges toward a target patch fraction.
+- Reward includes an efficiency bonus (drop per area) plus fixed area penalties
+  that push toward a target patch fraction.
+- Optional per-step penalties can apply globally or only after the area target.
 - Observations are cropped around the sign with an optional overlay-mask channel
   (controlled by `--obs-*` flags).
-- Training uses a lightweight custom CNN extractor tuned for sign crops.
+- Training uses a lightweight custom CNN extractor tuned for sign crops (or NatureCNN via `--cnn nature`).
 - Area cap supports soft (penalty) or hard (terminate) modes.
 - Minimum UV alpha (`uv_min_alpha`) ensures patches are visible under UV even with
   very low paint alpha.
+- VecNormalize is applied to observations; evaluation should reuse the saved stats.
 
 ### Reward Equation (current)
 
@@ -150,13 +169,6 @@ Definitions:
 - `mean_iou`: mean IoU between target box and top detection
 - `misclass`: misclassification rate
 
-Adaptive area penalty:
-- `lambda_area_used = lambda_area` by default
-- If `area_lagrange_lr > 0` and `area_target` is set:
-  - `lambda_area_dyn = clip(lambda_area_dyn + area_lagrange_lr * (area - area_target),
-    area_lagrange_min, area_lagrange_max)`
-  - `lambda_area_used = lambda_area_dyn`
-
 Efficiency bonus:
 ```
 eff = log1p(max(0, drop_on) / max(area, efficiency_eps))
@@ -164,10 +176,14 @@ eff = log1p(max(0, drop_on) / max(area, efficiency_eps))
 
 Core reward:
 ```
+drop_cap = max(0, c0_day - success_conf)
+drop_on = min(drop_on, drop_cap)
 pen_day  = max(0, drop_day - day_tolerance)
 raw_core = drop_on
          - lambda_day * pen_day
-         - lambda_area_used * area
+         - lambda_area * area
+         - excess_penalty
+         - step_cost_penalty
          + lambda_iou * (1 - mean_iou)
          + lambda_misclass * misclass
          + lambda_efficiency * eff
@@ -177,8 +193,21 @@ raw_core = drop_on
 Shaping + success:
 ```
 shaping       = 0.35 * tanh(3.0 * (success_conf - c_on))
-success_bonus = 0.2 if c_on <= success_conf and within_cap else 0
+success_bonus = 0.2 * (1 - area)^2 if c_on <= success_conf else 0
 raw_total     = raw_core + shaping + success_bonus
+```
+
+Excess penalty (when `area > area_target`):
+```
+excess = area - area_target
+excess_penalty = lambda_area * (4.5 * excess + excess^2)
+```
+
+Step cost (global + target-scaled):
+```
+step_cost_penalty = step_cost
+if area > area_target:
+  step_cost_penalty += step_cost_after_target * (1 + (area - area_target)/area_target)
 ```
 
 Soft cap override (if enabled and exceeded):
@@ -205,10 +234,10 @@ If you need to change rendering or physics:
 TensorBoard logs:
 
 ```bash
-# train_single_stop_sign.py
-tensorboard --logdir runs/tb --port 6006
 # train.sh (defaults)
 tensorboard --logdir _runs/tb --port 6006
+# eval.sh (defaults)
+tensorboard --logdir _runs/tb_eval --port 6006
 ```
 
 Callbacks log:
@@ -225,30 +254,30 @@ Episode metrics currently include:
 - `episode/uv_success_final`, `episode/area_cap_exceeded_final`
 - `episode/reward_core_final`, `episode/reward_raw_total_final`
 - `episode/reward_efficiency_final`, `episode/reward_perceptual_final`
-- `episode/lambda_area_used_final`, `episode/lambda_area_dyn_final`
-- `episode/area_target_frac_final`, `episode/area_lagrange_lr_final`
+- `episode/lambda_area_used_final`
+- `episode/area_target_frac_final`
+- `episode/area_reward_corr` (rolling correlation between area and reward)
 
 Step metrics:
 - Rolling window of per-step rows in
-  `runs/tb/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics.ndjson`
+  `_runs/tb/<run_id>/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics.ndjson`
 - 500-step snapshots in
-  `runs/tb/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics_500.ndjson`
-- Step scalars include reward components and adaptive area weights when present.
+  `_runs/tb/<run_id>/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics_500.ndjson`
+- Step scalars include reward components and area weights.
 
 ---
 
 ## Output Artifacts
 
 Generated files:
-- `runs/checkpoints/` PPO checkpoints.
-- `runs/overlays/` best overlays (PNG + JSON) and `traces.ndjson`.
-- `runs/tb/` TensorBoard event files (grouped under `grid_uv_yolo<ver>/<phase>`).
-- If you use `train.sh` defaults, outputs go to `_runs/` instead of `runs/`.
-  TensorBoard logs are grouped under `_runs/tb/grid_uv_yolo<ver>/<phase>`.
+- `_runs/checkpoints/<run_id>/` PPO checkpoints (run id like `yolo8_1`, `yolo11_2`, ...).
+- `_runs/overlays/<run_id>/` best overlays (PNG + JSON) and `traces.ndjson` if enabled.
+- `_runs/tb/<run_id>/` TensorBoard event files (grouped under `grid_uv_yolo<ver>/<phase>`).
+- `_runs/tb_eval/` evaluation logs (if you use `eval.sh`).
 
 Overlay saver:
 - `utils/save_callbacks.py` keeps the best N overlays and appends trace metadata.
-- Current training config keeps the top 1000 minimal-area successes.
+- Current training config disables overlay saving by default (`max_saved=0`).
 - Files are named by area fraction and step, for example:
   - `area0p1234_step000000123_env00_full.png`
   - `area0p1234_step000000123_env00_overlay.png`
@@ -263,9 +292,11 @@ Trace replay:
 
 - `tools/debug_grid_env.py` runs the env step-by-step and saves UV-on previews.
 - `tools/area_sweep_debug.py` sweeps coverage levels and logs confidence/IoU/misclass stats.
+- `tools/area_sweep_analyze.py` summarizes sweep results and generates plots.
+- `tools/combination_counts.py` prints color-combination counts for the current palette.
 - `tools/replay_area_sweep.py` replays logged sweep cases and saves images.
 - `tools/test_stop_sign_confidence.py` checks detector confidence on a single image.
-- `tools/cleanup_runs.py` removes old run outputs (dry-run by default).
+- `tools/cleanup_runs.py` removes old run outputs (defaults to `_runs`).
 - `tools/detector_server.py` runs a shared YOLO detector for multi-process training.
 - `setup_env.sh` contains a helper for local setup.
 
@@ -358,6 +389,7 @@ Important `train.sh` knobs:
 |
 |-- train_single_stop_sign.py
 |-- train.sh
+|-- eval.sh
 |-- requirements.txt
 |-- enviornment.yml
 ```

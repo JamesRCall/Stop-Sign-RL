@@ -22,38 +22,41 @@ VEC="${VEC:-dummy}"                 # must be dummy for CUDA+YOLO in current arc
 
 EVAL_K="${EVAL_K:-3}"
 GRID_CELL="${GRID_CELL:-16}"
-LAMBDA_AREA="${LAMBDA_AREA:-0.30}"
-LAMBDA_EFFICIENCY="${LAMBDA_EFFICIENCY:-0.25}"
+LAMBDA_AREA="${LAMBDA_AREA:-0.70}"
+LAMBDA_EFFICIENCY="${LAMBDA_EFFICIENCY:-0.40}"
 EFFICIENCY_EPS="${EFFICIENCY_EPS:-0.02}"
 LAMBDA_PERCEPTUAL="${LAMBDA_PERCEPTUAL:-0.0}"
 LAMBDA_DAY="${LAMBDA_DAY:-0.0}"
-AREA_TARGET="${AREA_TARGET:-}"
-AREA_LAGRANGE_LR="${AREA_LAGRANGE_LR:-0.02}"
-AREA_LAGRANGE_MIN="${AREA_LAGRANGE_MIN:-0.0}"
-AREA_LAGRANGE_MAX="${AREA_LAGRANGE_MAX:-5.0}"
+AREA_TARGET="${AREA_TARGET:-0.25}"
+STEP_COST="${STEP_COST:-0.012}"
+STEP_COST_AFTER_TARGET="${STEP_COST_AFTER_TARGET:-0.14}"
 AREA_CAP_FRAC="${AREA_CAP_FRAC:-0.30}"
 AREA_CAP_PENALTY="${AREA_CAP_PENALTY:--0.20}"
 AREA_CAP_MODE="${AREA_CAP_MODE:-soft}"
 AREA_CAP_START="${AREA_CAP_START:-0.80}"
 AREA_CAP_END="${AREA_CAP_END:-0.30}"
 AREA_CAP_STEPS="${AREA_CAP_STEPS:-500000}"
-LAMBDA_AREA_START="${LAMBDA_AREA_START:-0.10}"
-LAMBDA_AREA_END="${LAMBDA_AREA_END:-0.30}"
-LAMBDA_AREA_STEPS="${LAMBDA_AREA_STEPS:-200000}"
+LAMBDA_AREA_START="${LAMBDA_AREA_START:-}"
+LAMBDA_AREA_END="${LAMBDA_AREA_END:-}"
+LAMBDA_AREA_STEPS="${LAMBDA_AREA_STEPS:-0}"
 OBS_SIZE="${OBS_SIZE:-224}"
 OBS_MARGIN="${OBS_MARGIN:-0.10}"
 OBS_INCLUDE_MASK="${OBS_INCLUDE_MASK:-1}"
 CELL_COVER_THRESH="${CELL_COVER_THRESH:-0.60}"
 SUCCESS_CONF="${SUCCESS_CONF:-0.20}"
 TRANSFORM_STRENGTH="${TRANSFORM_STRENGTH:-1.0}"
-PAINT="${PAINT:-neon_yellow}"
+PAINT="${PAINT:-yellow}"
 PAINT_LIST="${PAINT_LIST:-}"
+CNN="${CNN:-custom}"
 PHASE1_TRANSFORM_STRENGTH="${PHASE1_TRANSFORM_STRENGTH:-}"
 PHASE2_TRANSFORM_STRENGTH="${PHASE2_TRANSFORM_STRENGTH:-}"
 PHASE3_TRANSFORM_STRENGTH="${PHASE3_TRANSFORM_STRENGTH:-}"
 PHASE1_LAMBDA_DAY="${PHASE1_LAMBDA_DAY:-}"
 PHASE2_LAMBDA_DAY="${PHASE2_LAMBDA_DAY:-}"
 PHASE3_LAMBDA_DAY="${PHASE3_LAMBDA_DAY:-}"
+PHASE1_STEP_COST="${PHASE1_STEP_COST:-}"
+PHASE2_STEP_COST="${PHASE2_STEP_COST:-}"
+PHASE3_STEP_COST="${PHASE3_STEP_COST:-}"
 
 YOLO_VERSION="${YOLO_VERSION:-8}"
 YOLO_WEIGHTS="${YOLO_WEIGHTS:-}"
@@ -62,10 +65,10 @@ DET_SERVER_PORT="${DET_SERVER_PORT:-5009}"
 DET_SERVER_DEVICE="${DET_SERVER_DEVICE:-cuda:0}"
 DET_SERVER_MODEL="${DET_SERVER_MODEL:-}"
 
-N_STEPS="${N_STEPS:-512}"
-BATCH="${BATCH:-512}"              # default to rollout size for num_envs=1
+N_STEPS="${N_STEPS:-1024}"
+BATCH="${BATCH:-1024}"              # default to rollout size for num_envs=1
 TOTAL_STEPS="${TOTAL_STEPS:-800000}"
-ENT_COEF="${ENT_COEF:-0.005}"
+ENT_COEF="${ENT_COEF:-0.001}"
 ENT_COEF_START="${ENT_COEF_START:-}"
 ENT_COEF_END="${ENT_COEF_END:-}"
 ENT_COEF_STEPS="${ENT_COEF_STEPS:-0}"
@@ -81,6 +84,8 @@ STEP_LOG_KEEP="${STEP_LOG_KEEP:-1000}"
 STEP_LOG_500="${STEP_LOG_500:-500}"
 PY_MAIN="${PY_MAIN:-train_single_stop_sign.py}"
 MULTIPHASE="${MULTIPHASE:-0}"
+RESUME="${RESUME:-0}"
+CHECK_ENV="${CHECK_ENV:-1}"
 
 # Monitoring
 MON_INTERVAL="${MON_INTERVAL:-5}"
@@ -106,13 +111,13 @@ Options:
   --lambda-perceptual X       (default: $LAMBDA_PERCEPTUAL)
   --lambda-day X              (default: $LAMBDA_DAY)
   --area-target F             (default: $AREA_TARGET)
-  --area-lagrange-lr X         (default: $AREA_LAGRANGE_LR)
-  --area-lagrange-min X        (default: $AREA_LAGRANGE_MIN)
-  --area-lagrange-max X        (default: $AREA_LAGRANGE_MAX)
+  --step-cost X                (default: $STEP_COST)
+  --step-cost-after-target X   (default: $STEP_COST_AFTER_TARGET)
   --success-conf X            (default: $SUCCESS_CONF)
   --transform-strength X      (default: $TRANSFORM_STRENGTH)
   --paint NAME                (default: $PAINT)
   --paint-list LIST           (comma-separated)
+  --cnn {custom|nature}       (default: $CNN)
   --cell-cover-thresh X       (default: $CELL_COVER_THRESH)
   --phase1-transform-strength X
   --phase2-transform-strength X
@@ -120,6 +125,9 @@ Options:
   --phase1-lambda-day X
   --phase2-lambda-day X
   --phase3-lambda-day X
+  --phase1-step-cost X
+  --phase2-step-cost X
+  --phase3-step-cost X
   --area-cap-frac F           (default: $AREA_CAP_FRAC)
   --area-cap-penalty P        (default: $AREA_CAP_PENALTY)
   --area-cap-mode {soft|hard} (default: $AREA_CAP_MODE)
@@ -155,6 +163,9 @@ Options:
   --ckpt DIR                  (default: $CKPT_DIR)
   --overlays DIR              (default: $OVR_DIR)
   --multiphase                (enable 3-phase curriculum)
+  --resume                    (resume from latest checkpoint)
+  --check-env                 (run SB3 env checker before training)
+  --no-check-env              (skip SB3 env checker)
 
   --port P                    (default: $PORT)
   --mon-interval SEC          (default: $MON_INTERVAL)
@@ -168,6 +179,9 @@ NUM_ENVS_SET=0
 VEC_SET=0
 N_STEPS_SET=0
 BATCH_SET=0
+TB_SET=0
+CKPT_SET=0
+OVR_SET=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -182,13 +196,13 @@ while [[ $# -gt 0 ]]; do
     --lambda-perceptual) LAMBDA_PERCEPTUAL="$2"; shift 2;;
     --lambda-day) LAMBDA_DAY="$2"; shift 2;;
     --area-target) AREA_TARGET="$2"; shift 2;;
-    --area-lagrange-lr) AREA_LAGRANGE_LR="$2"; shift 2;;
-    --area-lagrange-min) AREA_LAGRANGE_MIN="$2"; shift 2;;
-    --area-lagrange-max) AREA_LAGRANGE_MAX="$2"; shift 2;;
+    --step-cost) STEP_COST="$2"; shift 2;;
+    --step-cost-after-target) STEP_COST_AFTER_TARGET="$2"; shift 2;;
     --success-conf) SUCCESS_CONF="$2"; shift 2;;
     --transform-strength) TRANSFORM_STRENGTH="$2"; shift 2;;
     --paint) PAINT="$2"; shift 2;;
     --paint-list) PAINT_LIST="$2"; shift 2;;
+    --cnn) CNN="$2"; shift 2;;
     --cell-cover-thresh) CELL_COVER_THRESH="$2"; shift 2;;
     --phase1-transform-strength) PHASE1_TRANSFORM_STRENGTH="$2"; shift 2;;
     --phase2-transform-strength) PHASE2_TRANSFORM_STRENGTH="$2"; shift 2;;
@@ -196,6 +210,9 @@ while [[ $# -gt 0 ]]; do
     --phase1-lambda-day) PHASE1_LAMBDA_DAY="$2"; shift 2;;
     --phase2-lambda-day) PHASE2_LAMBDA_DAY="$2"; shift 2;;
     --phase3-lambda-day) PHASE3_LAMBDA_DAY="$2"; shift 2;;
+    --phase1-step-cost) PHASE1_STEP_COST="$2"; shift 2;;
+    --phase2-step-cost) PHASE2_STEP_COST="$2"; shift 2;;
+    --phase3-step-cost) PHASE3_STEP_COST="$2"; shift 2;;
     --area-cap-frac) AREA_CAP_FRAC="$2"; shift 2;;
     --area-cap-penalty) AREA_CAP_PENALTY="$2"; shift 2;;
     --area-cap-mode) AREA_CAP_MODE="$2"; shift 2;;
@@ -227,10 +244,13 @@ while [[ $# -gt 0 ]]; do
     --step-log-keep) STEP_LOG_KEEP="$2"; shift 2;;
     --step-log-500) STEP_LOG_500="$2"; shift 2;;
 
-    --tb) TB_DIR="$2"; shift 2;;
-    --ckpt) CKPT_DIR="$2"; shift 2;;
-    --overlays) OVR_DIR="$2"; shift 2;;
+    --tb) TB_DIR="$2"; TB_SET=1; shift 2;;
+    --ckpt) CKPT_DIR="$2"; CKPT_SET=1; shift 2;;
+    --overlays) OVR_DIR="$2"; OVR_SET=1; shift 2;;
     --multiphase) MULTIPHASE="1"; shift 1;;
+    --resume) RESUME="1"; shift 1;;
+    --check-env) CHECK_ENV="1"; shift 1;;
+    --no-check-env) CHECK_ENV="0"; shift 1;;
 
     --port) PORT="$2"; shift 2;;
     --mon-interval) MON_INTERVAL="$2"; shift 2;;
@@ -240,6 +260,43 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown option: $1"; usage; exit 1;;
   esac
 done
+
+# ==============================
+# Run directories (avoid overwriting old runs)
+# ==============================
+TB_ROOT="${TB_DIR}"
+CKPT_ROOT="${CKPT_DIR}"
+OVR_ROOT="${OVR_DIR}"
+
+if [[ "${RESUME}" == "1" && "${CKPT_SET}" -eq 0 ]]; then
+  latest_ckpt_dir="$(ls -td "${CKPT_ROOT}"/*/ 2>/dev/null | head -n 1 || true)"
+  if [[ -n "${latest_ckpt_dir}" ]]; then
+    CKPT_DIR="${latest_ckpt_dir%/}"
+    run_id="$(basename "${CKPT_DIR}")"
+    [[ "${TB_SET}" -eq 0 ]] && TB_DIR="${TB_ROOT}/${run_id}"
+    [[ "${OVR_SET}" -eq 0 ]] && OVR_DIR="${OVR_ROOT}/${run_id}"
+  else
+    echo "WARN: --resume set but no checkpoint folders found in ${CKPT_ROOT}. Starting new run."
+  fi
+fi
+
+if [[ "${RESUME}" != "1" && "${CKPT_SET}" -eq 0 && "${TB_SET}" -eq 0 && "${OVR_SET}" -eq 0 ]]; then
+  # Auto-increment per YOLO version: yolo8_1, yolo8_2, yolo11_1, ...
+  prefix="yolo${YOLO_VERSION}_"
+  max_id=0
+  for d in "${CKPT_ROOT}/${prefix}"*; do
+    [[ -d "${d}" ]] || continue
+    base="$(basename "${d}")"
+    num="${base##${prefix}}"
+    if [[ "${num}" =~ ^[0-9]+$ ]]; then
+      (( num > max_id )) && max_id="${num}"
+    fi
+  done
+  run_id="${prefix}$((max_id + 1))"
+  TB_DIR="${TB_ROOT}/${run_id}"
+  CKPT_DIR="${CKPT_ROOT}/${run_id}"
+  OVR_DIR="${OVR_ROOT}/${run_id}"
+fi
 
 mkdir -p "$TB_DIR" "$CKPT_DIR" "$OVR_DIR" ./_runs
 
@@ -342,22 +399,15 @@ start_detector_server() {
   export YOLO_DEVICE="server://127.0.0.1:${DET_SERVER_PORT}"
 }
 
-# ==============================
-# Start services
-# ==============================
-start_detector_server
-start_tensorboard
-start_monitor
-
-# ==============================
-# Run training
-# ==============================
 EXTRA_ARGS=()
 if [[ -n "${YOLO_WEIGHTS}" ]]; then
   EXTRA_ARGS+=(--yolo-weights "${YOLO_WEIGHTS}")
 fi
 if [[ "${MULTIPHASE}" == "1" ]]; then
   EXTRA_ARGS+=(--multiphase)
+fi
+if [[ "${RESUME}" == "1" ]]; then
+  EXTRA_ARGS+=(--resume)
 fi
 if [[ -n "${ENT_COEF_START}" ]]; then
   EXTRA_ARGS+=(--ent-coef-start "${ENT_COEF_START}")
@@ -386,17 +436,83 @@ fi
 if [[ -n "${PHASE3_LAMBDA_DAY}" ]]; then
   EXTRA_ARGS+=(--phase3-lambda-day "${PHASE3_LAMBDA_DAY}")
 fi
+if [[ -n "${PHASE1_STEP_COST}" ]]; then
+  EXTRA_ARGS+=(--phase1-step-cost "${PHASE1_STEP_COST}")
+fi
+if [[ -n "${PHASE2_STEP_COST}" ]]; then
+  EXTRA_ARGS+=(--phase2-step-cost "${PHASE2_STEP_COST}")
+fi
+if [[ -n "${PHASE3_STEP_COST}" ]]; then
+  EXTRA_ARGS+=(--phase3-step-cost "${PHASE3_STEP_COST}")
+fi
 if [[ -n "${PAINT_LIST}" ]]; then
   EXTRA_ARGS+=(--paint-list "${PAINT_LIST}")
 fi
+if [[ -n "${LAMBDA_AREA_START}" ]]; then
+  EXTRA_ARGS+=(--lambda-area-start "${LAMBDA_AREA_START}")
+fi
+if [[ -n "${LAMBDA_AREA_END}" ]]; then
+  EXTRA_ARGS+=(--lambda-area-end "${LAMBDA_AREA_END}")
+fi
+if [[ -n "${LAMBDA_AREA_STEPS}" && "${LAMBDA_AREA_STEPS}" -gt 0 ]]; then
+  EXTRA_ARGS+=(--lambda-area-steps "${LAMBDA_AREA_STEPS}")
+fi
 
+if [[ "${CHECK_ENV}" == "1" ]]; then
+  echo "[CHECK] Running SB3 env checker..."
+  python "${PY_MAIN}" \
+    --detector-device "${YOLO_DEVICE}" \
+    --yolo-version "${YOLO_VERSION}" \
+    --num-envs 1 \
+    --vec dummy \
+    --eval-K "${EVAL_K}" \
+    --grid-cell "${GRID_CELL}" \
+    --lambda-area "${LAMBDA_AREA}" \
+    --lambda-efficiency "${LAMBDA_EFFICIENCY}" \
+    --efficiency-eps "${EFFICIENCY_EPS}" \
+    --lambda-perceptual "${LAMBDA_PERCEPTUAL}" \
+    --lambda-day "${LAMBDA_DAY}" \
+    --step-cost "${STEP_COST}" \
+    --step-cost-after-target "${STEP_COST_AFTER_TARGET}" \
+    --success-conf "${SUCCESS_CONF}" \
+    --transform-strength "${TRANSFORM_STRENGTH}" \
+    --paint "${PAINT}" \
+    --cnn "${CNN}" \
+    --cell-cover-thresh "${CELL_COVER_THRESH}" \
+    --area-cap-frac "${AREA_CAP_FRAC}" \
+    --area-cap-penalty "${AREA_CAP_PENALTY}" \
+    --area-cap-mode "${AREA_CAP_MODE}" \
+    --area-cap-start "${AREA_CAP_START}" \
+    --area-cap-end "${AREA_CAP_END}" \
+    --area-cap-steps "${AREA_CAP_STEPS}" \
+    --obs-size "${OBS_SIZE}" \
+    --obs-margin "${OBS_MARGIN}" \
+    --obs-include-mask "${OBS_INCLUDE_MASK}" \
+    --check-env \
+    "${EXTRA_ARGS[@]}"
+fi
+
+# ==============================
+# Start services
+# ==============================
+start_detector_server
+start_tensorboard
+start_monitor
+
+# ==============================
+# Run training
+# ==============================
 echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
 echo "        yolo-version=${YOLO_VERSION} yolo-weights=${YOLO_WEIGHTS:-<default>}"
 echo "        num-envs=${NUM_ENVS} vec=${VEC} eval_K=${EVAL_K} grid=${GRID_CELL}"
-echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} area-target=${AREA_TARGET:-<cap>} lagrange-lr=${AREA_LAGRANGE_LR} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
+echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} step-cost=${STEP_COST} step-cost-after-target=${STEP_COST_AFTER_TARGET} area-target=${AREA_TARGET:-<cap>} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} cnn=${CNN} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
 echo "        cap-ramp=${AREA_CAP_START}->${AREA_CAP_END} over ${AREA_CAP_STEPS} steps"
-echo "        lambda-ramp=${LAMBDA_AREA_START}->${LAMBDA_AREA_END} over ${LAMBDA_AREA_STEPS} steps"
+if [[ -n "${LAMBDA_AREA_START}" || -n "${LAMBDA_AREA_END}" || ( -n "${LAMBDA_AREA_STEPS}" && "${LAMBDA_AREA_STEPS}" -gt 0 ) ]]; then
+  echo "        lambda-ramp=${LAMBDA_AREA_START:-<unset>}->${LAMBDA_AREA_END:-<unset>} over ${LAMBDA_AREA_STEPS} steps"
+else
+  echo "        lambda-ramp=disabled"
+fi
 echo "        n-steps=${N_STEPS} batch=${BATCH} total-steps=${TOTAL_STEPS}"
 echo "        tb=${TB_DIR} ckpt=${CKPT_DIR} overlays=${OVR_DIR}"
 echo ""
@@ -417,12 +533,12 @@ python "${PY_MAIN}" \
   --efficiency-eps "${EFFICIENCY_EPS}" \
   --lambda-perceptual "${LAMBDA_PERCEPTUAL}" \
   --lambda-day "${LAMBDA_DAY}" \
-  --area-lagrange-lr "${AREA_LAGRANGE_LR}" \
-  --area-lagrange-min "${AREA_LAGRANGE_MIN}" \
-  --area-lagrange-max "${AREA_LAGRANGE_MAX}" \
+  --step-cost "${STEP_COST}" \
+  --step-cost-after-target "${STEP_COST_AFTER_TARGET}" \
   --success-conf "${SUCCESS_CONF}" \
   --transform-strength "${TRANSFORM_STRENGTH}" \
   --paint "${PAINT}" \
+  --cnn "${CNN}" \
   --cell-cover-thresh "${CELL_COVER_THRESH}" \
   --area-cap-frac "${AREA_CAP_FRAC}" \
   --area-cap-penalty "${AREA_CAP_PENALTY}" \
@@ -430,9 +546,6 @@ python "${PY_MAIN}" \
   --area-cap-start "${AREA_CAP_START}" \
   --area-cap-end "${AREA_CAP_END}" \
   --area-cap-steps "${AREA_CAP_STEPS}" \
-  --lambda-area-start "${LAMBDA_AREA_START}" \
-  --lambda-area-end "${LAMBDA_AREA_END}" \
-  --lambda-area-steps "${LAMBDA_AREA_STEPS}" \
   --ent-coef-steps "${ENT_COEF_STEPS}" \
   --obs-size "${OBS_SIZE}" \
   --obs-margin "${OBS_MARGIN}" \

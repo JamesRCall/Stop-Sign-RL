@@ -1,4 +1,9 @@
-"""Train PPO on the stop-sign grid environment with optional curricula."""
+"""Train MaskablePPO on the stop-sign grid environment with optional curricula.
+
+Notes:
+  - Action masking is enabled (duplicate grid cells are masked out).
+  - Observations are VecNormalize'd; stats are saved alongside checkpoints.
+"""
 
 import os, glob, time, argparse
 from typing import List, Optional, Tuple
@@ -6,22 +11,22 @@ from PIL import Image
 import torch
 import numpy as np
 
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecTransposeImage
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.wrappers import ActionMasker
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecTransposeImage, VecNormalize
+from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 from envs.stop_sign_grid_env import StopSignGridEnv
 from utils.uv_paint import (
-    GREEN_GLOW,
-    NEON_YELLOW_GLOW,
-    ORANGE_GLOW,
+    WHITE_GLOW,
     RED_GLOW,
-    BLUE_LIGHT_GLOW,
-    BLUE_MED_GLOW,
-    BLUE_DARK_GLOW,
-    PURPLE_GLOW,
+    GREEN_GLOW,
+    YELLOW_GLOW,
+    BLUE_GLOW,
+    ORANGE_GLOW,
     UVPaint,
 )
 from utils.save_callbacks import SaveImprovingOverlaysCallback
@@ -65,17 +70,23 @@ class StopSignFeatureExtractor(BaseFeaturesExtractor):
         return self.linear(self.cnn(observations))
 
 
-def build_policy_kwargs() -> dict:
+def build_policy_kwargs(cnn_arch: str) -> dict:
     """
-    Build PPO policy kwargs for the custom CNN extractor.
+    Build policy kwargs for the custom CNN extractor (or NatureCNN).
 
+    @param cnn_arch: "custom" or "nature".
     @return: Dict of policy kwargs.
     """
-    return {
+    arch = str(cnn_arch or "custom").strip().lower()
+    kwargs = {"normalize_images": False}
+    if arch == "nature":
+        return kwargs
+    kwargs.update({
         "features_extractor_class": StopSignFeatureExtractor,
         "features_extractor_kwargs": {"features_dim": 512},
         "net_arch": {"pi": [256, 256], "vf": [256, 256]},
-    }
+    })
+    return kwargs
 
 
 def resolve_paint_list(paint_name: str, paint_list: Optional[str]) -> List[UVPaint]:
@@ -87,14 +98,12 @@ def resolve_paint_list(paint_name: str, paint_list: Optional[str]) -> List[UVPai
     @return: List of UVPaints (length >= 1).
     """
     mapping = {
-        "green": GREEN_GLOW,
-        "neon_yellow": NEON_YELLOW_GLOW,
-        "orange": ORANGE_GLOW,
+        "white": WHITE_GLOW,
         "red": RED_GLOW,
-        "light_blue": BLUE_LIGHT_GLOW,
-        "medium_blue": BLUE_MED_GLOW,
-        "dark_blue": BLUE_DARK_GLOW,
-        "purple": PURPLE_GLOW,
+        "green": GREEN_GLOW,
+        "yellow": YELLOW_GLOW,
+        "blue": BLUE_GLOW,
+        "orange": ORANGE_GLOW,
     }
     paints = []
     if paint_list:
@@ -103,8 +112,8 @@ def resolve_paint_list(paint_name: str, paint_list: Optional[str]) -> List[UVPai
             if key in mapping:
                 paints.append(mapping[key])
     if not paints:
-        key = str(paint_name or "neon_yellow").strip().lower()
-        paints = [mapping.get(key, NEON_YELLOW_GLOW)]
+        key = str(paint_name or "yellow").strip().lower()
+        paints = [mapping.get(key, YELLOW_GLOW)]
     return paints
 
 
@@ -195,6 +204,31 @@ class LinearRampModelAttrCallback(BaseCallback):
         return True
 
 
+class SaveVecNormalizeCallback(BaseCallback):
+    """
+    Periodically save VecNormalize stats alongside checkpoints.
+
+    @param save_freq: Save frequency in training steps.
+    @param save_dir: Directory to save vecnormalize.pkl.
+    @param verbose: Verbosity level.
+    """
+    def __init__(self, save_freq: int, save_dir: str, verbose: int = 0):
+        super().__init__(verbose)
+        self.save_freq = max(int(save_freq), 1)
+        self.save_dir = str(save_dir)
+
+    def _on_step(self) -> bool:
+        if (self.n_calls % self.save_freq) != 0:
+            return True
+        venv = self.model.get_env()
+        if isinstance(venv, VecNormalize):
+            os.makedirs(self.save_dir, exist_ok=True)
+            vec_path = os.path.join(self.save_dir, "vecnormalize.pkl")
+            venv.save(vec_path)
+            if self.verbose:
+                print(f"[VECNORM] Saved stats to {vec_path}")
+        return True
+
 def load_backgrounds(folder: str) -> List[Image.Image]:
     """
     Load a small set of background images from a folder.
@@ -272,9 +306,8 @@ def make_env_factory(
     transform_strength: float,
     lambda_area: float,
     area_target_frac: Optional[float],
-    area_lagrange_lr: float,
-    area_lagrange_min: float,
-    area_lagrange_max: float,
+    step_cost: float,
+    step_cost_after_target: float,
     lambda_iou: float,
     lambda_misclass: float,
     area_cap_frac: Optional[float],
@@ -305,19 +338,15 @@ def make_env_factory(
     @param efficiency_eps: Denominator epsilon for efficiency bonus.
     @param transform_strength: Strength of sign transforms (0..1).
     @param lambda_area: Area penalty weight.
-    @param area_target_frac: Target area fraction for adaptive penalty.
-    @param area_lagrange_lr: Lagrange multiplier update rate.
-    @param area_lagrange_min: Minimum adaptive area penalty.
-    @param area_lagrange_max: Maximum adaptive area penalty.
+    @param area_target_frac: Target area fraction for excess penalties.
+    @param step_cost: Per-step penalty (global).
+    @param step_cost_after_target: Additional per-step penalty after target area.
     @param lambda_iou: IOU reward weight.
     @param lambda_misclass: Misclassification reward weight.
     @param area_cap_frac: Area cap fraction (or None).
     @param area_cap_penalty: Penalty when cap exceeded.
     @param area_cap_mode: "soft" or "hard" cap mode.
-    @param area_target_frac: Target area fraction for adaptive penalty.
-    @param area_lagrange_lr: Lagrange multiplier update rate.
-    @param area_lagrange_min: Minimum adaptive area penalty.
-    @param area_lagrange_max: Maximum adaptive area penalty.
+    @param area_target_frac: Target area fraction for excess penalties.
     @param yolo_wts: YOLO weights path.
     @param yolo_device: YOLO device spec.
     @param obs_size: Cropped observation size.
@@ -329,54 +358,54 @@ def make_env_factory(
     @return: Callable that builds a monitored env.
     """
     def _init():
-        paint_list = list(uv_paints) if uv_paints else [NEON_YELLOW_GLOW]
-        return Monitor(
-            StopSignGridEnv(
-                stop_sign_image=stop_plain,
-                stop_sign_uv_image=stop_uv,
-                background_images=backgrounds,
-                pole_image=pole_rgba,
-                yolo_weights=yolo_wts,
-                yolo_device=yolo_device,
-                img_size=(640, 640),
-                obs_size=(int(obs_size[0]), int(obs_size[1])),
-                obs_margin=float(obs_margin),
-                obs_include_mask=bool(obs_include_mask),
+        paint_list = list(uv_paints) if uv_paints else [YELLOW_GLOW]
+        env = StopSignGridEnv(
+            stop_sign_image=stop_plain,
+            stop_sign_uv_image=stop_uv,
+            background_images=backgrounds,
+            pole_image=pole_rgba,
+            yolo_weights=yolo_wts,
+            yolo_device=yolo_device,
+            img_size=(640, 640),
+            obs_size=(int(obs_size[0]), int(obs_size[1])),
+            obs_margin=float(obs_margin),
+            obs_include_mask=bool(obs_include_mask),
 
-                steps_per_episode=steps_per_episode,
-                eval_K=eval_K,
-                detector_debug=True,
+            steps_per_episode=steps_per_episode,
+            eval_K=eval_K,
+            detector_debug=False,
 
-                grid_cell_px=grid_cell_px,
-                # Optional cap: if area_cap_frac is set and max_cells is None, the env derives
-                # max_cells = ceil(area_cap_frac * valid_total) and terminates with
-                # info["note"]="max_cells_reached" once selected_cells hits that cap.
-                max_cells=None,  # leave None because we terminate by threshold
-                uv_paint=paint_list[0],
-                uv_paint_list=paint_list if len(paint_list) > 1 else None,
-                use_single_color=True,
-                cell_cover_thresh=float(cell_cover_thresh),
+            grid_cell_px=grid_cell_px,
+            # Optional cap: if area_cap_frac is set and max_cells is None, the env derives
+            # max_cells = ceil(area_cap_frac * valid_total) and terminates with
+            # info["note"]="max_cells_reached" once selected_cells hits that cap.
+            max_cells=None,  # leave None because we terminate by threshold
+            uv_paint=paint_list[0],
+            uv_paint_list=paint_list if len(paint_list) > 1 else None,
+            use_single_color=True,
+            cell_cover_thresh=float(cell_cover_thresh),
 
-                uv_drop_threshold=uv_drop_threshold,
-                success_conf_threshold=success_conf_threshold,
-                lambda_efficiency=lambda_efficiency,
-                efficiency_eps=efficiency_eps,
-                transform_strength=transform_strength,
-                day_tolerance=0.05,
-                lambda_day=float(args.lambda_day),
-                lambda_area=float(lambda_area),
-                area_target_frac=area_target_frac,
-                area_lagrange_lr=float(area_lagrange_lr),
-                area_lagrange_min=float(area_lagrange_min),
-                area_lagrange_max=float(area_lagrange_max),
-                lambda_iou=float(lambda_iou),
-                lambda_misclass=float(lambda_misclass),
-                lambda_perceptual=float(lambda_perceptual),
-                area_cap_frac=area_cap_frac,
-                area_cap_penalty=area_cap_penalty,
-                area_cap_mode=area_cap_mode,
-            )
+            uv_drop_threshold=uv_drop_threshold,
+            success_conf_threshold=success_conf_threshold,
+            lambda_efficiency=lambda_efficiency,
+            efficiency_eps=efficiency_eps,
+            transform_strength=transform_strength,
+            day_tolerance=0.05,
+            lambda_day=float(args.lambda_day),
+            lambda_area=float(lambda_area),
+            area_target_frac=area_target_frac,
+            step_cost=float(step_cost),
+            step_cost_after_target=float(step_cost_after_target),
+            lambda_iou=float(lambda_iou),
+            lambda_misclass=float(lambda_misclass),
+            lambda_perceptual=float(lambda_perceptual),
+            area_cap_frac=area_cap_frac,
+            area_cap_penalty=area_cap_penalty,
+            area_cap_mode=area_cap_mode,
         )
+        env = Monitor(env)
+        env = ActionMasker(env, lambda e: e.unwrapped.action_masks())
+        return env
     return _init
 
 
@@ -399,42 +428,42 @@ def parse_args():
                     help="Background mode for single-phase training.")
     ap.add_argument("--no-pole", action="store_true",
                     help="Disable pole for single-phase training.")
+    ap.add_argument("--cnn", choices=["custom", "nature"], default="custom",
+                    help="Feature extractor: custom CNN or SB3 NatureCNN.")
 
     ap.add_argument("--num-envs", type=int, default=8)
     ap.add_argument("--vec", choices=["dummy", "subproc"], default="subproc")
-    ap.add_argument("--n-steps", type=int, default=256)
+    ap.add_argument("--n-steps", type=int, default=1024)
     ap.add_argument("--batch-size", type=int, default=1024)
     ap.add_argument("--total-steps", type=int, default=800_000)
-    ap.add_argument("--ent-coef", type=float, default=0.005,
+    ap.add_argument("--ent-coef", type=float, default=0.001,
                     help="Entropy coefficient for PPO.")
 
-    ap.add_argument("--episode-steps", type=int, default=7000)
+    ap.add_argument("--episode-steps", type=int, default=300)
     ap.add_argument("--eval-K", type=int, default=10)
     ap.add_argument("--grid-cell", type=int, default=2, choices=[2, 4, 8, 16, 32])
     ap.add_argument("--uv-threshold", type=float, default=0.75)
     ap.add_argument("--success-conf", type=float, default=0.20,
                     help="Success threshold for after-conf (stop sign).")
-    ap.add_argument("--lambda-area", type=float, default=0.30)
+    ap.add_argument("--lambda-area", type=float, default=0.70)
     ap.add_argument("--lambda-iou", type=float, default=0.40)
     ap.add_argument("--lambda-misclass", type=float, default=0.60)
     ap.add_argument("--lambda-perceptual", type=float, default=0.0,
                     help="Penalty for daylight visibility (lower is better).")
     ap.add_argument("--lambda-day", type=float, default=0.0,
                     help="Penalty weight for daylight drop.")
-    ap.add_argument("--lambda-efficiency", type=float, default=0.25,
+    ap.add_argument("--lambda-efficiency", type=float, default=0.40,
                     help="Efficiency bonus weight (drop per area).")
     ap.add_argument("--efficiency-eps", type=float, default=0.02,
                     help="Epsilon for efficiency denominator.")
-    ap.add_argument("--area-target", type=float, default=None,
-                    help="Target area fraction for adaptive area penalty (default: use area cap if set).")
-    ap.add_argument("--area-lagrange-lr", type=float, default=0.02,
-                    help="Adaptive area penalty learning rate (0 disables).")
-    ap.add_argument("--area-lagrange-min", type=float, default=0.0,
-                    help="Minimum adaptive area penalty.")
-    ap.add_argument("--area-lagrange-max", type=float, default=5.0,
-                    help="Maximum adaptive area penalty.")
-    ap.add_argument("--paint", default="neon_yellow",
-                    help="Paint name (neon_yellow, orange, red, light_blue, medium_blue, dark_blue, purple, green).")
+    ap.add_argument("--area-target", type=float, default=0.25,
+                    help="Target area fraction for excess penalties.")
+    ap.add_argument("--step-cost", type=float, default=0.012,
+                    help="Per-step penalty (global).")
+    ap.add_argument("--step-cost-after-target", type=float, default=0.14,
+                    help="Additional per-step penalty when area exceeds the target.")
+    ap.add_argument("--paint", default="yellow",
+                    help="Paint name (red, green, yellow, blue, white, orange).")
     ap.add_argument("--paint-list", default="",
                     help="Comma-separated list of paint names to sample per episode.")
     ap.add_argument("--cell-cover-thresh", type=float, default=0.60,
@@ -498,8 +527,16 @@ def parse_args():
                     help="Phase 2 transform strength override (default 0.7).")
     ap.add_argument("--phase3-transform-strength", type=float, default=None,
                     help="Phase 3 transform strength override (default 1.0).")
+    ap.add_argument("--phase1-step-cost", type=float, default=None,
+                    help="Phase 1 per-step penalty override.")
+    ap.add_argument("--phase2-step-cost", type=float, default=None,
+                    help="Phase 2 per-step penalty override.")
+    ap.add_argument("--phase3-step-cost", type=float, default=None,
+                    help="Phase 3 per-step penalty override.")
 
     ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint in --ckpt")
+    ap.add_argument("--check-env", action="store_true",
+                    help="Run SB3 env checker on a single env instance, then exit.")
 
     ap.add_argument("--save-freq-steps", type=int, default=0)
     ap.add_argument("--save-freq-updates", type=int, default=2)
@@ -559,6 +596,66 @@ if __name__ == "__main__":
 
     img_size = (640, 640)
 
+    def build_single_env(bg_mode: str, use_pole: bool, transform_strength: Optional[float] = None):
+        backgrounds = build_backgrounds(bg_mode, BG_DIR, img_size)
+        pole_use = pole_rgba if use_pole else None
+
+        use_cap_ramp = (args.area_cap_start is not None) or (args.area_cap_end is not None)
+        if use_cap_ramp:
+            start = args.area_cap_start if args.area_cap_start is not None else float(args.area_cap_frac)
+            area_cap_frac = None if float(start) <= 0 else float(start)
+        else:
+            area_cap_frac = None if args.area_cap_frac <= 0 else float(args.area_cap_frac)
+
+        use_lambda_ramp = (args.lambda_area_start is not None) or (args.lambda_area_end is not None)
+        if use_lambda_ramp:
+            lambda_area = float(args.lambda_area_start if args.lambda_area_start is not None else args.lambda_area)
+        else:
+            lambda_area = float(args.lambda_area)
+
+        paint_list = resolve_paint_list(args.paint, args.paint_list)
+        return StopSignGridEnv(
+            stop_sign_image=stop_plain,
+            stop_sign_uv_image=stop_uv,
+            background_images=backgrounds,
+            pole_image=pole_use,
+            yolo_weights=yolo_weights,
+            yolo_device=args.detector_device,
+            img_size=(640, 640),
+            obs_size=(int(args.obs_size), int(args.obs_size)),
+            obs_margin=float(args.obs_margin),
+            obs_include_mask=bool(int(args.obs_include_mask)),
+
+            steps_per_episode=int(args.episode_steps),
+            eval_K=int(args.eval_K),
+            detector_debug=True,
+
+            grid_cell_px=int(args.grid_cell),
+            max_cells=None,
+            uv_paint=paint_list[0],
+            uv_paint_list=paint_list if len(paint_list) > 1 else None,
+            use_single_color=True,
+            cell_cover_thresh=float(args.cell_cover_thresh),
+
+            uv_drop_threshold=float(args.uv_threshold),
+            success_conf_threshold=float(args.success_conf),
+            lambda_efficiency=float(args.lambda_efficiency),
+            efficiency_eps=float(args.efficiency_eps),
+            transform_strength=float(args.transform_strength if transform_strength is None else transform_strength),
+            day_tolerance=0.05,
+            lambda_day=float(args.lambda_day),
+            lambda_area=float(lambda_area),
+            area_target_frac=(float(args.area_target) if args.area_target is not None else None),
+            step_cost=float(args.step_cost),
+            step_cost_after_target=float(args.step_cost_after_target),
+            lambda_iou=float(args.lambda_iou),
+            lambda_misclass=float(args.lambda_misclass),
+            lambda_perceptual=float(args.lambda_perceptual),
+            area_cap_frac=area_cap_frac,
+            area_cap_penalty=float(args.area_cap_penalty),
+            area_cap_mode=str(args.area_cap_mode),
+        )
+
     def build_env(eval_K: int, bg_mode: str, use_pole: bool, transform_strength: Optional[float] = None):
         backgrounds = build_backgrounds(bg_mode, BG_DIR, img_size)
         pole_use = pole_rgba if use_pole else None
@@ -587,9 +684,8 @@ if __name__ == "__main__":
                 success_conf_threshold=float(args.success_conf),
                 lambda_area=lambda_area,
                 area_target_frac=(float(args.area_target) if args.area_target is not None else None),
-                area_lagrange_lr=float(args.area_lagrange_lr),
-                area_lagrange_min=float(args.area_lagrange_min),
-                area_lagrange_max=float(args.area_lagrange_max),
+                step_cost=float(args.step_cost),
+                step_cost_after_target=float(args.step_cost_after_target),
                 lambda_iou=float(args.lambda_iou),
                 lambda_misclass=float(args.lambda_misclass),
                 lambda_efficiency=float(args.lambda_efficiency),
@@ -609,7 +705,9 @@ if __name__ == "__main__":
             ) for _ in range(args.num_envs)
         ]
         v = SubprocVecEnv(fns) if args.vec == "subproc" else DummyVecEnv(fns)
-        return VecTransposeImage(v)
+        v = VecTransposeImage(v)
+        v = VecNormalize(v, norm_obs=True, norm_reward=False, clip_obs=5.0)
+        return v
 
     def resolve_phase_steps(total: int) -> Tuple[int, int, int]:
         p1 = int(args.phase1_steps) if int(args.phase1_steps) > 0 else int(0.4 * total)
@@ -628,6 +726,13 @@ if __name__ == "__main__":
     run_tag = f"grid_uv_yolo{args.yolo_version}"
     tb_root = os.path.join(args.tb, run_tag)
 
+    if args.check_env:
+        print("[CHECK] Running SB3 env checker...")
+        env = build_single_env(bg_mode=args.bg_mode, use_pole=not args.no_pole)
+        check_env(env, warn=True)
+        print("[CHECK] Env checker completed.")
+        raise SystemExit(0)
+
     # PPO
     os.makedirs(tb_root, exist_ok=True)
     os.makedirs(args.ckpt, exist_ok=True)
@@ -636,7 +741,7 @@ if __name__ == "__main__":
     model = None
 
     # callbacks
-    # Save top minimal-area successes, keep top-1000, log to TB
+    # Save top minimal-area successes; disabled by default via max_saved=0.
     tb_cb = TensorboardOverlayCallback(tb_root, tag_prefix=run_tag, max_images=25, verbose=1)
     
     ep_cb = EpisodeMetricsCallback(tb_root, verbose=1)
@@ -650,7 +755,7 @@ if __name__ == "__main__":
     
     saver = SaveImprovingOverlaysCallback(
         save_dir=args.overlays, threshold=0.0, mode="minimal",
-        max_saved=1000, verbose=1, tb_callback=tb_cb
+        max_saved=0, verbose=0, tb_callback=tb_cb
     )
 
     # checkpoint cadence
@@ -659,6 +764,7 @@ if __name__ == "__main__":
     else:
         SAVE_FREQ = max(int(args.n_steps) * int(args.num_envs) * max(args.save_freq_updates, 1), 1)
     ckpt_cb = CheckpointCallback(save_freq=SAVE_FREQ, save_path=args.ckpt, name_prefix="grid")
+    vec_cb = SaveVecNormalizeCallback(save_freq=SAVE_FREQ, save_dir=args.ckpt, verbose=0)
 
     progress = ProgressETACallback(total_timesteps=int(total_steps), log_every_sec=15, verbose=1)
 
@@ -681,7 +787,7 @@ if __name__ == "__main__":
         ent_steps = int(args.ent_coef_steps) if int(args.ent_coef_steps) > 0 else int(total_steps)
         ramp_callbacks.append(LinearRampModelAttrCallback("ent_coef", ent_start, ent_end, ent_steps, verbose=0))
 
-    callback_list = CallbackList([tb_cb, ep_cb, step_cb, saver, ckpt_cb, progress] + ramp_callbacks)
+    callback_list = CallbackList([tb_cb, ep_cb, step_cb, saver, ckpt_cb, vec_cb, progress] + ramp_callbacks)
 
     if not args.multiphase:
         phase_tag = "single"
@@ -691,8 +797,8 @@ if __name__ == "__main__":
         step_cb.set_log_dir(phase_log_dir)
 
         env = build_env(eval_K=int(args.eval_K), bg_mode=args.bg_mode, use_pole=not args.no_pole)
-        policy_kwargs = build_policy_kwargs()
-        model = PPO(
+        policy_kwargs = build_policy_kwargs(args.cnn)
+        model = MaskablePPO(
             "CnnPolicy",
             env,
             verbose=2,
@@ -714,7 +820,7 @@ if __name__ == "__main__":
             ckpt = find_latest_checkpoint(args.ckpt)
             if ckpt:
                 print(f" Resuming from: {ckpt}")
-                model = PPO.load(ckpt, env=env, device="auto")
+                model = MaskablePPO.load(ckpt, env=env, device="auto")
                 model.n_steps = int(args.n_steps)
                 model.batch_size = int(args.batch_size)
                 model.ent_coef = float(args.ent_coef)
@@ -732,25 +838,29 @@ if __name__ == "__main__":
         phase1_tf = float(args.phase1_transform_strength) if args.phase1_transform_strength is not None else 0.4
         phase2_tf = float(args.phase2_transform_strength) if args.phase2_transform_strength is not None else 0.7
         phase3_tf = float(args.phase3_transform_strength) if args.phase3_transform_strength is not None else 1.0
-        phase1_ld = float(args.phase1_lambda_day) if args.phase1_lambda_day is not None else 0.0
-        phase2_ld = float(args.phase2_lambda_day) if args.phase2_lambda_day is not None else 0.5
-        phase3_ld = float(args.phase3_lambda_day) if args.phase3_lambda_day is not None else 1.0
+        phase1_ld = float(args.lambda_day)
+        phase2_ld = float(args.lambda_day)
+        phase3_ld = float(args.lambda_day)
+        phase1_sc = float(args.step_cost)
+        phase2_sc = float(args.step_cost)
+        phase3_sc = float(args.step_cost)
         phases = [
-            {"name": "phase1_easy", "steps": p1, "eval_K": phase1_eval, "bg_mode": "solid", "use_pole": False, "tf": phase1_tf, "lambda_day": phase1_ld},
-            {"name": "phase2_medium", "steps": p2, "eval_K": phase2_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase2_tf, "lambda_day": phase2_ld},
-            {"name": "phase3_full", "steps": p3, "eval_K": phase3_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase3_tf, "lambda_day": phase3_ld},
+            {"name": "phase1_easy", "steps": p1, "eval_K": phase1_eval, "bg_mode": "solid", "use_pole": False, "tf": phase1_tf, "lambda_day": phase1_ld, "step_cost": phase1_sc},
+            {"name": "phase2_medium", "steps": p2, "eval_K": phase2_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase2_tf, "lambda_day": phase2_ld, "step_cost": phase2_sc},
+            {"name": "phase3_full", "steps": p3, "eval_K": phase3_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase3_tf, "lambda_day": phase3_ld, "step_cost": phase3_sc},
         ]
 
         for i, ph in enumerate(phases):
             if int(ph["steps"]) <= 0:
                 continue
-            print(f"[CURRICULUM] {ph['name']} steps={ph['steps']} eval_K={ph['eval_K']} tf={ph['tf']} lambda_day={ph['lambda_day']} bg={ph['bg_mode']} pole={ph['use_pole']}")
+            print(f"[CURRICULUM] {ph['name']} steps={ph['steps']} eval_K={ph['eval_K']} tf={ph['tf']} lambda_day={ph['lambda_day']} step_cost={ph['step_cost']} bg={ph['bg_mode']} pole={ph['use_pole']}")
             phase_log_dir = os.path.join(tb_root, ph["name"])
             tb_cb.set_log_dir(phase_log_dir, tag_prefix=f"{run_tag}/{ph['name']}")
             ep_cb.set_log_dir(phase_log_dir)
             step_cb.set_log_dir(phase_log_dir)
 
             args.lambda_day = float(ph["lambda_day"])
+            args.step_cost = float(ph["step_cost"])
             env = build_env(
                 eval_K=int(ph["eval_K"]),
                 bg_mode=ph["bg_mode"],
@@ -759,8 +869,8 @@ if __name__ == "__main__":
             )
 
             if model is None:
-                policy_kwargs = build_policy_kwargs()
-                model = PPO(
+                policy_kwargs = build_policy_kwargs(args.cnn)
+                model = MaskablePPO(
                     "CnnPolicy",
                     env,
                     verbose=2,
@@ -781,10 +891,10 @@ if __name__ == "__main__":
                     ckpt = find_latest_checkpoint(args.ckpt)
                     if ckpt:
                         print(f" Resuming from: {ckpt}")
-                        model = PPO.load(ckpt, env=env, device="auto")
-                        model.n_steps = int(args.n_steps)
-                        model.batch_size = int(args.batch_size)
-                        model.ent_coef = float(args.ent_coef)
+                    model = MaskablePPO.load(ckpt, env=env, device="auto")
+                    model.n_steps = int(args.n_steps)
+                    model.batch_size = int(args.batch_size)
+                    model.ent_coef = float(args.ent_coef)
             else:
                 model.set_env(env)
 
@@ -798,4 +908,10 @@ if __name__ == "__main__":
 
     final = os.path.join(args.ckpt, "ppo_grid_uv_final")
     model.save(final)
+    # Save VecNormalize stats if present for evaluation.
+    venv = model.get_env()
+    if isinstance(venv, VecNormalize):
+        vec_path = os.path.join(args.ckpt, "vecnormalize.pkl")
+        venv.save(vec_path)
+        print(f" Saved VecNormalize stats to {vec_path}")
     print(f" Saved final model to {final}")

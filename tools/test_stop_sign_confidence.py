@@ -6,6 +6,7 @@ Quick visual + numerical check for how your YOLO model scores a stop sign in a g
 
 - Prints all detected stop-sign boxes with confidence values.
 - Shows (and optionally saves) an annotated image with labeled confidence.
+Defaults to yolo8n.pt if no weights are provided.
 """
 
 import argparse

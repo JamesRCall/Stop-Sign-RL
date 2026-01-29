@@ -1,10 +1,13 @@
-"""Manual step-through of the grid env with image dumps for debugging."""
+"""Manual step-through of the grid env with image dumps for debugging.
+
+Use the same grid size and paint as your training run to compare behavior.
+"""
 import os, glob, argparse
 from PIL import Image, ImageDraw
 import numpy as np
 
 from envs.stop_sign_grid_env import StopSignGridEnv
-from utils.uv_paint import VIOLET_GLOW
+from utils.uv_paint import YELLOW_GLOW
 
 def load_bgs(folder):
     """
@@ -56,7 +59,7 @@ def main():
         grid_cell_px=args.grid_cell,
         max_cells=None,
 
-        uv_paint=VIOLET_GLOW,      # single color pair
+        uv_paint=YELLOW_GLOW,      # single color pair
         use_single_color=True,
         uv_drop_threshold=args.uv_threshold,
         day_tolerance=0.05,
