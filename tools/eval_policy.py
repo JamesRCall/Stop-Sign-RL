@@ -1,11 +1,18 @@
 """Quick evaluation script for the stop-sign grid PPO policy."""
 import os
+import sys
 import argparse
 from typing import Optional, Tuple
+
+# Ensure repo root is on sys.path when running as a script.
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 from PIL import Image
 
+from torch.utils.tensorboard import SummaryWriter
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage, VecNormalize
@@ -89,6 +96,8 @@ def parse_args():
     ap.add_argument("--vecnorm", default=None, help="Path to VecNormalize stats .pkl (optional)")
     ap.add_argument("--episodes", type=int, default=20)
     ap.add_argument("--deterministic", type=int, default=1)
+    ap.add_argument("--tb", default="./_runs/tb_eval", help="TensorBoard log dir (optional).")
+    ap.add_argument("--tb-tag", default="eval", help="TensorBoard tag prefix.")
 
     # Env settings (match training defaults)
     ap.add_argument("--episode-steps", type=int, default=300)
@@ -137,12 +146,18 @@ def main():
     env = make_env(args, stop_plain, stop_uv, pole_rgba, img_size)
     model = MaskablePPO.load(args.model, env=env, device="auto")
 
+    writer = None
+    if args.tb:
+        tb_dir = os.path.abspath(args.tb)
+        os.makedirs(tb_dir, exist_ok=True)
+        writer = SummaryWriter(log_dir=tb_dir)
+
     successes = 0
     steps_list = []
     area_list = []
     after_list = []
 
-    for _ in range(int(args.episodes)):
+    for ep_idx in range(int(args.episodes)):
         obs = env.reset()
         done = False
         steps = 0
@@ -159,14 +174,39 @@ def main():
             successes += 1 if last_info.get("uv_success", False) else 0
             area_list.append(float(last_info.get("total_area_mask_frac", np.nan)))
             after_list.append(float(last_info.get("after_conf", last_info.get("c_on", np.nan))))
+            if writer is not None:
+                tag = str(args.tb_tag)
+                writer.add_scalar(f"{tag}/episode_steps", steps, ep_idx)
+                writer.add_scalar(f"{tag}/episode_area_frac", area_list[-1], ep_idx)
+                writer.add_scalar(f"{tag}/episode_after_conf", after_list[-1], ep_idx)
+                writer.add_scalar(
+                    f"{tag}/episode_success",
+                    1.0 if last_info.get("uv_success", False) else 0.0,
+                    ep_idx,
+                )
+                writer.flush()
 
     def _mean(vals):
         vals = [v for v in vals if not np.isnan(v)]
         return float(np.mean(vals)) if vals else float("nan")
 
+    success_rate = successes / float(args.episodes)
+    mean_steps = _mean(steps_list)
+    mean_area = _mean(area_list)
+    mean_after = _mean(after_list)
+
     print(f"[EVAL] model={args.model}")
-    print(f"[EVAL] episodes={args.episodes} success_rate={successes/float(args.episodes):.3f}")
-    print(f"[EVAL] mean_steps={_mean(steps_list):.2f} mean_area_frac={_mean(area_list):.4f} mean_after_conf={_mean(after_list):.4f}")
+    print(f"[EVAL] episodes={args.episodes} success_rate={success_rate:.3f}")
+    print(f"[EVAL] mean_steps={mean_steps:.2f} mean_area_frac={mean_area:.4f} mean_after_conf={mean_after:.4f}")
+
+    if writer is not None:
+        tag = str(args.tb_tag)
+        writer.add_scalar(f"{tag}/success_rate", success_rate, int(args.episodes))
+        writer.add_scalar(f"{tag}/mean_steps", mean_steps, int(args.episodes))
+        writer.add_scalar(f"{tag}/mean_area_frac", mean_area, int(args.episodes))
+        writer.add_scalar(f"{tag}/mean_after_conf", mean_after, int(args.episodes))
+        writer.flush()
+        writer.close()
 
 
 if __name__ == "__main__":
