@@ -9,6 +9,7 @@ import numpy as np
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecTransposeImage, VecNormalize
+from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -502,6 +503,8 @@ def parse_args():
                     help="Phase 3 per-step penalty override.")
 
     ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint in --ckpt")
+    ap.add_argument("--check-env", action="store_true",
+                    help="Run SB3 env checker on a single env instance, then exit.")
 
     ap.add_argument("--save-freq-steps", type=int, default=0)
     ap.add_argument("--save-freq-updates", type=int, default=2)
@@ -561,6 +564,66 @@ if __name__ == "__main__":
 
     img_size = (640, 640)
 
+    def build_single_env(bg_mode: str, use_pole: bool, transform_strength: Optional[float] = None):
+        backgrounds = build_backgrounds(bg_mode, BG_DIR, img_size)
+        pole_use = pole_rgba if use_pole else None
+
+        use_cap_ramp = (args.area_cap_start is not None) or (args.area_cap_end is not None)
+        if use_cap_ramp:
+            start = args.area_cap_start if args.area_cap_start is not None else float(args.area_cap_frac)
+            area_cap_frac = None if float(start) <= 0 else float(start)
+        else:
+            area_cap_frac = None if args.area_cap_frac <= 0 else float(args.area_cap_frac)
+
+        use_lambda_ramp = (args.lambda_area_start is not None) or (args.lambda_area_end is not None)
+        if use_lambda_ramp:
+            lambda_area = float(args.lambda_area_start if args.lambda_area_start is not None else args.lambda_area)
+        else:
+            lambda_area = float(args.lambda_area)
+
+        paint_list = resolve_paint_list(args.paint, args.paint_list)
+        return StopSignGridEnv(
+            stop_sign_image=stop_plain,
+            stop_sign_uv_image=stop_uv,
+            background_images=backgrounds,
+            pole_image=pole_use,
+            yolo_weights=yolo_weights,
+            yolo_device=args.detector_device,
+            img_size=(640, 640),
+            obs_size=(int(args.obs_size), int(args.obs_size)),
+            obs_margin=float(args.obs_margin),
+            obs_include_mask=bool(int(args.obs_include_mask)),
+
+            steps_per_episode=int(args.episode_steps),
+            eval_K=int(args.eval_K),
+            detector_debug=True,
+
+            grid_cell_px=int(args.grid_cell),
+            max_cells=None,
+            uv_paint=paint_list[0],
+            uv_paint_list=paint_list if len(paint_list) > 1 else None,
+            use_single_color=True,
+            cell_cover_thresh=float(args.cell_cover_thresh),
+
+            uv_drop_threshold=float(args.uv_threshold),
+            success_conf_threshold=float(args.success_conf),
+            lambda_efficiency=float(args.lambda_efficiency),
+            efficiency_eps=float(args.efficiency_eps),
+            transform_strength=float(args.transform_strength if transform_strength is None else transform_strength),
+            day_tolerance=0.05,
+            lambda_day=float(args.lambda_day),
+            lambda_area=float(lambda_area),
+            area_target_frac=(float(args.area_target) if args.area_target is not None else None),
+            step_cost=float(args.step_cost),
+            step_cost_after_target=float(args.step_cost_after_target),
+            lambda_iou=float(args.lambda_iou),
+            lambda_misclass=float(args.lambda_misclass),
+            lambda_perceptual=float(args.lambda_perceptual),
+            area_cap_frac=area_cap_frac,
+            area_cap_penalty=float(args.area_cap_penalty),
+            area_cap_mode=str(args.area_cap_mode),
+        )
+
     def build_env(eval_K: int, bg_mode: str, use_pole: bool, transform_strength: Optional[float] = None):
         backgrounds = build_backgrounds(bg_mode, BG_DIR, img_size)
         pole_use = pole_rgba if use_pole else None
@@ -611,7 +674,9 @@ if __name__ == "__main__":
         ]
         v = SubprocVecEnv(fns) if args.vec == "subproc" else DummyVecEnv(fns)
         v = VecTransposeImage(v)
-        v = VecNormalize(v, norm_obs=True, norm_reward=False, clip_obs=5.0)
+        # NatureCNN expects image-like spaces; VecNormalize would break that.
+        if str(args.cnn).lower() != "nature":
+            v = VecNormalize(v, norm_obs=True, norm_reward=False, clip_obs=5.0)
         return v
 
     def resolve_phase_steps(total: int) -> Tuple[int, int, int]:
@@ -630,6 +695,13 @@ if __name__ == "__main__":
 
     run_tag = f"grid_uv_yolo{args.yolo_version}"
     tb_root = os.path.join(args.tb, run_tag)
+
+    if args.check_env:
+        print("[CHECK] Running SB3 env checker...")
+        env = build_single_env(bg_mode=args.bg_mode, use_pole=not args.no_pole)
+        check_env(env, warn=True)
+        print("[CHECK] Env checker completed.")
+        raise SystemExit(0)
 
     # PPO
     os.makedirs(tb_root, exist_ok=True)
