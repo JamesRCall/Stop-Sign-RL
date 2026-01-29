@@ -406,7 +406,7 @@ def parse_args():
     ap.add_argument("--n-steps", type=int, default=256)
     ap.add_argument("--batch-size", type=int, default=1024)
     ap.add_argument("--total-steps", type=int, default=800_000)
-    ap.add_argument("--ent-coef", type=float, default=0.005,
+    ap.add_argument("--ent-coef", type=float, default=0.001,
                     help="Entropy coefficient for PPO.")
 
     ap.add_argument("--episode-steps", type=int, default=300)
