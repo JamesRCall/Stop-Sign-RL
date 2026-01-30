@@ -14,7 +14,9 @@ dependencies:
   - torchvision>=0.17
   - pip:
       - stable-baselines3>=2.3.0
+      - sb3-contrib>=2.3.0
       - gymnasium>=0.29
       - tensorboard>=2.14
       - ultralytics>=8.1
       - opencv-python>=4.8
+      - transformers>=4.36
