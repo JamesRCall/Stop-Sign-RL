@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import os
+import sys
 import json
 import time
 import argparse
 import random
 import numpy as np
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if ROOT not in sys.path:
+    sys.path.append(ROOT)
 
 from baselines.grid_utils import build_env_from_args, save_final_images
 
