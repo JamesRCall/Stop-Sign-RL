@@ -24,3 +24,10 @@ Key files:
 - `steps.json`
 - `final_day.png`, `final_on.png`, `final_overlay.png`
 
+## TensorBoard
+
+By default logs to `<run_id>/tb`:
+
+```bash
+tensorboard --logdir baselines/greedy_grid/_runs --port 6007
+```

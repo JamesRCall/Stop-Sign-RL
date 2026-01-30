@@ -13,6 +13,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
     sys.path.append(ROOT)
 
+from torch.utils.tensorboard import SummaryWriter
 from baselines.grid_utils import build_env_from_args, save_final_images
 
 
@@ -75,6 +76,7 @@ def parse_args():
     ap.add_argument("--trials", type=int, default=50)
     ap.add_argument("--select-by", choices=["reward", "drop_on", "reward_raw_total", "drop_on_smooth"], default="drop_on")
     ap.add_argument("--out", default="./baselines/random_grid/_runs")
+    ap.add_argument("--tb", default="", help="TensorBoard log dir (default: <run_dir>/tb).")
     return ap.parse_args()
 
 
@@ -111,6 +113,12 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
 
+    run_id = time.strftime("random_%Y%m%d_%H%M%S")
+    out_dir = os.path.join(args.out, run_id)
+    os.makedirs(out_dir, exist_ok=True)
+    tb_dir = args.tb if args.tb else os.path.join(out_dir, "tb")
+    writer = SummaryWriter(log_dir=tb_dir)
+
     env = build_env_from_args(args)
 
     best = None
@@ -129,14 +137,16 @@ def main():
             best_steps = steps
         if (t + 1) % 5 == 0 or (t + 1) == int(args.trials):
             print(f"[trial {t+1}/{args.trials}] best_score={best:.4f}")
+        writer.add_scalar("metrics/trial_score", float(score), t + 1)
+        writer.add_scalar("metrics/best_score", float(best), t + 1)
+        writer.add_scalar("metrics/drop_on", float(final.get("drop_on", 0.0)), t + 1)
+        writer.add_scalar("metrics/drop_day", float(final.get("drop_day", 0.0)), t + 1)
+        writer.add_scalar("metrics/area_frac", float(final.get("area_frac", 0.0)), t + 1)
 
     # Replay best trial for images
     if best_trial is not None:
         run_random_episode(env, best_trial)
 
-    run_id = time.strftime("random_%Y%m%d_%H%M%S")
-    out_dir = os.path.join(args.out, run_id)
-    os.makedirs(out_dir, exist_ok=True)
     save_final_images(env, out_dir)
 
     summary = {
@@ -155,6 +165,7 @@ def main():
     with open(os.path.join(out_dir, "steps.json"), "w", encoding="utf-8") as f:
         json.dump(best_steps or [], f, indent=2)
 
+    writer.close()
     print(f"[DONE] Saved outputs to {out_dir}")
 
 

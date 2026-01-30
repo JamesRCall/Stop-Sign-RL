@@ -13,6 +13,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
     sys.path.append(ROOT)
 
+from torch.utils.tensorboard import SummaryWriter
 from baselines.grid_utils import build_env_from_args, save_final_images
 
 
@@ -90,6 +91,7 @@ def parse_args():
     ap.add_argument("--seed", type=int, default=123)
     ap.add_argument("--select-by", choices=["reward", "drop_on", "reward_raw_total", "drop_on_smooth"], default="reward")
     ap.add_argument("--out", default="./baselines/greedy_grid/_runs")
+    ap.add_argument("--tb", default="", help="TensorBoard log dir (default: <run_dir>/tb).")
     return ap.parse_args()
 
 
@@ -97,6 +99,12 @@ def main():
     args = parse_args()
     random.seed(args.seed)
     np.random.seed(args.seed)
+
+    run_id = time.strftime("greedy_%Y%m%d_%H%M%S")
+    out_dir = os.path.join(args.out, run_id)
+    os.makedirs(out_dir, exist_ok=True)
+    tb_dir = args.tb if args.tb else os.path.join(out_dir, "tb")
+    writer = SummaryWriter(log_dir=tb_dir)
 
     env = build_env_from_args(args)
     env.reset(seed=int(args.seed))
@@ -154,10 +162,11 @@ def main():
         step_idx += 1
         elapsed = time.perf_counter() - start
         print(f"[step {step_idx}] best_score={best:.4f} drop_on={step_logs[-1]['drop_on']:.4f} area={step_logs[-1]['area_frac']:.4f} elapsed {elapsed/60:.1f}m")
-
-    run_id = time.strftime("greedy_%Y%m%d_%H%M%S")
-    out_dir = os.path.join(args.out, run_id)
-    os.makedirs(out_dir, exist_ok=True)
+        writer.add_scalar("metrics/reward", float(reward), step_idx)
+        writer.add_scalar("metrics/score", float(score), step_idx)
+        writer.add_scalar("metrics/drop_on", float(info.get("drop_on", 0.0)), step_idx)
+        writer.add_scalar("metrics/drop_day", float(info.get("drop_day", 0.0)), step_idx)
+        writer.add_scalar("metrics/area_frac", float(info.get("total_area_mask_frac", 0.0)), step_idx)
 
     save_final_images(env, out_dir)
     summary = {
@@ -172,6 +181,7 @@ def main():
     with open(os.path.join(out_dir, "steps.json"), "w", encoding="utf-8") as f:
         json.dump(step_logs, f, indent=2)
 
+    writer.close()
     print(f"[DONE] Saved outputs to {out_dir}")
 
 
