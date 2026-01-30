@@ -34,6 +34,12 @@ echo "[RUN] N=${N} seed_base=${SEED_BASE} eval_K=${EVAL_K} grid=${GRID_CELL} pai
 if [[ -n "${PPO_MODEL}" ]]; then
   echo "[PPO] Evaluating PPO over ${N} episodes with seed base ${SEED_BASE}"
   VECNORM_ARG=()
+  if [[ -z "${PPO_VECNORM}" ]]; then
+    # Auto-detect VecNormalize stats in the checkpoint dir if present.
+    if [[ -f "${PPO_CKPT_DIR}/vecnormalize.pkl" ]]; then
+      PPO_VECNORM="${PPO_CKPT_DIR}/vecnormalize.pkl"
+    fi
+  fi
   if [[ -n "${PPO_VECNORM}" ]]; then
     VECNORM_ARG=(--vecnorm "${PPO_VECNORM}")
   fi
@@ -101,11 +107,3 @@ python tools/aggregate_baselines.py \
 
 echo "[DONE] Completed PPO + baselines over ${N} seeds."
 echo "[DONE] Compare summary: ${OUT_ROOT}/compare_summary.json"
-RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
-OUT_ROOT="${OUT_ROOT:-./_runs/baseline_compare_${RUN_TAG}}"
-mkdir -p "${OUT_ROOT}"
-GREEDY_LIST="${OUT_ROOT}/greedy_runs.txt"
-RANDOM_LIST="${OUT_ROOT}/random_runs.txt"
-PPO_SUMMARY_JSON="${OUT_ROOT}/ppo_summary.json"
-> "${GREEDY_LIST}"
-> "${RANDOM_LIST}"
