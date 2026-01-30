@@ -20,11 +20,23 @@ def pil_to_tensor_rgba(pil_img) -> torch.Tensor:
     return torch.from_numpy(arr).permute(2, 0, 1).contiguous()
 
 
+def pil_to_tensor_gray(pil_img) -> torch.Tensor:
+    arr = np.array(pil_img.convert("L"), dtype=np.float32) / 255.0
+    return torch.from_numpy(arr).unsqueeze(0).contiguous()
+
+
 def tensor_to_pil_rgb(t: torch.Tensor):
     t = t.detach().clamp(0.0, 1.0).cpu()
     arr = (t.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
     from PIL import Image
     return Image.fromarray(arr, mode="RGB")
+
+
+def tensor_to_pil_rgba(t: torch.Tensor):
+    t = t.detach().clamp(0.0, 1.0).cpu()
+    arr = (t.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
+    from PIL import Image
+    return Image.fromarray(arr, mode="RGBA")
 
 
 def tensor_to_pil_gray(t: torch.Tensor):

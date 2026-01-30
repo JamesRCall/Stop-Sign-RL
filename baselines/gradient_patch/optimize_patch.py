@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image
 import torch
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
@@ -35,6 +36,7 @@ from baselines.gradient_patch.renderer import (
     pil_to_tensor_rgb,
     pil_to_tensor_rgba,
     tensor_to_pil_rgb,
+    tensor_to_pil_rgba,
     tensor_to_pil_gray,
     apply_patch,
     sample_transform_params,
@@ -128,6 +130,10 @@ def main() -> None:
     ap.add_argument("--uv-min-alpha", type=float, default=0.08)
     ap.add_argument("--save-every", type=int, default=200)
     ap.add_argument("--out", default="./baselines/gradient_patch/_runs")
+    ap.add_argument("--tb", default="",
+                    help="TensorBoard log dir (default: <run_dir>/tb).")
+    ap.add_argument("--tb-image-every", type=int, default=200,
+                    help="Log preview images to TB every N steps.")
     args = ap.parse_args()
 
     rng = random.Random(int(args.seed))
@@ -184,6 +190,8 @@ def main() -> None:
     run_id = time.strftime("grad_%Y%m%d_%H%M%S")
     out_dir = os.path.join(args.out, run_id)
     os.makedirs(out_dir, exist_ok=True)
+    tb_dir = args.tb if args.tb else os.path.join(out_dir, "tb")
+    writer = SummaryWriter(log_dir=tb_dir)
 
     def get_mask() -> torch.Tensor:
         mask = torch.sigmoid(mask_logits)
@@ -309,12 +317,22 @@ def main() -> None:
             }
             metrics.append(m)
             print(f"[{step}/{args.steps}] loss={m['loss']:.4f} drop_on={m['drop_on']:.4f} area={m['area']:.4f}")
+            writer.add_scalar("loss/total", m["loss"], step)
+            writer.add_scalar("metrics/drop_on", m["drop_on"], step)
+            writer.add_scalar("metrics/drop_day", m["drop_day"], step)
+            writer.add_scalar("metrics/area", m["area"], step)
+            writer.add_scalar("conf/c0_day", m["c0_day"], step)
+            writer.add_scalar("conf/c_day", m["c_day"], step)
+            writer.add_scalar("conf/c_on", m["c_on"], step)
 
         if args.save_every > 0 and (step % int(args.save_every) == 0 or step == int(args.steps)):
             with torch.no_grad():
                 # Save overlay previews
                 save_outputs(out_dir, f"preview_day_{step:06d}.png", batch_day[0])
                 save_outputs(out_dir, f"preview_on_{step:06d}.png", batch_on[0])
+                if args.tb_image_every > 0 and (step % int(args.tb_image_every) == 0 or step == int(args.steps)):
+                    writer.add_image("preview/day", batch_day[0], step)
+                    writer.add_image("preview/on", batch_on[0], step)
 
     # Save final assets
     with torch.no_grad():
@@ -326,9 +344,18 @@ def main() -> None:
         save_outputs(out_dir, "sign_on.png", sign_on[:3])
         tensor_to_pil_gray(mask).save(os.path.join(out_dir, "patch_mask.png"))
 
+        # Save RGBA overlays for eval
+        day_alpha_map = (mask * sign_alpha * float(day_alpha)).clamp(0.0, 1.0)
+        on_alpha_map = (mask * sign_alpha * float(on_alpha)).clamp(0.0, 1.0)
+        overlay_day = torch.cat([day_color, day_alpha_map], dim=0)
+        overlay_on = torch.cat([on_color, on_alpha_map], dim=0)
+        tensor_to_pil_rgba(overlay_day).save(os.path.join(out_dir, "overlay_day.png"))
+        tensor_to_pil_rgba(overlay_on).save(os.path.join(out_dir, "overlay_on.png"))
+
     with open(os.path.join(out_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
+    writer.close()
     print(f"[DONE] Saved outputs to {out_dir}")
 
 
