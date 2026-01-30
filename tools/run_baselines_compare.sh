@@ -12,6 +12,7 @@ PAINT="${PAINT:-yellow}"
 YOLO_WEIGHTS="${YOLO_WEIGHTS:-./weights/yolo8n.pt}"
 PPO_MODEL="${PPO_MODEL:-}"
 PPO_CKPT_DIR="${PPO_CKPT_DIR:-./_runs/checkpoints}"
+PPO_VECNORM="${PPO_VECNORM:-}"
 BG_MODE="${BG_MODE:-dataset}"
 TRANSFORM_STRENGTH="${TRANSFORM_STRENGTH:-1.0}"
 AREA_TARGET="${AREA_TARGET:-0.25}"
@@ -32,6 +33,10 @@ echo "[RUN] N=${N} seed_base=${SEED_BASE} eval_K=${EVAL_K} grid=${GRID_CELL} pai
 # 1) PPO eval over N episodes using seed base
 if [[ -n "${PPO_MODEL}" ]]; then
   echo "[PPO] Evaluating PPO over ${N} episodes with seed base ${SEED_BASE}"
+  VECNORM_ARG=()
+  if [[ -n "${PPO_VECNORM}" ]]; then
+    VECNORM_ARG=(--vecnorm "${PPO_VECNORM}")
+  fi
   python tools/eval_policy.py \
     --model "${PPO_MODEL}" \
     --ckpt "${PPO_CKPT_DIR}" \
@@ -46,7 +51,8 @@ if [[ -n "${PPO_MODEL}" ]]; then
     --area-target "${AREA_TARGET}" \
     --lambda-area "${LAMBDA_AREA}" \
     --lambda-day "${LAMBDA_DAY}" \
-    --out-json "${PPO_SUMMARY_JSON}"
+    --out-json "${PPO_SUMMARY_JSON}" \
+    "${VECNORM_ARG[@]}"
 else
   echo "[PPO] PPO_MODEL not set; skipping PPO eval."
 fi
