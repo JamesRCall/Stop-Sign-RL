@@ -30,7 +30,7 @@ def main():
     p.add_argument("--bgdir", default="./data/backgrounds")
     p.add_argument("--yolo", default="./weights/yolo11n.pt")
     p.add_argument("--detector", default="yolo",
-                   help="Detector backend: yolo or torchvision.")
+                   help="Detector backend: yolo, torchvision, or detr.")
     p.add_argument("--detector-model", default="",
                    help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     p.add_argument("--out", default="./_debug_grid")

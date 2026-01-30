@@ -251,7 +251,7 @@ def main() -> None:
     p.add_argument("--detector-suite", choices=["all", "single"], default="all",
                    help="Run all detectors or a single detector.")
     p.add_argument("--detector", default="yolo",
-                   help="Detector backend: yolo or torchvision.")
+                   help="Detector backend: yolo, torchvision, or detr.")
     p.add_argument("--detector-model", default="",
                    help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     p.add_argument("--grid-cell", type=int, default=16, choices=[2, 4, 8, 16, 32])

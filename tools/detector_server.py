@@ -82,7 +82,7 @@ def main() -> int:
     ap.add_argument("--iou", type=float, default=0.45)
     ap.add_argument("--target-class", default="stop sign")
     ap.add_argument("--detector", default="yolo",
-                    help="Detector backend: yolo or torchvision.")
+                    help="Detector backend: yolo, torchvision, or detr.")
     ap.add_argument("--detector-model", default="",
                     help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     ap.add_argument("--debug", action="store_true")
