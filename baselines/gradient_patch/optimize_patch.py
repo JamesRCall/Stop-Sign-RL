@@ -216,13 +216,13 @@ def main() -> None:
                 W = int(mask.shape[2])
                 Gh = int(math.ceil(H / float(args.grid_cell_px)))
                 Gw = int(math.ceil(W / float(args.grid_cell_px)))
-                pooled = F.adaptive_avg_pool2d(mask, (Gh, Gw))
+                pooled = F.adaptive_avg_pool2d(mask.unsqueeze(0), (Gh, Gw))
             else:
-                pooled = mask
+                pooled = mask.unsqueeze(0)
             thr = float(args.physical_thresh)
             hard = (pooled > thr).float()
             pooled = hard - pooled.detach() + pooled
-            mask = F.interpolate(pooled, size=mask.shape[1:], mode="nearest")
+            mask = F.interpolate(pooled, size=mask.shape[1:], mode="nearest")[0]
         return mask.clamp(0.0, 1.0)
 
     def get_colors(mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
