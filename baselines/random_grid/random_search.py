@@ -23,6 +23,14 @@ def score_from(info, reward, mode: str) -> float:
         return float(reward)
     if mode == "drop_on":
         return float(info.get("drop_on", -1e9))
+    if mode == "success_area":
+        metrics = info.get("metrics", {}) if isinstance(info, dict) else {}
+        uv_success = bool(metrics.get("uv_success", False))
+        area = float(metrics.get("total_area_mask_frac", info.get("area_frac", 1.0)))
+        if uv_success:
+            return 1.0 - area  # higher is better -> lower area
+        # If not successful, prefer higher drop_on but keep below any success.
+        return -1e3 + float(metrics.get("drop_on", info.get("drop_on", -1e9)))
     if mode == "reward_raw_total":
         return float(info.get("reward_raw_total", reward))
     if mode == "drop_on_smooth":
@@ -74,7 +82,7 @@ def parse_args():
 
     ap.add_argument("--seed", type=int, default=123)
     ap.add_argument("--trials", type=int, default=50)
-    ap.add_argument("--select-by", choices=["reward", "drop_on", "reward_raw_total", "drop_on_smooth"], default="drop_on")
+    ap.add_argument("--select-by", choices=["reward", "drop_on", "reward_raw_total", "drop_on_smooth", "success_area"], default="success_area")
     ap.add_argument("--out", default="./baselines/random_grid/_runs")
     ap.add_argument("--tb", default="", help="TensorBoard log dir (default: <run_dir>/tb).")
     return ap.parse_args()

@@ -73,6 +73,7 @@ for ((i=0; i<${N}; i++)); do
   python baselines/random_grid/random_search.py \
     --seed "${seed}" \
     --trials "${RANDOM_TRIALS}" \
+    --select-by "success_area" \
     --eval-K "${EVAL_K}" \
     --grid-cell "${GRID_CELL}" \
     --paint "${PAINT}" \
