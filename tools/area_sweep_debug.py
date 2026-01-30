@@ -199,6 +199,10 @@ def main() -> None:
     p.add_argument("--bgdir", default="./data/backgrounds")
     p.add_argument("--yolo", default="./weights/yolo8n.pt")
     p.add_argument("--device", default="cuda")
+    p.add_argument("--detector", default="yolo",
+                   help="Detector backend: yolo or torchvision.")
+    p.add_argument("--detector-model", default="",
+                   help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     p.add_argument("--grid-cell", type=int, default=16, choices=[2, 4, 8, 16, 32])
     p.add_argument("--cell-cover-thresh", type=float, default=0.60,
                    help="Grid cell coverage threshold (0..1). Lower covers edges.")
@@ -302,6 +306,8 @@ def main() -> None:
                 pole_image=None if args.no_pole else pole,
                 yolo_weights=args.yolo,
                 yolo_device=args.device,
+                detector_type=str(args.detector),
+                detector_model=str(args.detector_model) if args.detector_model else None,
                 eval_K=int(eval_k),
                 grid_cell_px=int(args.grid_cell),
                 uv_paint=combo[0],

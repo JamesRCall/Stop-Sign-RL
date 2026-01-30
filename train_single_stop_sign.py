@@ -315,6 +315,8 @@ def make_env_factory(
     area_cap_mode: str,
     yolo_wts: str,
     yolo_device: str,
+    detector_type: str,
+    detector_model: Optional[str],
     obs_size: Tuple[int, int],
     obs_margin: float,
     obs_include_mask: bool,
@@ -349,6 +351,8 @@ def make_env_factory(
     @param area_target_frac: Target area fraction for excess penalties.
     @param yolo_wts: YOLO weights path.
     @param yolo_device: YOLO device spec.
+    @param detector_type: Detector backend ("yolo" or "torchvision").
+    @param detector_model: Torchvision model name (optional).
     @param obs_size: Cropped observation size.
     @param obs_margin: Crop margin around sign bbox.
     @param obs_include_mask: Include overlay mask channel.
@@ -366,6 +370,8 @@ def make_env_factory(
             pole_image=pole_rgba,
             yolo_weights=yolo_wts,
             yolo_device=yolo_device,
+            detector_type=detector_type,
+            detector_model=detector_model,
             img_size=(640, 640),
             obs_size=(int(obs_size[0]), int(obs_size[1])),
             obs_margin=float(obs_margin),
@@ -421,6 +427,10 @@ def parse_args():
     ap.add_argument("--yolo", "--yolo-weights", dest="yolo_weights", default=None)
     ap.add_argument("--yolo-version", choices=["8", "11"], default="8")
     ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "auto"))
+    ap.add_argument("--detector", default="yolo",
+                    help="Detector backend: yolo or torchvision.")
+    ap.add_argument("--detector-model", default="",
+                    help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     ap.add_argument("--tb", default="./runs/tb")
     ap.add_argument("--ckpt", default="./runs/checkpoints")
     ap.add_argument("--overlays", default="./runs/overlays")
@@ -582,7 +592,11 @@ if __name__ == "__main__":
         print("Using cuda device")
 
     yolo_weights = resolve_yolo_weights(args.yolo_version, args.yolo_weights)
-    print(f"YOLO version={args.yolo_version} weights={yolo_weights}")
+    if str(args.detector).lower() == "yolo":
+        print(f"YOLO version={args.yolo_version} weights={yolo_weights}")
+    else:
+        det_model = str(args.detector_model) if args.detector_model else "default"
+        print(f"Detector={args.detector} model={det_model}")
 
     # paths
     STOP_PLAIN = os.path.join(args.data, "stop_sign.png")
@@ -621,6 +635,8 @@ if __name__ == "__main__":
             pole_image=pole_use,
             yolo_weights=yolo_weights,
             yolo_device=args.detector_device,
+            detector_type=str(args.detector),
+            detector_model=str(args.detector_model) if args.detector_model else None,
             img_size=(640, 640),
             obs_size=(int(args.obs_size), int(args.obs_size)),
             obs_margin=float(args.obs_margin),
@@ -696,6 +712,8 @@ if __name__ == "__main__":
                 area_cap_mode=str(args.area_cap_mode),
                 yolo_wts=yolo_weights,
                 yolo_device=args.detector_device,
+                detector_type=str(args.detector),
+                detector_model=str(args.detector_model) if args.detector_model else None,
                 obs_size=(int(args.obs_size), int(args.obs_size)),
                 obs_margin=float(args.obs_margin),
                 obs_include_mask=bool(int(args.obs_include_mask)),

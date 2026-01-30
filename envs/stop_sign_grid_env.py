@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 import gymnasium as gym
 from gymnasium import spaces
 
-from detectors.yolo_wrapper import DetectorWrapper
+from detectors.factory import build_detector
 from utils.uv_paint import UVPaint, YELLOW_GLOW  # you can swap the paint in train file
 
 
@@ -116,6 +116,9 @@ class StopSignGridEnv(gym.Env):
         area_cap_penalty: float = -0.20,
         area_cap_mode: str = "soft",
 
+        # Detector backend
+        detector_type: str = "yolo",
+        detector_model: Optional[str] = None,
 
         # YOLO
         yolo_device: str = "cpu",
@@ -217,19 +220,16 @@ class StopSignGridEnv(gym.Env):
 
 
         # detector
-        dev_str = str(yolo_device)
-        if dev_str.lower().startswith("server://"):
-            from detectors.remote_detector import RemoteDetectorWrapper
-            self.det = RemoteDetectorWrapper(
-                server_addr=dev_str,
-                conf=conf_thresh,
-                iou=iou_thresh,
-                debug=detector_debug,
-            )
-        else:
-            self.det = DetectorWrapper(
-                yolo_weights, device=yolo_device, conf=conf_thresh, iou=iou_thresh, debug=detector_debug
-            )
+        self.det = build_detector(
+            detector_type=detector_type,
+            detector_model=detector_model,
+            yolo_weights=yolo_weights,
+            device=yolo_device,
+            conf=conf_thresh,
+            iou=iou_thresh,
+            target_class="stop sign",
+            debug=detector_debug,
+        )
 
 
         # action/obs spaces

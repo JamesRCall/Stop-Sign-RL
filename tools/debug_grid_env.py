@@ -29,6 +29,10 @@ def main():
     p.add_argument("--data", default="./data")
     p.add_argument("--bgdir", default="./data/backgrounds")
     p.add_argument("--yolo", default="./weights/yolo11n.pt")
+    p.add_argument("--detector", default="yolo",
+                   help="Detector backend: yolo or torchvision.")
+    p.add_argument("--detector-model", default="",
+                   help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     p.add_argument("--out", default="./_debug_grid")
     p.add_argument("--grid-cell", type=int, default=2, choices=[2,4])
     p.add_argument("--steps", type=int, default=25)
@@ -52,6 +56,8 @@ def main():
         pole_image=pole,
         yolo_weights=args.yolo,
         yolo_device=args.device,
+        detector_type=str(args.detector),
+        detector_model=str(args.detector_model) if args.detector_model else None,
         img_size=(640,640),
 
         steps_per_episode=7000,

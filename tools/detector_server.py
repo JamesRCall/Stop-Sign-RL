@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from detectors.yolo_wrapper import DetectorWrapper
+from detectors.factory import build_detector
 
 
 def _bytes_to_images(blob_list: List[bytes]) -> List[Image.Image]:
@@ -37,7 +37,7 @@ def _bytes_to_images(blob_list: List[bytes]) -> List[Image.Image]:
     return imgs
 
 
-def handle_client(conn, det: DetectorWrapper):
+def handle_client(conn, det):
     """
     Serve a single client connection until it closes.
 
@@ -76,20 +76,29 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="YOLO detector server for multi-env training.")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=5009)
-    ap.add_argument("--model", required=True)
+    ap.add_argument("--model", default="")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--conf", type=float, default=0.10)
     ap.add_argument("--iou", type=float, default=0.45)
     ap.add_argument("--target-class", default="stop sign")
+    ap.add_argument("--detector", default="yolo",
+                    help="Detector backend: yolo or torchvision.")
+    ap.add_argument("--detector-model", default="",
+                    help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 
-    det = DetectorWrapper(
-        args.model,
-        target_class=args.target_class,
+    if str(args.detector).lower() == "yolo" and not args.model:
+        raise ValueError("--model is required for YOLO detectors.")
+
+    det = build_detector(
+        detector_type=str(args.detector),
+        detector_model=str(args.detector_model) if args.detector_model else None,
+        yolo_weights=args.model,
         device=args.device,
         conf=args.conf,
         iou=args.iou,
+        target_class=args.target_class,
         debug=args.debug,
     )
 

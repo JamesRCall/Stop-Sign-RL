@@ -48,6 +48,8 @@ def make_env(
         pole_image=pole_rgba,
         yolo_weights=args.yolo_weights,
         yolo_device=args.detector_device,
+        detector_type=str(args.detector),
+        detector_model=str(args.detector_model) if args.detector_model else None,
         img_size=img_size,
         obs_size=(int(args.obs_size), int(args.obs_size)),
         obs_margin=float(args.obs_margin),
@@ -100,6 +102,10 @@ def parse_args():
     ap.add_argument("--yolo-version", choices=["8", "11"], default="8")
     ap.add_argument("--yolo-weights", default=None)
     ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "auto"))
+    ap.add_argument("--detector", default="yolo",
+                    help="Detector backend: yolo or torchvision.")
+    ap.add_argument("--detector-model", default="",
+                    help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     ap.add_argument("--ckpt", default="./_runs/checkpoints")
     ap.add_argument("--model", default=None, help="Path to model .zip (defaults to latest in --ckpt)")
     ap.add_argument("--vecnorm", default=None, help="Path to VecNormalize stats .pkl (optional)")
