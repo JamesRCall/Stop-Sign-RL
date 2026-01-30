@@ -339,12 +339,12 @@ def main() -> None:
                 f"paint_combo={combo_names} cell_thresh={float(args.cell_cover_thresh):.2f}"
             )
 
-                for pct in percents:
-                    pct = max(0.0, min(1.0, float(pct)))
-                    target_n = int(math.ceil(pct * total))
-                    if target_n == 0:
-                        trials = 1
-                    else:
+            for pct in percents:
+                pct = max(0.0, min(1.0, float(pct)))
+                target_n = int(math.ceil(pct * total))
+                if target_n == 0:
+                    trials = 1
+                else:
                     trials = max(1, int(args.trials))
 
                 rows = []
