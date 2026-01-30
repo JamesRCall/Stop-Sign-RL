@@ -11,6 +11,7 @@ import json
 import time
 import argparse
 import random
+import math
 from typing import List, Tuple
 import numpy as np
 from PIL import Image
@@ -115,6 +116,14 @@ def main() -> None:
                     help="global = single paint for whole patch; pixel = per-pixel mixture")
     ap.add_argument("--palette-temp", type=float, default=0.3,
                     help="Softmax temperature for palette mixing (lower = harder).")
+    ap.add_argument("--physical", action="store_true",
+                    help="Force physical constraints: binary mask + grid quantization.")
+    ap.add_argument("--grid-cell-px", type=int, default=16,
+                    help="Grid cell size in pixels for physical mode.")
+    ap.add_argument("--physical-thresh", type=float, default=0.5,
+                    help="Threshold for binary mask in physical mode.")
+    ap.add_argument("--physical-color-hard", action="store_true",
+                    help="Force a single palette color (hard choice) in physical mode.")
 
     ap.add_argument("--area-target", type=float, default=0.25)
     ap.add_argument("--lambda-area", type=float, default=0.70)
@@ -174,6 +183,9 @@ def main() -> None:
 
     # Params
     mask_logits = torch.nn.Parameter(torch.zeros((1, 1, args.mask_res, args.mask_res), device=device))
+    if args.physical and args.color_mode == "pixel":
+        raise ValueError("physical mode requires --color-mode global (no per-pixel mixing).")
+
     if len(palette) > 1:
         if args.color_mode == "pixel":
             color_logits = torch.nn.Parameter(torch.zeros((1, len(palette), args.mask_res, args.mask_res), device=device))
@@ -197,7 +209,21 @@ def main() -> None:
         mask = torch.sigmoid(mask_logits)
         mask = F.interpolate(mask, size=sign_rgba.shape[1:], mode="bilinear", align_corners=False)
         mask = mask[0]  # (1, H, W)
-        return (mask * sign_mask).clamp(0.0, 1.0)
+        mask = (mask * sign_mask).clamp(0.0, 1.0)
+        if args.physical:
+            if args.grid_cell_px and args.grid_cell_px > 0:
+                H = int(mask.shape[1])
+                W = int(mask.shape[2])
+                Gh = int(math.ceil(H / float(args.grid_cell_px)))
+                Gw = int(math.ceil(W / float(args.grid_cell_px)))
+                pooled = F.adaptive_avg_pool2d(mask, (Gh, Gw))
+            else:
+                pooled = mask
+            thr = float(args.physical_thresh)
+            hard = (pooled > thr).float()
+            pooled = hard - pooled.detach() + pooled
+            mask = F.interpolate(pooled, size=mask.shape[1:], mode="nearest")
+        return mask.clamp(0.0, 1.0)
 
     def get_colors(mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if len(palette) == 1:
@@ -213,6 +239,10 @@ def main() -> None:
             on = torch.einsum("bphw,pc->bchw", weights, on_colors)[0]
         else:
             weights = F.softmax(color_logits / max(args.palette_temp, 1e-6), dim=0)
+            if args.physical and args.physical_color_hard:
+                hard = torch.zeros_like(weights)
+                hard[torch.argmax(weights)] = 1.0
+                weights = hard - weights.detach() + weights
             day = (weights[:, None] * day_colors).sum(dim=0).view(3, 1, 1).expand_as(sign_rgba[:3])
             on = (weights[:, None] * on_colors).sum(dim=0).view(3, 1, 1).expand_as(sign_rgba[:3])
         return day, on

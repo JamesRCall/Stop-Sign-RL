@@ -31,6 +31,20 @@ python baselines/gradient_patch/optimize_patch.py \
   --steps 2000
 ```
 
+## Physical (paintable) mode
+
+This forces a **binary, grid-quantized mask** and (optionally) a **single paint**.
+
+```bash
+python baselines/gradient_patch/optimize_patch.py \
+  --weights ./weights/yolo8n.pt \
+  --palette uv6 \
+  --color-mode global \
+  --physical --grid-cell-px 16 --physical-thresh 0.5 --physical-color-hard \
+  --area-target 0.25 \
+  --steps 2000
+```
+
 Outputs are written under:
 
 ```
