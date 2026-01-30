@@ -329,9 +329,15 @@ def place_group_on_background(
     gx2 = gx1 + (x2 - x1)
     gy2 = gy1 + (y2 - y1)
     group_crop = group[:, gy1:gy2, gx1:gx2]
-
-    canvas = bg.clone()
-    region = canvas[:, y1:y2, x1:x2]
-    blended = alpha_composite(region, group_crop)
-    canvas[:, y1:y2, x1:x2] = blended
-    return canvas
+    # Build a full-size RGBA overlay via padding to avoid in-place ops.
+    pad_left = int(x1)
+    pad_right = int(W - x2)
+    pad_top = int(y1)
+    pad_bottom = int(H - y2)
+    overlay = torch.nn.functional.pad(
+        group_crop,
+        (pad_left, pad_right, pad_top, pad_bottom),
+        mode="constant",
+        value=0.0,
+    )
+    return alpha_composite(bg, overlay)
