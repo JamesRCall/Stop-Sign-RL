@@ -87,23 +87,30 @@ class YoloGrad:
 
         # Try to interpret channels
         # Common: [x, y, w, h, obj, cls...]
+        def maybe_sigmoid(x: torch.Tensor) -> torch.Tensor:
+            # If already in [0,1], don't squash again.
+            if x.min().item() >= 0.0 and x.max().item() <= 1.0:
+                return x
+            return x.sigmoid()
+
         if c >= (5 + self.num_classes):
-            obj = pred[..., 4].sigmoid()
-            cls = pred[..., 5 + self.target_id].sigmoid()
+            obj = maybe_sigmoid(pred[..., 4])
+            cls = maybe_sigmoid(pred[..., 5 + self.target_id])
             conf = obj * cls
         elif c == (4 + self.num_classes):
-            cls = pred[..., 4 + self.target_id].sigmoid()
+            # Anchor-free outputs often omit objectness.
+            cls = maybe_sigmoid(pred[..., 4 + self.target_id])
             conf = cls
         elif c == self.num_classes:
-            cls = pred[..., self.target_id].sigmoid()
+            cls = maybe_sigmoid(pred[..., self.target_id])
             conf = cls
         elif c > 5 and (5 + self.target_id) < c:
-            obj = pred[..., 4].sigmoid()
-            cls = pred[..., 5 + self.target_id].sigmoid()
+            obj = maybe_sigmoid(pred[..., 4])
+            cls = maybe_sigmoid(pred[..., 5 + self.target_id])
             conf = obj * cls
         else:
             # Fallback: take the last channel as a confidence proxy
-            conf = pred[..., -1].sigmoid()
+            conf = maybe_sigmoid(pred[..., -1])
 
         # Max over locations/anchors
         return conf.max(dim=1).values
@@ -126,4 +133,3 @@ class YoloGrad:
         if isinstance(pred, (list, tuple)):
             pred = pred[0]
         return self._target_conf_from_pred(pred)
-
