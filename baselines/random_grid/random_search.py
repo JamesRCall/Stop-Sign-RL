@@ -138,6 +138,9 @@ def main():
         trial_seed = int(args.seed) + t
         actions, steps, final, meta = run_random_episode(env, trial_seed)
         score = score_from(final, final.get("reward", 0.0), args.select_by)
+        final_metrics = final.get("metrics", {}) if isinstance(final, dict) else {}
+        area = final_metrics.get("total_area_mask_frac", final.get("area_frac", 0.0))
+        after_conf = final_metrics.get("c_on", final.get("after_conf", None))
         if (best is None) or (score > best):
             best = score
             best_trial = trial_seed
@@ -145,7 +148,10 @@ def main():
             best_steps = steps
             best_meta = meta
         if (t + 1) % 5 == 0 or (t + 1) == int(args.trials):
-            print(f"[trial {t+1}/{args.trials}] best_score={best:.4f}")
+            if after_conf is None:
+                print(f"[trial {t+1}/{args.trials}] best_score={best:.4f} area={float(area):.4f}")
+            else:
+                print(f"[trial {t+1}/{args.trials}] best_score={best:.4f} area={float(area):.4f} c_on={float(after_conf):.4f}")
         writer.add_scalar("metrics/trial_score", float(score), t + 1)
         writer.add_scalar("metrics/best_score", float(best), t + 1)
         writer.add_scalar("metrics/drop_on", float(final.get("drop_on", 0.0)), t + 1)
@@ -179,6 +185,15 @@ def main():
         json.dump(best_steps or [], f, indent=2)
 
     writer.close()
+    if best_steps:
+        final = best_steps[-1]
+        metrics = final.get("metrics", {})
+        area = metrics.get("total_area_mask_frac", final.get("area_frac", None))
+        after_conf = metrics.get("c_on", final.get("after_conf", None))
+        if after_conf is None:
+            print(f"[BEST] score={best:.4f} area={float(area):.4f}" if area is not None else f"[BEST] score={best:.4f}")
+        else:
+            print(f"[BEST] score={best:.4f} area={float(area):.4f} c_on={float(after_conf):.4f}")
     print(f"[DONE] Saved outputs to {out_dir}")
 
 
