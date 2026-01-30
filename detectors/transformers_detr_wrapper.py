@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Optional, Union
 import re
+import warnings
 import torch
 
 
@@ -52,11 +53,25 @@ class TransformersDetrWrapper:
 
         try:
             from transformers import DetrImageProcessor, DetrForObjectDetection
+            from transformers.utils import logging as hf_logging
         except Exception as e:  # pragma: no cover - import guard
             raise ImportError(
                 "Transformers DETR requires the 'transformers' package. "
                 "Install with: pip install transformers"
             ) from e
+
+        # Reduce noisy load-time warnings and logs from transformers/torch meta init.
+        warnings.filterwarnings(
+            "ignore",
+            message=".*meta parameter.*no-op.*",
+            category=UserWarning,
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message=".*copying from a non-meta parameter.*",
+            category=UserWarning,
+        )
+        hf_logging.set_verbosity_error()
 
         self.processor = DetrImageProcessor.from_pretrained(self.model_name)
         self.model = DetrForObjectDetection.from_pretrained(self.model_name)
