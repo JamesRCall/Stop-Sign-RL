@@ -12,6 +12,7 @@ TB_TAG="${TB_TAG:-eval}"
 CKPT_DIR="${CKPT_DIR:-./_runs/checkpoints}"
 MODEL="${MODEL:-}"
 VECNORM="${VECNORM:-}"
+SEED="${SEED:-}"
 
 # Env defaults (mirror train.sh)
 EVAL_K="${EVAL_K:-3}"
@@ -52,6 +53,7 @@ Usage: $0 [options]
 
 Options:
   --episodes N         (default: $EPISODES)
+  --seed N             (default: $SEED)
   --deterministic {0|1} (default: $DETERMINISTIC)
   --tb DIR             (default: $TB_DIR)
   --tb-tag TAG         (default: $TB_TAG)
@@ -101,6 +103,7 @@ trap cleanup EXIT
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --episodes) EPISODES="$2"; shift 2;;
+    --seed) SEED="$2"; shift 2;;
     --deterministic) DETERMINISTIC="$2"; shift 2;;
     --tb) TB_DIR="$2"; shift 2;;
     --tb-tag) TB_TAG="$2"; shift 2;;
@@ -162,6 +165,9 @@ if [[ -n "${MODEL}" ]]; then
 fi
 if [[ -n "${VECNORM}" ]]; then
   EXTRA_ARGS+=(--vecnorm "${VECNORM}")
+fi
+if [[ -n "${SEED}" ]]; then
+  EXTRA_ARGS+=(--seed "${SEED}")
 fi
 if [[ -n "${YOLO_WEIGHTS}" ]]; then
   EXTRA_ARGS+=(--yolo-weights "${YOLO_WEIGHTS}")

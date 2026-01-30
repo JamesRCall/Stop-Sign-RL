@@ -104,10 +104,13 @@ def parse_args():
     ap.add_argument("--model", default=None, help="Path to model .zip (defaults to latest in --ckpt)")
     ap.add_argument("--vecnorm", default=None, help="Path to VecNormalize stats .pkl (optional)")
     ap.add_argument("--episodes", type=int, default=20)
+    ap.add_argument("--seed", type=int, default=None,
+                    help="Base seed for eval episodes (episode i uses seed+ i).")
     ap.add_argument("--deterministic", type=int, default=1)
     ap.add_argument("--tb", default="./_runs/tb_eval", help="TensorBoard log dir (optional).")
     ap.add_argument("--tb-tag", default="eval", help="TensorBoard tag prefix.")
     ap.add_argument("--log-images", type=int, default=10, help="Max eval images to log to TensorBoard.")
+    ap.add_argument("--out-json", default="", help="Optional path to write eval summary JSON.")
 
     # Env settings (match training defaults)
     ap.add_argument("--episode-steps", type=int, default=300)
@@ -173,9 +176,23 @@ def main():
     steps_list = []
     area_list = []
     after_list = []
+    iou_list = []
+    misclass_list = []
 
     for ep_idx in range(int(args.episodes)):
-        obs = env.reset()
+        if args.seed is not None:
+            seed_i = int(args.seed) + int(ep_idx)
+            # SB3 VecNormalize may not accept seed in reset; try env_method fallback.
+            try:
+                obs = env.reset(seed=[seed_i])
+            except TypeError:
+                try:
+                    obs = env.reset(seed=seed_i)
+                except TypeError:
+                    env.env_method("reset", seed=seed_i)
+                    obs = env.reset()
+        else:
+            obs = env.reset()
         done = False
         steps = 0
         last_info = {}
@@ -191,11 +208,15 @@ def main():
             successes += 1 if last_info.get("uv_success", False) else 0
             area_list.append(float(last_info.get("total_area_mask_frac", np.nan)))
             after_list.append(float(last_info.get("after_conf", last_info.get("c_on", np.nan))))
+            iou_list.append(float(last_info.get("mean_iou", np.nan)))
+            misclass_list.append(float(last_info.get("misclass_rate", np.nan)))
             if writer is not None:
                 tag = str(args.tb_tag)
                 writer.add_scalar(f"{tag}/episode_steps", steps, ep_idx)
                 writer.add_scalar(f"{tag}/episode_area_frac", area_list[-1], ep_idx)
                 writer.add_scalar(f"{tag}/episode_after_conf", after_list[-1], ep_idx)
+                writer.add_scalar(f"{tag}/episode_mean_iou", iou_list[-1], ep_idx)
+                writer.add_scalar(f"{tag}/episode_misclass_rate", misclass_list[-1], ep_idx)
                 writer.add_scalar(
                     f"{tag}/episode_success",
                     1.0 if last_info.get("uv_success", False) else 0.0,
@@ -218,10 +239,13 @@ def main():
     mean_steps = _mean(steps_list)
     mean_area = _mean(area_list)
     mean_after = _mean(after_list)
+    mean_iou = _mean(iou_list)
+    mean_misclass = _mean(misclass_list)
 
     print(f"[EVAL] model={args.model}")
     print(f"[EVAL] episodes={args.episodes} success_rate={success_rate:.3f}")
     print(f"[EVAL] mean_steps={mean_steps:.2f} mean_area_frac={mean_area:.4f} mean_after_conf={mean_after:.4f}")
+    print(f"[EVAL] mean_iou={mean_iou:.4f} mean_misclass_rate={mean_misclass:.4f}")
 
     if writer is not None:
         tag = str(args.tb_tag)
@@ -229,8 +253,28 @@ def main():
         writer.add_scalar(f"{tag}/mean_steps", mean_steps, int(args.episodes))
         writer.add_scalar(f"{tag}/mean_area_frac", mean_area, int(args.episodes))
         writer.add_scalar(f"{tag}/mean_after_conf", mean_after, int(args.episodes))
+        writer.add_scalar(f"{tag}/mean_iou", mean_iou, int(args.episodes))
+        writer.add_scalar(f"{tag}/mean_misclass_rate", mean_misclass, int(args.episodes))
         writer.flush()
         writer.close()
+
+    # Optional JSON summary for aggregation.
+    if args.out_json:
+        out = {
+            "model": args.model,
+            "episodes": int(args.episodes),
+            "success_rate": success_rate,
+            "mean_steps": mean_steps,
+            "mean_area_frac": mean_area,
+            "mean_after_conf": mean_after,
+            "mean_iou": mean_iou,
+            "mean_misclass_rate": mean_misclass,
+            "config": vars(args),
+        }
+        os.makedirs(os.path.dirname(os.path.abspath(args.out_json)), exist_ok=True)
+        with open(args.out_json, "w", encoding="utf-8") as f:
+            import json
+            json.dump(out, f, indent=2)
 
 
 if __name__ == "__main__":
