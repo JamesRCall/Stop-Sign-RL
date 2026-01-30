@@ -182,10 +182,15 @@ def main():
     for ep_idx in range(int(args.episodes)):
         if args.seed is not None:
             seed_i = int(args.seed) + int(ep_idx)
+            # SB3 VecNormalize may not accept seed in reset; try env_method fallback.
             try:
                 obs = env.reset(seed=[seed_i])
             except TypeError:
-                obs = env.reset(seed=seed_i)
+                try:
+                    obs = env.reset(seed=seed_i)
+                except TypeError:
+                    env.env_method("reset", seed=seed_i)
+                    obs = env.reset()
         else:
             obs = env.reset()
         done = False
