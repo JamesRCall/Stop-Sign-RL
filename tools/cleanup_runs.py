@@ -15,8 +15,11 @@ def _dir_stats(path: Path) -> tuple[int, int]:
     """
     Return total bytes and file count for a directory tree.
 
-    @param path: Directory path.
-    @return: (total_bytes, total_files)
+    Args:
+        path: Directory path.
+
+    Returns:
+        (total_bytes, total_files)
     """
     total_bytes = 0
     total_files = 0
@@ -35,8 +38,11 @@ def _human_bytes(n: int) -> str:
     """
     Format bytes as a human-readable string.
 
-    @param n: Byte count.
-    @return: Human-readable size string.
+    Args:
+        n: Byte count.
+
+    Returns:
+        Human-readable size string.
     """
     unit = ["B", "KB", "MB", "GB", "TB"]
     size = float(n)
@@ -51,7 +57,8 @@ def main() -> int:
     """
     Parse args and delete selected folders.
 
-    @return: Exit code.
+    Returns:
+        Exit code.
     """
     ap = argparse.ArgumentParser(description="Cleanup run artifacts and large output folders.")
     ap.add_argument("--yes", action="store_true", help="Actually delete files and folders.")

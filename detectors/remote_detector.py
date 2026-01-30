@@ -27,11 +27,13 @@ class RemoteDetectorWrapper:
         timeout_s: float = 30.0,
     ):
         """
-        @param server_addr: server://host:port address string.
-        @param conf: Confidence threshold.
-        @param iou: IoU threshold.
-        @param debug: Enable debug logging.
-        @param timeout_s: Socket timeout in seconds.
+        Args:
+            server_addr: server://host:port address string.
+            conf: Confidence threshold.
+            iou: IoU threshold.
+            target_id: Target class id.
+            debug: Enable debug logging.
+            timeout_s: Socket timeout in seconds.
         """
         self.server_addr = str(server_addr)
         self.conf = float(conf)

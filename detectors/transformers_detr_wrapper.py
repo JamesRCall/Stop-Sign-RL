@@ -33,12 +33,13 @@ class TransformersDetrWrapper:
         debug: bool = False,
     ):
         """
-        @param model_name: Hugging Face model id for DETR.
-        @param target_class: Target class name or id.
-        @param device: Device string (cpu/cuda/auto).
-        @param conf: Confidence threshold.
-        @param iou: IoU threshold for optional extra NMS.
-        @param debug: Enable debug logging.
+        Args:
+            model_name: Hugging Face model id for DETR.
+            target_class: Target class name or id.
+            device: Device string (cpu/cuda/auto).
+            conf: Confidence threshold.
+            iou: IoU threshold for optional extra NMS.
+            debug: Enable debug logging.
         """
         dev = str(device).lower().strip()
         if dev == "auto":

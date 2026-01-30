@@ -24,8 +24,11 @@ def _bytes_to_images(blob_list: List[bytes]) -> List[Image.Image]:
     """
     Decode a list of PNG byte blobs into PIL images.
 
-    @param blob_list: List of PNG-encoded byte strings.
-    @return: List of decoded PIL images.
+    Args:
+        blob_list: List of PNG-encoded byte strings.
+
+    Returns:
+        List of decoded PIL images.
     """
     imgs = []
     for b in blob_list:
@@ -41,8 +44,9 @@ def handle_client(conn, det):
     """
     Serve a single client connection until it closes.
 
-    @param conn: Multiprocessing connection object.
-    @param det: Detector wrapper instance.
+    Args:
+        conn: Multiprocessing connection object.
+        det: Detector wrapper instance.
     """
     while True:
         try:
@@ -71,7 +75,8 @@ def main() -> int:
     """
     Run a blocking detector server loop.
 
-    @return: Exit code.
+    Returns:
+        Exit code.
     """
     ap = argparse.ArgumentParser(description="YOLO detector server for multi-env training.")
     ap.add_argument("--host", default="0.0.0.0")

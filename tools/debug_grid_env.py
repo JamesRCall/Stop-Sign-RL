@@ -13,8 +13,11 @@ def load_bgs(folder):
     """
     Load a small set of background images for debugging.
 
-    @param folder: Background folder.
-    @return: List of PIL images.
+    Args:
+        folder: Background folder.
+
+    Returns:
+        List of PIL images.
     """
     paths = sorted(glob.glob(os.path.join(folder, "*.*")))
     return [Image.open(p).convert("RGB") for p in paths][:20]
@@ -23,7 +26,8 @@ def main():
     """
     Run a short random policy roll-out and save intermediate frames.
 
-    @return: None
+    Returns:
+        None.
     """
     p = argparse.ArgumentParser()
     p.add_argument("--data", default="./data")

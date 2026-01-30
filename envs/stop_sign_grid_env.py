@@ -8,7 +8,7 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from detectors.factory import build_detector
-from utils.uv_paint import UVPaint, YELLOW_GLOW  # you can swap the paint in train file
+from utils.uv_paint import UVPaint, YELLOW_GLOW
 
 
 class StopSignGridEnv(gym.Env):
@@ -86,7 +86,7 @@ class StopSignGridEnv(gym.Env):
         eval_K_ramp_threshold: Optional[float] = None,
 
         # Grid config
-        grid_cell_px: int = 16,               # default grid size in pixels
+        grid_cell_px: int = 16,
         max_cells: Optional[int] = None,
         area_cap_frac: Optional[float] = None,
 
@@ -120,7 +120,7 @@ class StopSignGridEnv(gym.Env):
         detector_type: str = "yolo",
         detector_model: Optional[str] = None,
 
-        # YOLO
+        # Detector thresholds
         yolo_device: str = "cpu",
         conf_thresh: float = 0.10,
         iou_thresh: float = 0.45,
@@ -740,7 +740,8 @@ class StopSignGridEnv(gym.Env):
         """
         Update area cap and derived max_cells at runtime (hard mode only).
 
-        @param value: New cap fraction (None or <=0 disables).
+        Args:
+            value: New cap fraction (None or <=0 disables).
         """
         if value is None or float(value) <= 0.0:
             self.area_cap_frac = None
@@ -763,7 +764,8 @@ class StopSignGridEnv(gym.Env):
         """
         Update area penalty weight at runtime.
 
-        @param value: New lambda_area value.
+        Args:
+            value: New lambda_area value.
         """
         self.lambda_area = float(value)
 

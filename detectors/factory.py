@@ -18,14 +18,15 @@ def build_detector(
     """
     Build a detector wrapper instance.
 
-    @param detector_type: "yolo" or "torchvision" (aliases: "tv").
-    @param detector_model: Model name for torchvision (ignored for YOLO).
-    @param yolo_weights: Path to YOLO weights.
-    @param device: Device string (cpu/cuda/auto or server://host:port).
-    @param conf: Confidence threshold.
-    @param iou: IoU threshold.
-    @param target_class: Target class name or id.
-    @param debug: Enable debug logging.
+    Args:
+        detector_type: "yolo" or "torchvision" (aliases: "tv").
+        detector_model: Model name for torchvision (ignored for YOLO).
+        yolo_weights: Path to YOLO weights.
+        device: Device string (cpu/cuda/auto or server://host:port).
+        conf: Confidence threshold.
+        iou: IoU threshold.
+        target_class: Target class name or id.
+        debug: Enable debug logging.
     """
     dev_str = str(device)
     if dev_str.lower().startswith("server://"):

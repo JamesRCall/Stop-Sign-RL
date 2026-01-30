@@ -15,8 +15,11 @@ def pil_to_chw_uint8(pil: Image.Image) -> np.ndarray:
     """
     Convert PIL RGB -> CHW uint8 numpy (C,H,W).
 
-    @param pil: Input PIL image.
-    @return: CHW uint8 numpy array.
+    Args:
+        pil: Input PIL image.
+
+    Returns:
+        CHW uint8 numpy array.
     """
     arr = np.array(pil.convert("RGB"), dtype=np.uint8)  # H,W,C
     return np.transpose(arr, (2, 0, 1))                 # C,H,W
@@ -35,10 +38,11 @@ class TensorboardOverlayCallback(BaseCallback):
 
     def __init__(self, log_dir: str, tag_prefix: str = "overlay", max_images: int = 100, verbose: int = 0):
         """
-        @param log_dir: Base log directory.
-        @param tag_prefix: TensorBoard tag prefix.
-        @param max_images: Max overlay images to log.
-        @param verbose: Verbosity level.
+        Args:
+            log_dir: Base log directory.
+            tag_prefix: TensorBoard tag prefix.
+            max_images: Max overlay images to log.
+            verbose: Verbosity level.
         """
         super().__init__(verbose)
         self.log_dir = os.path.abspath(log_dir)
@@ -65,8 +69,9 @@ class TensorboardOverlayCallback(BaseCallback):
         """
         Update log directory for a new phase/run.
 
-        @param log_dir: Base log directory.
-        @param tag_prefix: Optional new TensorBoard tag prefix.
+        Args:
+            log_dir: Base log directory.
+            tag_prefix: Optional new TensorBoard tag prefix.
         """
         if tag_prefix is not None:
             self.tag_prefix = str(tag_prefix)
@@ -175,8 +180,9 @@ class EpisodeMetricsCallback(BaseCallback):
 
     def __init__(self, log_dir: str, verbose: int = 0):
         """
-        @param log_dir: Base log directory.
-        @param verbose: Verbosity level.
+        Args:
+            log_dir: Base log directory.
+            verbose: Verbosity level.
         """
         super().__init__(verbose)
         self.log_dir = os.path.abspath(log_dir)
@@ -231,7 +237,8 @@ class EpisodeMetricsCallback(BaseCallback):
         """
         Update log directory for a new phase/run.
 
-        @param log_dir: Base log directory.
+        Args:
+            log_dir: Base log directory.
         """
         if self.writer is not None:
             self.writer.flush()
@@ -498,11 +505,12 @@ class StepMetricsCallback(BaseCallback):
         verbose: int = 0,
     ):
         """
-        @param log_dir: Base log directory.
-        @param every_n_steps: Log cadence in steps.
-        @param keep_last_n: Keep last N rows (0 = append forever).
-        @param log_every_500: Secondary cadence for snapshot logging.
-        @param verbose: Verbosity level.
+        Args:
+            log_dir: Base log directory.
+            every_n_steps: Log cadence in steps.
+            keep_last_n: Keep last N rows (0 = append forever).
+            log_every_500: Secondary cadence for snapshot logging.
+            verbose: Verbosity level.
         """
         super().__init__(verbose)
         self.log_dir = os.path.abspath(log_dir)
@@ -529,7 +537,8 @@ class StepMetricsCallback(BaseCallback):
         """
         Update log directory for a new phase/run.
 
-        @param log_dir: Base log directory.
+        Args:
+            log_dir: Base log directory.
         """
         if self.writer is not None:
             self.writer.flush()
