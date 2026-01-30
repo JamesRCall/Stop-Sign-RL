@@ -316,8 +316,22 @@ def place_group_on_background(
 
     group = TF.resize(group_rgba, size=[target_h, target_w], interpolation=InterpolationMode.BILINEAR)
 
+    # Clip placement to canvas bounds (match PIL paste behavior)
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(W, x + target_w)
+    y2 = min(H, y + target_h)
+    if x2 <= x1 or y2 <= y1:
+        return bg  # nothing to paste
+
+    gx1 = x1 - x
+    gy1 = y1 - y
+    gx2 = gx1 + (x2 - x1)
+    gy2 = gy1 + (y2 - y1)
+    group_crop = group[:, gy1:gy2, gx1:gx2]
+
     canvas = bg.clone()
-    region = canvas[:, y:y + target_h, x:x + target_w]
-    blended = alpha_composite(region, group)
-    canvas[:, y:y + target_h, x:x + target_w] = blended
+    region = canvas[:, y1:y2, x1:x2]
+    blended = alpha_composite(region, group_crop)
+    canvas[:, y1:y2, x1:x2] = blended
     return canvas
