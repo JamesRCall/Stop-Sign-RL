@@ -894,7 +894,7 @@ class StopSignGridEnv(gym.Env):
 
         if alpha < 1.0:
             arr = (np.array(mask, dtype=np.float32) * float(alpha)).astype(np.uint8)
-            mask = Image.fromarray(arr, mode="L")
+            mask = Image.fromarray(arr)
 
         rgb.paste(color, mask=mask)
         return Image.merge("RGBA", (*rgb.split(), a))
@@ -924,7 +924,7 @@ class StopSignGridEnv(gym.Env):
         mask = Image.composite(mask, Image.new("L", size, 0), self._sign_alpha)
         if alpha < 1.0:
             arr = (np.array(mask, dtype=np.float32) * float(alpha)).astype(np.uint8)
-            mask = Image.fromarray(arr, mode="L")
+            mask = Image.fromarray(arr)
 
         img.paste(color, mask=mask)
         return img
@@ -981,7 +981,7 @@ class StopSignGridEnv(gym.Env):
             sigma = rng.uniform(1.0 * strength, 3.0 * strength)
             noise = rng.normal(0.0, sigma, size=arr.shape)
             arr = np.clip(arr + noise, 0, 255).astype(np.uint8)
-            rgb = Image.fromarray(arr, mode="RGB")
+            rgb = Image.fromarray(arr)
 
         return Image.merge("RGBA", (*rgb.split(), a))
 

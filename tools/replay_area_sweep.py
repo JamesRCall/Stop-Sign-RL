@@ -70,7 +70,7 @@ def apply_multi_color_overlay(sign_rgba: Image.Image, mode: str, env: StopSignGr
         mask = Image.composite(mask, Image.new("L", mask.size, 0), env._sign_alpha)
         if alpha < 1.0:
             arr = (np.array(mask, dtype=np.float32) * float(alpha)).astype(np.uint8)
-            mask = Image.fromarray(arr, mode="L")
+        mask = Image.fromarray(arr)
         rgb.paste(color, mask=mask)
 
     return Image.merge("RGBA", (*rgb.split(), a))
