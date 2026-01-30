@@ -127,6 +127,8 @@ def main():
             best_trial = trial_seed
             best_actions = actions
             best_steps = steps
+        if (t + 1) % 5 == 0 or (t + 1) == int(args.trials):
+            print(f"[trial {t+1}/{args.trials}] best_score={best:.4f}")
 
     # Replay best trial for images
     if best_trial is not None:

@@ -105,6 +105,8 @@ def main():
     step_logs = []
 
     done = False
+    start = time.perf_counter()
+    step_idx = 0
     while not done:
         masks = env.action_masks()
         candidates = np.where(masks)[0]
@@ -116,7 +118,7 @@ def main():
         best_state = None
         best_out = None
 
-        for a in candidates:
+        for i, a in enumerate(candidates):
             obs, reward, term, trunc, info = env.step(int(a))
             score = score_from(info, reward, args.select_by)
             state_after = snapshot_state(env)
@@ -127,6 +129,9 @@ def main():
                 best_out = (obs, reward, term, trunc, info, int(a), score)
 
             restore_state(env, base)
+            if (i + 1) % 50 == 0 or (i + 1) == candidates.size:
+                elapsed = time.perf_counter() - start
+                print(f"[step {step_idx+1}] eval {i+1}/{candidates.size} | elapsed {elapsed/60:.1f}m")
 
         if best_out is None:
             break
@@ -146,6 +151,9 @@ def main():
         })
 
         done = bool(term) or bool(trunc)
+        step_idx += 1
+        elapsed = time.perf_counter() - start
+        print(f"[step {step_idx}] best_score={best:.4f} drop_on={step_logs[-1]['drop_on']:.4f} area={step_logs[-1]['area_frac']:.4f} elapsed {elapsed/60:.1f}m")
 
     run_id = time.strftime("greedy_%Y%m%d_%H%M%S")
     out_dir = os.path.join(args.out, run_id)
