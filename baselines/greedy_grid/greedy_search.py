@@ -14,7 +14,7 @@ if ROOT not in sys.path:
     sys.path.append(ROOT)
 
 from torch.utils.tensorboard import SummaryWriter
-from baselines.grid_utils import build_env_from_args, save_final_images
+from baselines.grid_utils import build_env_from_args, save_final_images, info_metrics, log_metrics_tb
 
 
 def snapshot_state(env):
@@ -108,6 +108,11 @@ def main():
 
     env = build_env_from_args(args)
     env.reset(seed=int(args.seed))
+    episode_meta = {
+        "reset_seed": int(args.seed),
+        "place_seed": int(env._place_seed) if env._place_seed is not None else None,
+        "transform_seeds": list(env._transform_seeds) if getattr(env, "_transform_seeds", None) else [],
+    }
 
     action_seq = []
     step_logs = []
@@ -148,6 +153,7 @@ def main():
         restore_state(env, best_state)
         _, reward, term, trunc, info, a, score = best_out
         action_seq.append(a)
+        metrics = info_metrics(info)
         step_logs.append({
             "step": int(env._step),
             "action": int(a),
@@ -156,6 +162,7 @@ def main():
             "drop_on": float(info.get("drop_on", 0.0)),
             "drop_day": float(info.get("drop_day", 0.0)),
             "area_frac": float(info.get("total_area_mask_frac", 0.0)),
+            "metrics": metrics,
         })
 
         done = bool(term) or bool(trunc)
@@ -167,6 +174,7 @@ def main():
         writer.add_scalar("metrics/drop_on", float(info.get("drop_on", 0.0)), step_idx)
         writer.add_scalar("metrics/drop_day", float(info.get("drop_day", 0.0)), step_idx)
         writer.add_scalar("metrics/area_frac", float(info.get("total_area_mask_frac", 0.0)), step_idx)
+        log_metrics_tb(writer, metrics, step_idx, prefix="env/")
 
     save_final_images(env, out_dir)
     summary = {
@@ -175,6 +183,8 @@ def main():
         "actions": action_seq,
         "final": step_logs[-1] if step_logs else {},
         "steps": len(step_logs),
+        "episode_meta": episode_meta,
+        "config": vars(args),
     }
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)

@@ -14,7 +14,7 @@ if ROOT not in sys.path:
     sys.path.append(ROOT)
 
 from torch.utils.tensorboard import SummaryWriter
-from baselines.grid_utils import build_env_from_args, save_final_images
+from baselines.grid_utils import build_env_from_args, save_final_images, info_metrics, log_metrics_tb
 
 
 def score_from(info, reward, mode: str) -> float:
@@ -84,6 +84,11 @@ def run_random_episode(env, seed: int):
     random.seed(int(seed))
     np.random.seed(int(seed))
     env.reset(seed=int(seed))
+    episode_meta = {
+        "reset_seed": int(seed),
+        "place_seed": int(env._place_seed) if env._place_seed is not None else None,
+        "transform_seeds": list(env._transform_seeds) if getattr(env, "_transform_seeds", None) else [],
+    }
     action_seq = []
     step_logs = []
     done = False
@@ -95,6 +100,7 @@ def run_random_episode(env, seed: int):
         a = int(random.choice(candidates.tolist()))
         _, reward, term, trunc, info = env.step(a)
         action_seq.append(a)
+        metrics = info_metrics(info)
         step_logs.append({
             "step": int(env._step),
             "action": int(a),
@@ -102,10 +108,11 @@ def run_random_episode(env, seed: int):
             "drop_on": float(info.get("drop_on", 0.0)),
             "drop_day": float(info.get("drop_day", 0.0)),
             "area_frac": float(info.get("total_area_mask_frac", 0.0)),
+            "metrics": metrics,
         })
         done = bool(term) or bool(trunc)
     final = step_logs[-1] if step_logs else {}
-    return action_seq, step_logs, final
+    return action_seq, step_logs, final, episode_meta
 
 
 def main():
@@ -125,16 +132,18 @@ def main():
     best_trial = None
     best_actions = None
     best_steps = None
+    best_meta = None
 
     for t in range(int(args.trials)):
         trial_seed = int(args.seed) + t
-        actions, steps, final = run_random_episode(env, trial_seed)
+        actions, steps, final, meta = run_random_episode(env, trial_seed)
         score = score_from(final, final.get("reward", 0.0), args.select_by)
         if (best is None) or (score > best):
             best = score
             best_trial = trial_seed
             best_actions = actions
             best_steps = steps
+            best_meta = meta
         if (t + 1) % 5 == 0 or (t + 1) == int(args.trials):
             print(f"[trial {t+1}/{args.trials}] best_score={best:.4f}")
         writer.add_scalar("metrics/trial_score", float(score), t + 1)
@@ -142,6 +151,8 @@ def main():
         writer.add_scalar("metrics/drop_on", float(final.get("drop_on", 0.0)), t + 1)
         writer.add_scalar("metrics/drop_day", float(final.get("drop_day", 0.0)), t + 1)
         writer.add_scalar("metrics/area_frac", float(final.get("area_frac", 0.0)), t + 1)
+        if isinstance(final, dict) and "metrics" in final:
+            log_metrics_tb(writer, final["metrics"], t + 1, prefix="env/")
 
     # Replay best trial for images
     if best_trial is not None:
@@ -158,6 +169,8 @@ def main():
         "actions": best_actions or [],
         "final": best_steps[-1] if best_steps else {},
         "steps": len(best_steps) if best_steps else 0,
+        "episode_meta": best_meta if best_trial is not None else None,
+        "config": vars(args),
     }
 
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:

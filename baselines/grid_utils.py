@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
+import math
+import numpy as np
 from PIL import Image
 
 from envs.stop_sign_grid_env import StopSignGridEnv
@@ -139,3 +141,50 @@ def save_final_images(env: StopSignGridEnv, out_dir: str) -> None:
     on.save(os.path.join(out_dir, "final_on.png"))
     overlay.save(os.path.join(out_dir, "final_overlay.png"))
 
+
+def info_metrics(info: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract common numeric metrics from env info for logging/JSON.
+    """
+    if not isinstance(info, dict):
+        return {}
+
+    keys = [
+        "c0_day", "c_day", "c0_on", "c_on",
+        "drop_day", "drop_on", "drop_on_smooth",
+        "mean_iou", "misclass_rate",
+        "mean_target_conf", "mean_top_conf",
+        "reward_core", "reward_raw_total",
+        "reward_efficiency", "reward_perceptual", "reward_step_cost",
+        "reward", "lambda_area_used",
+        "total_area_mask_frac",
+        "area_target_frac", "area_cap",
+        "uv_success", "attack_success", "area_cap_exceeded",
+        "selected_cells",
+    ]
+
+    out: Dict[str, Any] = {}
+    for k in keys:
+        if k in info:
+            v = info.get(k)
+            if isinstance(v, (np.generic,)):
+                v = v.item()
+            out[k] = v
+
+    # Include optional note and class counts if present.
+    if "note" in info:
+        out["note"] = str(info.get("note"))
+    if "top_class_counts" in info and isinstance(info.get("top_class_counts"), dict):
+        out["top_class_counts"] = info.get("top_class_counts")
+
+    return out
+
+
+def log_metrics_tb(writer, metrics: Dict[str, Any], step: int, prefix: str = "metrics/") -> None:
+    if writer is None:
+        return
+    for k, v in metrics.items():
+        if isinstance(v, (bool, int, float, np.integer, np.floating)):
+            fv = float(v)
+            if math.isfinite(fv):
+                writer.add_scalar(f"{prefix}{k}", fv, step)
