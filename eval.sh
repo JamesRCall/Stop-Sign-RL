@@ -89,7 +89,7 @@ Options:
   --uv-threshold X     (default: $UV_THRESHOLD)
   --yolo-version {8|11} (default: $YOLO_VERSION)
   --yolo-weights PATH  (default: $YOLO_WEIGHTS)
-  --detector {yolo|torchvision|detr|rtdetrv2} (default: $DETECTOR)
+  --detector {yolo|torchvision|detr|rtdetr} (default: $DETECTOR)
   --detector-model NAME (torchvision/transformers model id)
   -h, --help
 EOF
