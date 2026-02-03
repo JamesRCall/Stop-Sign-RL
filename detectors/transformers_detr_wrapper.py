@@ -82,7 +82,39 @@ class TransformersDetrWrapper:
         )
         hf_logging.set_verbosity_error()
 
-        if auto_ok:
+        model_lower = str(self.model_name).lower()
+        is_rtdetr_v2 = "rtdetr_v2" in model_lower or "rtdetrv2" in model_lower
+        is_rtdetr = ("rtdetr" in model_lower) and not is_rtdetr_v2
+
+        if is_rtdetr_v2:
+            try:
+                from transformers import RTDetrImageProcessor, RTDetrV2ForObjectDetection
+            except Exception:
+                RTDetrImageProcessor = None  # type: ignore[assignment]
+                RTDetrV2ForObjectDetection = None  # type: ignore[assignment]
+            if RTDetrImageProcessor is None or RTDetrV2ForObjectDetection is None:
+                raise ImportError(
+                    "RT-DETRv2 requires a newer 'transformers' version. "
+                    "Install with: pip install -U transformers"
+                )
+            self.processor = RTDetrImageProcessor.from_pretrained(self.model_name)
+            self.model = RTDetrV2ForObjectDetection.from_pretrained(self.model_name)
+        elif is_rtdetr:
+            try:
+                from transformers import RTDetrImageProcessor, RTDetrForObjectDetection
+            except Exception:
+                RTDetrImageProcessor = None  # type: ignore[assignment]
+                RTDetrForObjectDetection = None  # type: ignore[assignment]
+            if RTDetrImageProcessor is not None and RTDetrForObjectDetection is not None:
+                self.processor = RTDetrImageProcessor.from_pretrained(self.model_name)
+                self.model = RTDetrForObjectDetection.from_pretrained(self.model_name)
+            elif auto_ok:
+                self.processor = AutoImageProcessor.from_pretrained(self.model_name)
+                self.model = AutoModelForObjectDetection.from_pretrained(self.model_name)
+            else:
+                self.processor = DetrImageProcessor.from_pretrained(self.model_name)
+                self.model = DetrForObjectDetection.from_pretrained(self.model_name)
+        elif auto_ok:
             self.processor = AutoImageProcessor.from_pretrained(self.model_name)
             self.model = AutoModelForObjectDetection.from_pretrained(self.model_name)
         else:
