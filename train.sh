@@ -5,7 +5,7 @@ set -euo pipefail
 # GPU + allocator knobs
 # ==============================
 export YOLO_DEVICE="${YOLO_DEVICE:-cuda:0}"
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:256}"
+export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:256}"
 
 # Optional: keeps CPU from thrashing when you use lots of env logic
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"

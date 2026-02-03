@@ -607,7 +607,7 @@ def resolve_yolo_weights(yolo_version: str, yolo_weights: Optional[str]) -> str:
 
 if __name__ == "__main__":
     # allocator knobs
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
+    os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
 

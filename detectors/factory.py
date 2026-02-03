@@ -59,7 +59,7 @@ def build_detector(
             iou=iou,
             debug=debug,
         )
-    if dtype in ("detr", "transformers", "hf"):
+    if dtype in ("detr", "transformers", "hf", "rtdetr", "rtdetrv2", "rt-detr", "rt-detrv2"):
         from detectors.transformers_detr_wrapper import TransformersDetrWrapper
         return TransformersDetrWrapper(
             model_name=detector_model or "facebook/detr-resnet-50",

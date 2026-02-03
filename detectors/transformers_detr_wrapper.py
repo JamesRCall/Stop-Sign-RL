@@ -1,4 +1,4 @@
-"""Wrapper around Hugging Face Transformers DETR for stop-sign confidence queries."""
+"""Wrapper around Hugging Face Transformers DETR-family detectors."""
 from __future__ import annotations
 
 from typing import Optional, Union
@@ -14,7 +14,9 @@ def _norm(s: str) -> str:
 
 class TransformersDetrWrapper:
     """
-    DETR wrapper using Hugging Face transformers.
+    Transformer detector wrapper using Hugging Face transformers.
+
+    Works with DETR and RT-DETR variants via Auto* classes.
 
     Exposes the same interface as YOLO wrapper:
       - infer_confidence
@@ -34,7 +36,7 @@ class TransformersDetrWrapper:
     ):
         """
         Args:
-            model_name: Hugging Face model id for DETR.
+            model_name: Hugging Face model id for DETR-family detectors.
             target_class: Target class name or id.
             device: Device string (cpu/cuda/auto).
             conf: Confidence threshold.
@@ -53,13 +55,19 @@ class TransformersDetrWrapper:
         self.model_name = str(model_name)
 
         try:
-            from transformers import DetrImageProcessor, DetrForObjectDetection
+            from transformers import AutoImageProcessor, AutoModelForObjectDetection
             from transformers.utils import logging as hf_logging
-        except Exception as e:  # pragma: no cover - import guard
-            raise ImportError(
-                "Transformers DETR requires the 'transformers' package. "
-                "Install with: pip install transformers"
-            ) from e
+            auto_ok = True
+        except Exception:  # pragma: no cover - import guard
+            auto_ok = False
+            try:
+                from transformers import DetrImageProcessor, DetrForObjectDetection
+                from transformers.utils import logging as hf_logging
+            except Exception as e:  # pragma: no cover - import guard
+                raise ImportError(
+                    "Transformer detector requires the 'transformers' package. "
+                    "Install with: pip install transformers"
+                ) from e
 
         # Reduce noisy load-time warnings and logs from transformers/torch meta init.
         warnings.filterwarnings(
@@ -74,8 +82,12 @@ class TransformersDetrWrapper:
         )
         hf_logging.set_verbosity_error()
 
-        self.processor = DetrImageProcessor.from_pretrained(self.model_name)
-        self.model = DetrForObjectDetection.from_pretrained(self.model_name)
+        if auto_ok:
+            self.processor = AutoImageProcessor.from_pretrained(self.model_name)
+            self.model = AutoModelForObjectDetection.from_pretrained(self.model_name)
+        else:
+            self.processor = DetrImageProcessor.from_pretrained(self.model_name)
+            self.model = DetrForObjectDetection.from_pretrained(self.model_name)
         self.model.to(self.device)
         self.model.eval()
 
@@ -119,6 +131,11 @@ class TransformersDetrWrapper:
             [(int(im.size[1]), int(im.size[0])) for im in pil_images],
             device=self.device,
         )
+        if not hasattr(self.processor, "post_process_object_detection"):
+            raise AttributeError(
+                "Selected transformer model processor lacks post_process_object_detection. "
+                "Use an object-detection model (e.g., DETR/RT-DETR)."
+            )
         results = self.processor.post_process_object_detection(
             outputs, target_sizes=target_sizes, threshold=float(self.conf)
         )
