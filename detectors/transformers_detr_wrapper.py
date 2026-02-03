@@ -53,6 +53,8 @@ class TransformersDetrWrapper:
         self.iou = float(iou)
         self.debug = bool(debug)
         self.model_name = str(model_name)
+        self.use_focal_loss = False
+        self.apply_nms = True
 
         try:
             from transformers import AutoImageProcessor, AutoModelForObjectDetection
@@ -85,6 +87,13 @@ class TransformersDetrWrapper:
         model_lower = str(self.model_name).lower()
         is_rtdetr_v2 = "rtdetr_v2" in model_lower or "rtdetrv2" in model_lower
         is_rtdetr = ("rtdetr" in model_lower) and not is_rtdetr_v2
+        if is_rtdetr_v2 or is_rtdetr:
+            # RT-DETR uses focal loss scores; post-process needs use_focal_loss=True.
+            self.use_focal_loss = True
+            # DETR-family models do not rely on NMS by default.
+            self.apply_nms = False
+        else:
+            self.apply_nms = False
 
         if is_rtdetr_v2:
             try:
@@ -163,17 +172,26 @@ class TransformersDetrWrapper:
         with torch.no_grad():
             outputs = self.model(**inputs)
         target_sizes = torch.tensor(
-            [(int(im.size[1]), int(im.size[0])) for im in pil_images],
-            device=self.device,
+            [(int(im.size[1]), int(im.size[0])) for im in pil_images]
         )
         if not hasattr(self.processor, "post_process_object_detection"):
             raise AttributeError(
                 "Selected transformer model processor lacks post_process_object_detection. "
                 "Use an object-detection model (e.g., DETR/RT-DETR)."
             )
-        results = self.processor.post_process_object_detection(
-            outputs, target_sizes=target_sizes, threshold=float(self.conf)
-        )
+        try:
+            results = self.processor.post_process_object_detection(
+                outputs,
+                target_sizes=target_sizes,
+                threshold=float(self.conf),
+                use_focal_loss=bool(self.use_focal_loss),
+            )
+        except TypeError:
+            results = self.processor.post_process_object_detection(
+                outputs,
+                target_sizes=target_sizes,
+                threshold=float(self.conf),
+            )
         return results
 
     def _filter_detections(self, output):
@@ -185,7 +203,7 @@ class TransformersDetrWrapper:
         if scores.numel() == 0:
             return None, None, None
 
-        if self.iou is not None and 0.0 < float(self.iou) < 1.0 and boxes.shape[0] > 1:
+        if self.apply_nms and self.iou is not None and 0.0 < float(self.iou) < 1.0 and boxes.shape[0] > 1:
             try:
                 from torchvision.ops import batched_nms
                 keep = batched_nms(boxes, scores, labels, float(self.iou))
