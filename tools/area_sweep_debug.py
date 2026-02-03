@@ -154,6 +154,8 @@ def build_detector_suite(args) -> List[dict]:
         {"name": "retinanet_resnet50_fpn_v2", "type": "torchvision", "model": "retinanet_resnet50_fpn_v2", "yolo_weights": None},
         {"name": "fcos_resnet50_fpn", "type": "torchvision", "model": "fcos_resnet50_fpn", "yolo_weights": None},
         {"name": "ssd300_vgg16", "type": "torchvision", "model": "ssd300_vgg16", "yolo_weights": None},
+        {"name": "detr", "type": "detr", "model": "facebook/detr-resnet-50", "yolo_weights": None},
+        {"name": "rtdetrv2_r50vd", "type": "rtdetrv2", "model": "PekingU/rtdetr_v2_r50vd", "yolo_weights": None},
     ]
 
 

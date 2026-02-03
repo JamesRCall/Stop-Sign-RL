@@ -60,10 +60,12 @@ PHASE3_STEP_COST="${PHASE3_STEP_COST:-}"
 
 YOLO_VERSION="${YOLO_VERSION:-8}"
 YOLO_WEIGHTS="${YOLO_WEIGHTS:-}"
+DETECTOR="${DETECTOR:-yolo}"
+DETECTOR_MODEL="${DETECTOR_MODEL:-${DET_SERVER_MODEL:-}}"
 START_DET_SERVER="${START_DET_SERVER:-0}"
 DET_SERVER_PORT="${DET_SERVER_PORT:-5009}"
 DET_SERVER_DEVICE="${DET_SERVER_DEVICE:-cuda:0}"
-DET_SERVER_MODEL="${DET_SERVER_MODEL:-}"
+DET_SERVER_MODEL="${DET_SERVER_MODEL:-${DETECTOR_MODEL}}"
 
 N_STEPS="${N_STEPS:-1024}"
 BATCH="${BATCH:-1024}"              # default to rollout size for num_envs=1
@@ -146,10 +148,12 @@ Options:
 
   --yolo-version {8|11}        (default: $YOLO_VERSION)
   --yolo-weights PATH          (default: $YOLO_WEIGHTS)
+  --detector {yolo|torchvision|detr|rtdetrv2} (default: $DETECTOR)
+  --detector-model NAME        (torchvision/transformers model id)
   --start-detector-server      (start local detector server)
   --detector-port P            (default: $DET_SERVER_PORT)
   --detector-device DEV        (default: $DET_SERVER_DEVICE)
-  --detector-model PATH        (default: $DET_SERVER_MODEL)
+  --detector-server-model PATH (default: $DET_SERVER_MODEL)
 
   --n-steps N                 (default: $N_STEPS)
   --batch N                   (default: $BATCH)
@@ -231,10 +235,12 @@ while [[ $# -gt 0 ]]; do
 
     --yolo-version) YOLO_VERSION="$2"; shift 2;;
     --yolo-weights) YOLO_WEIGHTS="$2"; shift 2;;
+    --detector) DETECTOR="$2"; shift 2;;
+    --detector-model) DETECTOR_MODEL="$2"; DET_SERVER_MODEL="$2"; shift 2;;
     --start-detector-server) START_DET_SERVER="1"; shift 1;;
     --detector-port) DET_SERVER_PORT="$2"; shift 2;;
     --detector-device) DET_SERVER_DEVICE="$2"; shift 2;;
-    --detector-model) DET_SERVER_MODEL="$2"; shift 2;;
+    --detector-server-model) DET_SERVER_MODEL="$2"; shift 2;;
 
     --n-steps) N_STEPS="$2"; N_STEPS_SET=1; shift 2;;
     --batch) BATCH="$2"; BATCH_SET=1; shift 2;;
@@ -382,17 +388,23 @@ start_monitor() {
 start_detector_server() {
   [[ "${START_DET_SERVER}" != "1" ]] && return
   if [[ -z "${DET_SERVER_MODEL}" ]]; then
+    DET_SERVER_MODEL="${DETECTOR_MODEL}"
+  fi
+  if [[ -z "${DET_SERVER_MODEL}" && "${DETECTOR}" == "yolo" ]]; then
     DET_SERVER_MODEL="${YOLO_WEIGHTS}"
   fi
-  if [[ -z "${DET_SERVER_MODEL}" ]]; then
+  if [[ "${DETECTOR}" == "yolo" && -z "${DET_SERVER_MODEL}" ]]; then
     echo "[DET] detector model not set. Use --detector-model or --yolo-weights."
     exit 1
   fi
   echo "[DET] Starting detector server on port ${DET_SERVER_PORT}"
   python tools/detector_server.py \
+    --detector "${DETECTOR}" \
+    --detector-model "${DET_SERVER_MODEL}" \
     --model "${DET_SERVER_MODEL}" \
     --device "${DET_SERVER_DEVICE}" \
-    --port "${DET_SERVER_PORT}" > ./_runs/detector_server.log 2>&1 &
+    --port "${DET_SERVER_PORT}" \
+    > ./_runs/detector_server.log 2>&1 &
   DET_PID=$!
   sleep 2
   echo "[DET] PID=${DET_PID} | log: ./_runs/detector_server.log"
@@ -402,6 +414,9 @@ start_detector_server() {
 EXTRA_ARGS=()
 if [[ -n "${YOLO_WEIGHTS}" ]]; then
   EXTRA_ARGS+=(--yolo-weights "${YOLO_WEIGHTS}")
+fi
+if [[ -n "${DETECTOR_MODEL}" ]]; then
+  EXTRA_ARGS+=(--detector-model "${DETECTOR_MODEL}")
 fi
 if [[ "${MULTIPHASE}" == "1" ]]; then
   EXTRA_ARGS+=(--multiphase)
@@ -460,9 +475,10 @@ fi
 
 if [[ "${CHECK_ENV}" == "1" ]]; then
   echo "[CHECK] Running SB3 env checker..."
-  python "${PY_MAIN}" \
-    --detector-device "${YOLO_DEVICE}" \
-    --yolo-version "${YOLO_VERSION}" \
+    python "${PY_MAIN}" \
+      --detector-device "${YOLO_DEVICE}" \
+      --detector "${DETECTOR}" \
+      --yolo-version "${YOLO_VERSION}" \
     --num-envs 1 \
     --vec dummy \
     --eval-K "${EVAL_K}" \
@@ -519,6 +535,7 @@ echo ""
 
 python "${PY_MAIN}" \
   --detector-device "${YOLO_DEVICE}" \
+  --detector "${DETECTOR}" \
   --yolo-version "${YOLO_VERSION}" \
   --num-envs "${NUM_ENVS}" \
   --vec "${VEC}" \

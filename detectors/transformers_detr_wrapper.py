@@ -99,6 +99,9 @@ class TransformersDetrWrapper:
                     id_to_name[int(k)] = str(v)
                 except Exception:
                     continue
+        elif isinstance(id2label, (list, tuple)):
+            for idx, v in enumerate(id2label):
+                id_to_name[int(idx)] = str(v)
         self.id_to_name = id_to_name
         self.target_id = self._resolve_target_id(target_class)
 
