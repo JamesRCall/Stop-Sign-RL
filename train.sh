@@ -287,8 +287,19 @@ if [[ "${RESUME}" == "1" && "${CKPT_SET}" -eq 0 ]]; then
 fi
 
 if [[ "${RESUME}" != "1" && "${CKPT_SET}" -eq 0 && "${TB_SET}" -eq 0 && "${OVR_SET}" -eq 0 ]]; then
-  # Auto-increment per YOLO version: yolo8_1, yolo8_2, yolo11_1, ...
-  prefix="yolo${YOLO_VERSION}_"
+  # Auto-increment per detector: yolo8_1, torchvision_ssd300_vgg16_1, detr_facebook-detr-resnet-50_1, ...
+  if [[ "${DETECTOR}" == "yolo" ]]; then
+    run_prefix="yolo${YOLO_VERSION}"
+  else
+    run_prefix="${DETECTOR}"
+    if [[ -n "${DETECTOR_MODEL}" ]]; then
+      safe_model="${DETECTOR_MODEL//\//-}"
+      safe_model="${safe_model// /-}"
+      safe_model="${safe_model//:/-}"
+      run_prefix="${run_prefix}_${safe_model}"
+    fi
+  fi
+  prefix="${run_prefix}_"
   max_id=0
   for d in "${CKPT_ROOT}/${prefix}"*; do
     [[ -d "${d}" ]] || continue

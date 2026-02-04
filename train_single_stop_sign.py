@@ -5,7 +5,7 @@ Notes:
   - Observations are VecNormalize'd; stats are saved alongside checkpoints.
 """
 
-import os, glob, time, argparse
+import os, glob, time, argparse, re
 from typing import List, Optional, Tuple
 from PIL import Image
 import torch
@@ -770,7 +770,17 @@ if __name__ == "__main__":
     if args.multiphase:
         total_steps = sum(resolve_phase_steps(total_steps))
 
-    run_tag = f"grid_uv_yolo{args.yolo_version}"
+    def _sanitize_tag(value: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._-]+", "-", str(value).strip())
+
+    det = str(args.detector).lower()
+    if det == "yolo":
+        det_tag = f"yolo{args.yolo_version}"
+    else:
+        det_tag = det
+        if args.detector_model:
+            det_tag = f"{det_tag}_{_sanitize_tag(args.detector_model)}"
+    run_tag = f"grid_uv_{det_tag}"
     tb_root = os.path.join(args.tb, run_tag)
 
     if args.check_env:
