@@ -374,8 +374,8 @@ def make_env_factory(
         area_target_frac: Target area fraction for excess penalties.
         yolo_wts: YOLO weights path.
         yolo_device: YOLO device spec.
-        detector_type: Detector backend ("yolo" or "torchvision" or "detr").
-        detector_model: Torchvision/DETR model name (optional).
+        detector_type: Detector backend ("yolo" or "torchvision" or "rtdetr").
+        detector_model: Torchvision/RT-DETR model name (optional).
         obs_size: Cropped observation size.
         obs_margin: Crop margin around sign bbox.
         obs_include_mask: Include overlay mask channel.
@@ -454,7 +454,7 @@ def parse_args():
     ap.add_argument("--yolo-version", choices=["8", "11"], default="8")
     ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "auto"))
     ap.add_argument("--detector", default="yolo",
-                    help="Detector backend: yolo, torchvision, or detr.")
+                    help="Detector backend: yolo, torchvision, or rtdetr.")
     ap.add_argument("--detector-model", default="",
                     help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     ap.add_argument("--tb", default="./runs/tb")

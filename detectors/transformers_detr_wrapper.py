@@ -1,4 +1,4 @@
-"""Wrapper around Hugging Face Transformers DETR-family detectors."""
+"""Wrapper around Hugging Face Transformers RT-DETR detectors."""
 from __future__ import annotations
 
 from typing import Optional, Union
@@ -16,7 +16,7 @@ class TransformersDetrWrapper:
     """
     Transformer detector wrapper using Hugging Face transformers.
 
-    Works with DETR and RT-DETR variants via Auto* classes.
+    Works with RT-DETR via the Transformers RTDetr classes.
 
     Exposes the same interface as YOLO wrapper:
       - infer_confidence
@@ -27,7 +27,7 @@ class TransformersDetrWrapper:
 
     def __init__(
         self,
-        model_name: str = "facebook/detr-resnet-50",
+        model_name: str = "PekingU/rtdetr_r50vd",
         target_class: Union[str, int] = "stop sign",
         device: str = "cpu",
         conf: float = 0.10,
@@ -36,7 +36,7 @@ class TransformersDetrWrapper:
     ):
         """
         Args:
-            model_name: Hugging Face model id for DETR-family detectors.
+            model_name: Hugging Face model id for RT-DETR.
             target_class: Target class name or id.
             device: Device string (cpu/cuda/auto).
             conf: Confidence threshold.
@@ -53,7 +53,7 @@ class TransformersDetrWrapper:
         self.iou = float(iou)
         self.debug = bool(debug)
         self.model_name = str(model_name)
-        self.use_focal_loss = False
+        self.use_focal_loss = True
         self.apply_nms = True
 
         try:
@@ -84,45 +84,19 @@ class TransformersDetrWrapper:
         )
         hf_logging.set_verbosity_error()
 
-        model_lower = str(self.model_name).lower()
-        is_rtdetr_v2 = "rtdetr_v2" in model_lower or "rtdetrv2" in model_lower
-        is_rtdetr = ("rtdetr" in model_lower) and not is_rtdetr_v2
-        if is_rtdetr_v2 or is_rtdetr:
-            # RT-DETR uses focal loss scores; post-process needs use_focal_loss=True.
-            self.use_focal_loss = True
-            # DETR-family models do not rely on NMS by default.
-            self.apply_nms = False
-        else:
-            self.apply_nms = False
+        # RT-DETR uses focal loss scores; post-process needs use_focal_loss=True.
+        # RT-DETR does not rely on NMS by default.
+        self.apply_nms = False
 
-        if is_rtdetr_v2:
-            try:
-                from transformers import RTDetrImageProcessor, RTDetrV2ForObjectDetection
-            except Exception:
-                RTDetrImageProcessor = None  # type: ignore[assignment]
-                RTDetrV2ForObjectDetection = None  # type: ignore[assignment]
-            if RTDetrImageProcessor is None or RTDetrV2ForObjectDetection is None:
-                raise ImportError(
-                    "RT-DETRv2 requires a newer 'transformers' version. "
-                    "Install with: pip install -U transformers"
-                )
+        try:
+            from transformers import RTDetrImageProcessor, RTDetrForObjectDetection
+        except Exception:
+            RTDetrImageProcessor = None  # type: ignore[assignment]
+            RTDetrForObjectDetection = None  # type: ignore[assignment]
+
+        if RTDetrImageProcessor is not None and RTDetrForObjectDetection is not None:
             self.processor = RTDetrImageProcessor.from_pretrained(self.model_name)
-            self.model = RTDetrV2ForObjectDetection.from_pretrained(self.model_name)
-        elif is_rtdetr:
-            try:
-                from transformers import RTDetrImageProcessor, RTDetrForObjectDetection
-            except Exception:
-                RTDetrImageProcessor = None  # type: ignore[assignment]
-                RTDetrForObjectDetection = None  # type: ignore[assignment]
-            if RTDetrImageProcessor is not None and RTDetrForObjectDetection is not None:
-                self.processor = RTDetrImageProcessor.from_pretrained(self.model_name)
-                self.model = RTDetrForObjectDetection.from_pretrained(self.model_name)
-            elif auto_ok:
-                self.processor = AutoImageProcessor.from_pretrained(self.model_name)
-                self.model = AutoModelForObjectDetection.from_pretrained(self.model_name)
-            else:
-                self.processor = DetrImageProcessor.from_pretrained(self.model_name)
-                self.model = DetrForObjectDetection.from_pretrained(self.model_name)
+            self.model = RTDetrForObjectDetection.from_pretrained(self.model_name)
         elif auto_ok:
             self.processor = AutoImageProcessor.from_pretrained(self.model_name)
             self.model = AutoModelForObjectDetection.from_pretrained(self.model_name)
@@ -177,7 +151,7 @@ class TransformersDetrWrapper:
         if not hasattr(self.processor, "post_process_object_detection"):
             raise AttributeError(
                 "Selected transformer model processor lacks post_process_object_detection. "
-                "Use an object-detection model (e.g., DETR/RT-DETR)."
+                "Use an object-detection model (e.g., RT-DETR)."
             )
         try:
             results = self.processor.post_process_object_detection(

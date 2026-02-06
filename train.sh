@@ -148,7 +148,7 @@ Options:
 
   --yolo-version {8|11}        (default: $YOLO_VERSION)
   --yolo-weights PATH          (default: $YOLO_WEIGHTS)
-  --detector {yolo|torchvision|detr|rtdetr|rtdetrv2} (default: $DETECTOR)
+  --detector {yolo|torchvision|rtdetr} (default: $DETECTOR)
   --detector-model NAME        (torchvision/transformers model id)
   --start-detector-server      (start local detector server)
   --detector-port P            (default: $DET_SERVER_PORT)

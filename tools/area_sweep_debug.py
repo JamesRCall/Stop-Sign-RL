@@ -154,7 +154,6 @@ def build_detector_suite(args) -> List[dict]:
         {"name": "retinanet_resnet50_fpn_v2", "type": "torchvision", "model": "retinanet_resnet50_fpn_v2", "yolo_weights": None},
         {"name": "fcos_resnet50_fpn", "type": "torchvision", "model": "fcos_resnet50_fpn", "yolo_weights": None},
         {"name": "ssd300_vgg16", "type": "torchvision", "model": "ssd300_vgg16", "yolo_weights": None},
-        {"name": "detr", "type": "detr", "model": "facebook/detr-resnet-50", "yolo_weights": None},
         {"name": "rtdetr_r50vd", "type": "rtdetr", "model": "PekingU/rtdetr_r50vd", "yolo_weights": None},
     ]
 
@@ -253,7 +252,7 @@ def main() -> None:
     p.add_argument("--detector-suite", choices=["all", "single"], default="all",
                    help="Run all detectors or a single detector.")
     p.add_argument("--detector", default="yolo",
-                   help="Detector backend: yolo, torchvision, or detr.")
+                   help="Detector backend: yolo, torchvision, or rtdetr.")
     p.add_argument("--detector-model", default="",
                    help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     p.add_argument("--grid-cell", type=int, default=16, choices=[2, 4, 8, 16, 32])

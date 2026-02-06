@@ -59,16 +59,6 @@ def build_detector(
             iou=iou,
             debug=debug,
         )
-    if dtype in ("detr", "transformers", "hf"):
-        from detectors.transformers_detr_wrapper import TransformersDetrWrapper
-        return TransformersDetrWrapper(
-            model_name=detector_model or "facebook/detr-resnet-50",
-            target_class=target_class,
-            device=device,
-            conf=conf,
-            iou=iou,
-            debug=debug,
-        )
     if dtype in ("rtdetr", "rt-detr"):
         from detectors.transformers_detr_wrapper import TransformersDetrWrapper
         return TransformersDetrWrapper(
@@ -79,17 +69,7 @@ def build_detector(
             iou=iou,
             debug=debug,
         )
-    if dtype in ("rtdetrv2", "rt-detrv2"):
-        from detectors.transformers_detr_wrapper import TransformersDetrWrapper
-        return TransformersDetrWrapper(
-            model_name=detector_model or "PekingU/rtdetr_v2_r50vd",
-            target_class=target_class,
-            device=device,
-            conf=conf,
-            iou=iou,
-            debug=debug,
-        )
 
     raise ValueError(
-        f"Unsupported detector_type '{detector_type}'. Use 'yolo', 'torchvision', 'detr', 'rtdetr', or 'rtdetrv2'."
+        f"Unsupported detector_type '{detector_type}'. Use 'yolo', 'torchvision', or 'rtdetr'."
     )

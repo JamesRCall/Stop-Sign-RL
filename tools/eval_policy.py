@@ -103,7 +103,7 @@ def parse_args():
     ap.add_argument("--yolo-weights", default=None)
     ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "auto"))
     ap.add_argument("--detector", default="yolo",
-                    help="Detector backend: yolo, torchvision, or detr.")
+                    help="Detector backend: yolo, torchvision, or rtdetr.")
     ap.add_argument("--detector-model", default="",
                     help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     ap.add_argument("--ckpt", default="./_runs/checkpoints")

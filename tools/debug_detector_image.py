@@ -38,7 +38,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Debug detector outputs on a single image.")
     ap.add_argument("--image", required=True, help="Path to input image")
     ap.add_argument("--detector", default="yolo",
-                    help="Detector backend: yolo, torchvision, detr, rtdetrv2")
+                    help="Detector backend: yolo, torchvision, rtdetr")
     ap.add_argument("--detector-model", default="",
                     help="Torchvision/transformers model id (if applicable)")
     ap.add_argument("--yolo-weights", default="./weights/yolo8n.pt",
