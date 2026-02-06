@@ -187,66 +187,74 @@ Definitions:
 - `c0_day`: baseline day confidence (no overlay)
 - `c_day`: day confidence with overlay
 - `c_on`: UV-on confidence with overlay
-- `drop_day = c0_day - c_day`
-- `drop_on = c0_day - c_on`
-- `area = total_area_mask_frac`
-- `mean_iou`: mean IoU between target box and top detection
-- `misclass`: misclassification rate
+  - `drop_day = c0_day - c_day`
+  - `drop_on = c0_day - c_on`
+  - `area = total_area_mask_frac`
+  - `mean_iou`: mean IoU between target box and top detection
+  - `misclass_rate`: misclassification rate
+  - `conf_thr = success_conf_threshold`
+  - `area_target = area_target_frac if set else area_cap_frac`
 
-Efficiency bonus:
-```
-eff = log1p(max(0, drop_on) / max(area, efficiency_eps))
-```
+  Efficiency bonus:
+  ```
+  eff = log1p(max(0, drop_on) / max(area, efficiency_eps))
+  ```
 
-Core reward:
-```
-drop_cap = max(0, c0_day - success_conf)
-drop_on = min(drop_on, drop_cap)
-pen_day  = max(0, drop_day - day_tolerance)
-raw_core = drop_on
-         - lambda_day * pen_day
-         - lambda_area * area
-         - excess_penalty
-         - step_cost_penalty
-         + lambda_iou * (1 - mean_iou)
-         + lambda_misclass * misclass
-         + lambda_efficiency * eff
-         - lambda_perceptual * perceptual_delta
-```
+  Core reward:
+  ```
+  max_drop = max(0, c0_day - conf_thr)
+  drop_blend = min(drop_on, max_drop)
+  pen_day  = max(0, drop_day - day_tolerance)
+  raw_core = drop_blend
+           - lambda_day * pen_day
+           - lambda_area * area
+           - excess_penalty
+           - step_cost_penalty
+           + lambda_iou * (1 - mean_iou)
+           + lambda_misclass * misclass_rate
+           + lambda_efficiency * eff
+           - lambda_perceptual * perceptual_delta
+  ```
 
 Shaping + success:
 ```
-shaping       = 0.35 * tanh(3.0 * (success_conf - c_on))
-success_bonus = 0.2 * (1 - area)^2 if c_on <= success_conf else 0
-raw_total     = raw_core + shaping + success_bonus
-```
+  shaping       = 0.35 * tanh(3.0 * (conf_thr - c_on))
+  success_bonus = 0.2 * (1 - area)^2 if c_on <= conf_thr else 0
+  raw_total     = raw_core + shaping + success_bonus
+  ```
 
-Excess penalty (when `area > area_target`):
+  Excess penalty (when `area > area_target`):
 ```
 excess = area - area_target
 excess_penalty = lambda_area * (4.5 * excess + excess^2)
 ```
 
-Step cost (global + target-scaled):
-```
-step_cost_penalty = step_cost
-if area > area_target:
-  step_cost_penalty += step_cost_after_target * (1 + (area - area_target)/area_target)
-```
+  Step cost (global + target-scaled):
+  ```
+  step_cost_penalty = step_cost
+  if step_cost_after_target > 0 and area_target is not None and area > area_target:
+    excess = (area - area_target) / max(area_target, 1e-6)
+    step_cost_penalty += step_cost_after_target * (1 + max(0, excess))
+  ```
 
-Soft cap override (if enabled and exceeded):
-```
+  Soft cap override (if enabled and exceeded):
+  ```
 excess    = max(0, (area - area_cap) / area_cap)
 over_pen  = abs(area_cap_penalty) * (1 + 2 * excess)
 raw_total = -over_pen
 ```
 
-Final reward:
-```
-reward = tanh(1.2 * raw_total)
-```
+  Final reward:
+  ```
+  reward = tanh(1.2 * raw_total)
+  ```
 
-If you need to change rendering or physics:
+  Baseline / cap gates:
+  - If `c0_day < min_base_conf`, reward is `-0.05` and the step returns early.
+  - If `area_cap_mode == "hard"` and the *next* action would exceed `area_cap_frac`,
+    the episode terminates with reward `area_cap_penalty`.
+
+  If you need to change rendering or physics:
 - `_transform_sign()` controls camera jitter, blur, color, and noise.
 - `_compose_sign_and_pole()` controls pole ratio and placement.
 - `_place_group_on_background()` controls scale and background placement.
