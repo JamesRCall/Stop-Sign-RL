@@ -7,8 +7,8 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 import gymnasium as gym
 from gymnasium import spaces
 
-from detectors.yolo_wrapper import DetectorWrapper
-from utils.uv_paint import UVPaint, YELLOW_GLOW  # you can swap the paint in train file
+from detectors.factory import build_detector
+from utils.uv_paint import UVPaint, YELLOW_GLOW
 
 
 class StopSignGridEnv(gym.Env):
@@ -86,7 +86,7 @@ class StopSignGridEnv(gym.Env):
         eval_K_ramp_threshold: Optional[float] = None,
 
         # Grid config
-        grid_cell_px: int = 16,               # default grid size in pixels
+        grid_cell_px: int = 16,
         max_cells: Optional[int] = None,
         area_cap_frac: Optional[float] = None,
 
@@ -116,8 +116,11 @@ class StopSignGridEnv(gym.Env):
         area_cap_penalty: float = -0.20,
         area_cap_mode: str = "soft",
 
+        # Detector backend
+        detector_type: str = "yolo",
+        detector_model: Optional[str] = None,
 
-        # YOLO
+        # Detector thresholds
         yolo_device: str = "cpu",
         conf_thresh: float = 0.10,
         iou_thresh: float = 0.45,
@@ -217,19 +220,16 @@ class StopSignGridEnv(gym.Env):
 
 
         # detector
-        dev_str = str(yolo_device)
-        if dev_str.lower().startswith("server://"):
-            from detectors.remote_detector import RemoteDetectorWrapper
-            self.det = RemoteDetectorWrapper(
-                server_addr=dev_str,
-                conf=conf_thresh,
-                iou=iou_thresh,
-                debug=detector_debug,
-            )
-        else:
-            self.det = DetectorWrapper(
-                yolo_weights, device=yolo_device, conf=conf_thresh, iou=iou_thresh, debug=detector_debug
-            )
+        self.det = build_detector(
+            detector_type=detector_type,
+            detector_model=detector_model,
+            yolo_weights=yolo_weights,
+            device=yolo_device,
+            conf=conf_thresh,
+            iou=iou_thresh,
+            target_class="stop sign",
+            debug=detector_debug,
+        )
 
 
         # action/obs spaces
@@ -740,7 +740,8 @@ class StopSignGridEnv(gym.Env):
         """
         Update area cap and derived max_cells at runtime (hard mode only).
 
-        @param value: New cap fraction (None or <=0 disables).
+        Args:
+            value: New cap fraction (None or <=0 disables).
         """
         if value is None or float(value) <= 0.0:
             self.area_cap_frac = None
@@ -763,7 +764,8 @@ class StopSignGridEnv(gym.Env):
         """
         Update area penalty weight at runtime.
 
-        @param value: New lambda_area value.
+        Args:
+            value: New lambda_area value.
         """
         self.lambda_area = float(value)
 
@@ -894,7 +896,7 @@ class StopSignGridEnv(gym.Env):
 
         if alpha < 1.0:
             arr = (np.array(mask, dtype=np.float32) * float(alpha)).astype(np.uint8)
-            mask = Image.fromarray(arr, mode="L")
+            mask = Image.fromarray(arr)
 
         rgb.paste(color, mask=mask)
         return Image.merge("RGBA", (*rgb.split(), a))
@@ -924,7 +926,7 @@ class StopSignGridEnv(gym.Env):
         mask = Image.composite(mask, Image.new("L", size, 0), self._sign_alpha)
         if alpha < 1.0:
             arr = (np.array(mask, dtype=np.float32) * float(alpha)).astype(np.uint8)
-            mask = Image.fromarray(arr, mode="L")
+            mask = Image.fromarray(arr)
 
         img.paste(color, mask=mask)
         return img
@@ -981,7 +983,7 @@ class StopSignGridEnv(gym.Env):
             sigma = rng.uniform(1.0 * strength, 3.0 * strength)
             noise = rng.normal(0.0, sigma, size=arr.shape)
             arr = np.clip(arr + noise, 0, 255).astype(np.uint8)
-            rgb = Image.fromarray(arr, mode="RGB")
+            rgb = Image.fromarray(arr)
 
         return Image.merge("RGBA", (*rgb.split(), a))
 

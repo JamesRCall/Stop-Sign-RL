@@ -30,8 +30,11 @@ def pick_stop_sign_class_ids(names: dict) -> List[int]:
     """
     Return list of class IDs that look like "stop sign".
 
-    @param names: Class id-to-name mapping.
-    @return: Sorted list of stop-sign class ids.
+    Args:
+        names: Class id-to-name mapping.
+
+    Returns:
+        Sorted list of stop-sign class ids.
     """
     ids = []
     for k, v in names.items():
@@ -45,12 +48,15 @@ def draw_boxes_with_conf(pil_img: Image.Image, boxes, confs, names, clses) -> Im
     """
     Draw boxes and confidence text directly on the image.
 
-    @param pil_img: Source image.
-    @param boxes: Array of bounding boxes.
-    @param confs: Array of confidences.
-    @param names: Class name mapping.
-    @param clses: Array of class ids.
-    @return: Annotated image.
+    Args:
+        pil_img: Source image.
+        boxes: Array of bounding boxes.
+        confs: Array of confidences.
+        names: Class name mapping.
+        clses: Array of class ids.
+
+    Returns:
+        Annotated image.
     """
     img = pil_img.convert("RGB").copy()
     draw = ImageDraw.Draw(img)
@@ -89,7 +95,8 @@ def main():
     """
     Run a single-image confidence check and optional annotated export.
 
-    @return: None
+    Returns:
+        None.
     """
     ap = argparse.ArgumentParser(description="Test YOLOv11 stop-sign confidence on a single image")
     ap.add_argument("--weights", default="./weights/yolo11n.pt", help="Path to YOLOv11 weights (.pt)")

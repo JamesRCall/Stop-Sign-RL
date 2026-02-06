@@ -44,6 +44,8 @@ EPISODE_STEPS="${EPISODE_STEPS:-300}"
 UV_THRESHOLD="${UV_THRESHOLD:-0.75}"
 YOLO_VERSION="${YOLO_VERSION:-8}"
 YOLO_WEIGHTS="${YOLO_WEIGHTS:-}"
+DETECTOR="${DETECTOR:-yolo}"
+DETECTOR_MODEL="${DETECTOR_MODEL:-}"
 START_TB="${START_TB:-1}"
 PORT="${PORT:-6006}"
 
@@ -87,6 +89,8 @@ Options:
   --uv-threshold X     (default: $UV_THRESHOLD)
   --yolo-version {8|11} (default: $YOLO_VERSION)
   --yolo-weights PATH  (default: $YOLO_WEIGHTS)
+  --detector {yolo|torchvision|rtdetr} (default: $DETECTOR)
+  --detector-model NAME (torchvision/transformers model id)
   -h, --help
 EOF
 }
@@ -137,6 +141,8 @@ while [[ $# -gt 0 ]]; do
     --uv-threshold) UV_THRESHOLD="$2"; shift 2;;
     --yolo-version) YOLO_VERSION="$2"; shift 2;;
     --yolo-weights) YOLO_WEIGHTS="$2"; shift 2;;
+    --detector) DETECTOR="$2"; shift 2;;
+    --detector-model) DETECTOR_MODEL="$2"; shift 2;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown option: $1"; usage; exit 1;;
   esac
@@ -171,6 +177,12 @@ if [[ -n "${SEED}" ]]; then
 fi
 if [[ -n "${YOLO_WEIGHTS}" ]]; then
   EXTRA_ARGS+=(--yolo-weights "${YOLO_WEIGHTS}")
+fi
+if [[ -n "${DETECTOR}" ]]; then
+  EXTRA_ARGS+=(--detector "${DETECTOR}")
+fi
+if [[ -n "${DETECTOR_MODEL}" ]]; then
+  EXTRA_ARGS+=(--detector-model "${DETECTOR_MODEL}")
 fi
 
 # If curriculum end values are provided, use those for evaluation.

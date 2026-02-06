@@ -5,7 +5,7 @@ Notes:
   - Observations are VecNormalize'd; stats are saved alongside checkpoints.
 """
 
-import os, glob, time, argparse
+import os, glob, time, argparse, re
 from typing import List, Optional, Tuple
 from PIL import Image
 import torch
@@ -74,8 +74,11 @@ def build_policy_kwargs(cnn_arch: str) -> dict:
     """
     Build policy kwargs for the custom CNN extractor (or NatureCNN).
 
-    @param cnn_arch: "custom" or "nature".
-    @return: Dict of policy kwargs.
+    Args:
+        cnn_arch: "custom" or "nature".
+
+    Returns:
+        Dict of policy kwargs.
     """
     arch = str(cnn_arch or "custom").strip().lower()
     kwargs = {"normalize_images": False}
@@ -93,9 +96,12 @@ def resolve_paint_list(paint_name: str, paint_list: Optional[str]) -> List[UVPai
     """
     Resolve paint selection from CLI args.
 
-    @param paint_name: Single paint name.
-    @param paint_list: Optional comma-separated list.
-    @return: List of UVPaints (length >= 1).
+    Args:
+        paint_name: Single paint name.
+        paint_list: Optional comma-separated list.
+
+    Returns:
+        List of UVPaints (length >= 1).
     """
     mapping = {
         "white": WHITE_GLOW,
@@ -122,9 +128,10 @@ class ProgressETACallback(BaseCallback):
     """
     Log steps-per-second and ETA at a fixed wall-clock interval.
 
-    @param total_timesteps: Total training steps for ETA calculation.
-    @param log_every_sec: Wall-clock logging interval in seconds.
-    @param verbose: Verbosity level.
+    Args:
+        total_timesteps: Total training steps for ETA calculation.
+        log_every_sec: Wall-clock logging interval in seconds.
+        verbose: Verbosity level.
     """
     def __init__(self, total_timesteps: int, log_every_sec: float = 10.0, verbose: int = 1):
         super().__init__(verbose)
@@ -154,11 +161,12 @@ class LinearRampCallback(BaseCallback):
     """
     Linearly ramp a scalar env attribute over a fixed number of steps.
 
-    @param attr_name: Env method name to call for updates.
-    @param start: Starting value.
-    @param end: Ending value.
-    @param steps: Number of steps to reach the end value.
-    @param verbose: Verbosity level.
+    Args:
+        attr_name: Env method name to call for updates.
+        start: Starting value.
+        end: Ending value.
+        steps: Number of steps to reach the end value.
+        verbose: Verbosity level.
     """
     def __init__(self, attr_name: str, start: float, end: float, steps: int, verbose: int = 0):
         super().__init__(verbose)
@@ -181,11 +189,12 @@ class LinearRampModelAttrCallback(BaseCallback):
     """
     Linearly ramp a model attribute (e.g., ent_coef) over a fixed number of steps.
 
-    @param attr_name: Model attribute name to update.
-    @param start: Starting value.
-    @param end: Ending value.
-    @param steps: Number of steps to reach the end value.
-    @param verbose: Verbosity level.
+    Args:
+        attr_name: Model attribute name to update.
+        start: Starting value.
+        end: Ending value.
+        steps: Number of steps to reach the end value.
+        verbose: Verbosity level.
     """
     def __init__(self, attr_name: str, start: float, end: float, steps: int, verbose: int = 0):
         super().__init__(verbose)
@@ -208,9 +217,10 @@ class SaveVecNormalizeCallback(BaseCallback):
     """
     Periodically save VecNormalize stats alongside checkpoints.
 
-    @param save_freq: Save frequency in training steps.
-    @param save_dir: Directory to save vecnormalize.pkl.
-    @param verbose: Verbosity level.
+    Args:
+        save_freq: Save frequency in training steps.
+        save_dir: Directory to save vecnormalize.pkl.
+        verbose: Verbosity level.
     """
     def __init__(self, save_freq: int, save_dir: str, verbose: int = 0):
         super().__init__(verbose)
@@ -233,8 +243,11 @@ def load_backgrounds(folder: str) -> List[Image.Image]:
     """
     Load a small set of background images from a folder.
 
-    @param folder: Background image directory.
-    @return: List of PIL images.
+    Args:
+        folder: Background image directory.
+
+    Returns:
+        List of PIL images.
     """
     paths = sorted(glob.glob(os.path.join(folder, "*.*")))
     imgs = []
@@ -252,8 +265,11 @@ def build_solid_backgrounds(img_size: Tuple[int, int]) -> List[Image.Image]:
     """
     Build a small set of solid-color backgrounds for curriculum phases.
 
-    @param img_size: (W, H) image size.
-    @return: List of PIL images.
+    Args:
+        img_size: (W, H) image size.
+
+    Returns:
+        List of PIL images.
     """
     colors = [(200, 200, 200), (120, 120, 120), (30, 30, 30)]
     W, H = int(img_size[0]), int(img_size[1])
@@ -264,10 +280,13 @@ def build_backgrounds(bg_mode: str, folder: str, img_size: Tuple[int, int]) -> L
     """
     Build backgrounds for training.
 
-    @param bg_mode: "dataset" or "solid".
-    @param folder: Background image directory.
-    @param img_size: (W, H) image size.
-    @return: List of PIL images.
+    Args:
+        bg_mode: "dataset" or "solid".
+        folder: Background image directory.
+        img_size: (W, H) image size.
+
+    Returns:
+        List of PIL images.
     """
     mode = str(bg_mode or "dataset").lower().strip()
     if mode == "solid":
@@ -279,8 +298,11 @@ def find_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
     """
     Return the newest checkpoint path in a directory, or None.
 
-    @param ckpt_dir: Checkpoint directory.
-    @return: Newest checkpoint path or None.
+    Args:
+        ckpt_dir: Checkpoint directory.
+
+    Returns:
+        Newest checkpoint path or None.
     """
     if not os.path.isdir(ckpt_dir):
         return None
@@ -315,6 +337,8 @@ def make_env_factory(
     area_cap_mode: str,
     yolo_wts: str,
     yolo_device: str,
+    detector_type: str,
+    detector_model: Optional[str],
     obs_size: Tuple[int, int],
     obs_margin: float,
     obs_include_mask: bool,
@@ -325,37 +349,42 @@ def make_env_factory(
     """
     Create a factory function for VecEnv construction.
 
-    @param stop_plain: Base stop-sign image.
-    @param stop_uv: UV variant of the stop sign.
-    @param pole_rgba: Pole image with alpha (or None to disable).
-    @param backgrounds: Background image list.
-    @param steps_per_episode: Max steps per episode.
-    @param eval_K: Number of transforms per evaluation.
-    @param grid_cell_px: Grid cell size in pixels.
-    @param uv_drop_threshold: UV drop threshold for shaping.
-    @param success_conf_threshold: Success threshold for after-conf.
-    @param lambda_efficiency: Efficiency bonus weight (optional).
-    @param efficiency_eps: Denominator epsilon for efficiency bonus.
-    @param transform_strength: Strength of sign transforms (0..1).
-    @param lambda_area: Area penalty weight.
-    @param area_target_frac: Target area fraction for excess penalties.
-    @param step_cost: Per-step penalty (global).
-    @param step_cost_after_target: Additional per-step penalty after target area.
-    @param lambda_iou: IOU reward weight.
-    @param lambda_misclass: Misclassification reward weight.
-    @param area_cap_frac: Area cap fraction (or None).
-    @param area_cap_penalty: Penalty when cap exceeded.
-    @param area_cap_mode: "soft" or "hard" cap mode.
-    @param area_target_frac: Target area fraction for excess penalties.
-    @param yolo_wts: YOLO weights path.
-    @param yolo_device: YOLO device spec.
-    @param obs_size: Cropped observation size.
-    @param obs_margin: Crop margin around sign bbox.
-    @param obs_include_mask: Include overlay mask channel.
-    @param uv_paints: List of paints to sample (per episode).
-    @param cell_cover_thresh: Cell coverage threshold for grid validity.
-    @param lambda_perceptual: Daylight visibility penalty weight.
-    @return: Callable that builds a monitored env.
+    Args:
+        stop_plain: Base stop-sign image.
+        stop_uv: UV variant of the stop sign.
+        pole_rgba: Pole image with alpha (or None to disable).
+        backgrounds: Background image list.
+        steps_per_episode: Max steps per episode.
+        eval_K: Number of transforms per evaluation.
+        grid_cell_px: Grid cell size in pixels.
+        uv_drop_threshold: UV drop threshold for shaping.
+        success_conf_threshold: Success threshold for after-conf.
+        lambda_efficiency: Efficiency bonus weight (optional).
+        efficiency_eps: Denominator epsilon for efficiency bonus.
+        transform_strength: Strength of sign transforms (0..1).
+        lambda_area: Area penalty weight.
+        area_target_frac: Target area fraction for excess penalties.
+        step_cost: Per-step penalty (global).
+        step_cost_after_target: Additional per-step penalty after target area.
+        lambda_iou: IOU reward weight.
+        lambda_misclass: Misclassification reward weight.
+        area_cap_frac: Area cap fraction (or None).
+        area_cap_penalty: Penalty when cap exceeded.
+        area_cap_mode: "soft" or "hard" cap mode.
+        area_target_frac: Target area fraction for excess penalties.
+        yolo_wts: YOLO weights path.
+        yolo_device: YOLO device spec.
+        detector_type: Detector backend ("yolo" or "torchvision" or "rtdetr").
+        detector_model: Torchvision/RT-DETR model name (optional).
+        obs_size: Cropped observation size.
+        obs_margin: Crop margin around sign bbox.
+        obs_include_mask: Include overlay mask channel.
+        uv_paints: List of paints to sample (per episode).
+        cell_cover_thresh: Cell coverage threshold for grid validity.
+        lambda_perceptual: Daylight visibility penalty weight.
+
+    Returns:
+        Callable that builds a monitored env.
     """
     def _init():
         paint_list = list(uv_paints) if uv_paints else [YELLOW_GLOW]
@@ -366,6 +395,8 @@ def make_env_factory(
             pole_image=pole_rgba,
             yolo_weights=yolo_wts,
             yolo_device=yolo_device,
+            detector_type=detector_type,
+            detector_model=detector_model,
             img_size=(640, 640),
             obs_size=(int(obs_size[0]), int(obs_size[1])),
             obs_margin=float(obs_margin),
@@ -413,7 +444,8 @@ def parse_args():
     """
     Parse CLI arguments for training.
 
-    @return: Parsed argparse namespace.
+    Returns:
+        Parsed argparse namespace.
     """
     ap = argparse.ArgumentParser("Train PPO on grid-square UV attack over stop sign")
     ap.add_argument("--data", default="./data")
@@ -421,6 +453,10 @@ def parse_args():
     ap.add_argument("--yolo", "--yolo-weights", dest="yolo_weights", default=None)
     ap.add_argument("--yolo-version", choices=["8", "11"], default="8")
     ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "auto"))
+    ap.add_argument("--detector", default="yolo",
+                    help="Detector backend: yolo, torchvision, or rtdetr.")
+    ap.add_argument("--detector-model", default="",
+                    help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     ap.add_argument("--tb", default="./runs/tb")
     ap.add_argument("--ckpt", default="./runs/checkpoints")
     ap.add_argument("--overlays", default="./runs/overlays")
@@ -553,9 +589,12 @@ def resolve_yolo_weights(yolo_version: str, yolo_weights: Optional[str]) -> str:
     """
     Resolve default YOLO weights when no path is provided.
 
-    @param yolo_version: YOLO version string.
-    @param yolo_weights: Optional explicit weights path.
-    @return: Weights path.
+    Args:
+        yolo_version: YOLO version string.
+        yolo_weights: Optional explicit weights path.
+
+    Returns:
+        Weights path.
     """
     if yolo_weights:
         return yolo_weights
@@ -568,7 +607,7 @@ def resolve_yolo_weights(yolo_version: str, yolo_weights: Optional[str]) -> str:
 
 if __name__ == "__main__":
     # allocator knobs
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
+    os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
 
@@ -582,7 +621,11 @@ if __name__ == "__main__":
         print("Using cuda device")
 
     yolo_weights = resolve_yolo_weights(args.yolo_version, args.yolo_weights)
-    print(f"YOLO version={args.yolo_version} weights={yolo_weights}")
+    if str(args.detector).lower() == "yolo":
+        print(f"YOLO version={args.yolo_version} weights={yolo_weights}")
+    else:
+        det_model = str(args.detector_model) if args.detector_model else "default"
+        print(f"Detector={args.detector} model={det_model}")
 
     # paths
     STOP_PLAIN = os.path.join(args.data, "stop_sign.png")
@@ -621,6 +664,8 @@ if __name__ == "__main__":
             pole_image=pole_use,
             yolo_weights=yolo_weights,
             yolo_device=args.detector_device,
+            detector_type=str(args.detector),
+            detector_model=str(args.detector_model) if args.detector_model else None,
             img_size=(640, 640),
             obs_size=(int(args.obs_size), int(args.obs_size)),
             obs_margin=float(args.obs_margin),
@@ -696,6 +741,8 @@ if __name__ == "__main__":
                 area_cap_mode=str(args.area_cap_mode),
                 yolo_wts=yolo_weights,
                 yolo_device=args.detector_device,
+                detector_type=str(args.detector),
+                detector_model=str(args.detector_model) if args.detector_model else None,
                 obs_size=(int(args.obs_size), int(args.obs_size)),
                 obs_margin=float(args.obs_margin),
                 obs_include_mask=bool(int(args.obs_include_mask)),
@@ -723,7 +770,17 @@ if __name__ == "__main__":
     if args.multiphase:
         total_steps = sum(resolve_phase_steps(total_steps))
 
-    run_tag = f"grid_uv_yolo{args.yolo_version}"
+    def _sanitize_tag(value: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._-]+", "-", str(value).strip())
+
+    det = str(args.detector).lower()
+    if det == "yolo":
+        det_tag = f"yolo{args.yolo_version}"
+    else:
+        det_tag = det
+        if args.detector_model:
+            det_tag = f"{det_tag}_{_sanitize_tag(args.detector_model)}"
+    run_tag = f"grid_uv_{det_tag}"
     tb_root = os.path.join(args.tb, run_tag)
 
     if args.check_env:

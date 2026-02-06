@@ -13,8 +13,11 @@ def load_bgs(folder):
     """
     Load a small set of background images for debugging.
 
-    @param folder: Background folder.
-    @return: List of PIL images.
+    Args:
+        folder: Background folder.
+
+    Returns:
+        List of PIL images.
     """
     paths = sorted(glob.glob(os.path.join(folder, "*.*")))
     return [Image.open(p).convert("RGB") for p in paths][:20]
@@ -23,12 +26,17 @@ def main():
     """
     Run a short random policy roll-out and save intermediate frames.
 
-    @return: None
+    Returns:
+        None.
     """
     p = argparse.ArgumentParser()
     p.add_argument("--data", default="./data")
     p.add_argument("--bgdir", default="./data/backgrounds")
     p.add_argument("--yolo", default="./weights/yolo11n.pt")
+    p.add_argument("--detector", default="yolo",
+                   help="Detector backend: yolo, torchvision, or rtdetr.")
+    p.add_argument("--detector-model", default="",
+                   help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     p.add_argument("--out", default="./_debug_grid")
     p.add_argument("--grid-cell", type=int, default=2, choices=[2,4])
     p.add_argument("--steps", type=int, default=25)
@@ -52,6 +60,8 @@ def main():
         pole_image=pole,
         yolo_weights=args.yolo,
         yolo_device=args.device,
+        detector_type=str(args.detector),
+        detector_model=str(args.detector_model) if args.detector_model else None,
         img_size=(640,640),
 
         steps_per_episode=7000,

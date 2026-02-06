@@ -1,7 +1,7 @@
-# Stop Sign Grid UV Adversarial Training (YOLO + PPO)
+# Stop Sign Grid UV Adversarial Training (PPO + Multi-Detector)
 
 This project trains a PPO agent to place small grid-cell overlays on a stop sign so that
-YOLO confidence drops under UV activation while staying high in daylight. The environment
+detector confidence drops under UV activation while staying high in daylight. The environment
 renders a sign-on-pole against randomized backgrounds with matched transforms, and uses
 UV paint pairs (day vs UV-on) to model activation.
 
@@ -19,6 +19,7 @@ Core ideas:
 - Reward that targets UV confidence drop while penalizing daylight drop and patch area.
 - Efficiency bonus (drop per area) and fixed area penalties to favor minimal patches.
 - Early termination on success or area cap.
+- Detector backends: Ultralytics YOLO, torchvision detectors, and optional Transformers RT-DETR.
 
 ---
 
@@ -27,6 +28,7 @@ Core ideas:
 - Python 3.10+ recommended.
 - PyTorch, stable-baselines3, and sb3-contrib (MaskablePPO).
 - YOLO weights in `weights/` (see below).
+- Optional: `transformers` if you use the RT-DETR backend.
 
 ---
 
@@ -48,6 +50,11 @@ If you installed requirements before action masking was added, you may need:
 python -m pip install sb3-contrib
 ```
 
+Optional (RT-DETR backend):
+```bash
+python -m pip install transformers
+```
+
 ---
 
 ## Data and Weights
@@ -63,6 +70,12 @@ Optional:
 YOLO weights go in `weights/`:
 - `weights/yolo8n.pt` (default)
 - `weights/yolo11n.pt` (optional if you switch versions)
+
+Torchvision detectors download pretrained weights automatically on first use
+(cached under `~/.cache/torch/hub/checkpoints`).
+
+Transformers RT-DETR models download from Hugging Face on first use
+(cached under `~/.cache/huggingface`).
 
 ---
 
@@ -90,6 +103,16 @@ Use a specific YOLO version/weights:
 
 ```bash
 YOLO_VERSION=8 YOLO_WEIGHTS=./weights/yolo8n.pt bash train.sh
+```
+
+Torchvision detector example:
+```bash
+python train_single_stop_sign.py --detector torchvision --detector-model retinanet_resnet50_fpn_v2
+```
+
+Transformers RT-DETR example:
+```bash
+python train_single_stop_sign.py --detector rtdetr --detector-model PekingU/rtdetr_r50vd
 ```
 
 Evaluation (deterministic policy, logs to TensorBoard):
@@ -129,6 +152,7 @@ From `train_single_stop_sign.py`:
 - `--obs-size`, `--obs-margin`, `--obs-include-mask` (cropped observation + mask channel)
 - `--ent-coef`, `--ent-coef-start`, `--ent-coef-end`, `--ent-coef-steps` (entropy coefficient schedule; default 0.001)
 - `--detector-device` (e.g., `cpu`, `cuda`, or `auto`)
+- `--detector` (`yolo`, `torchvision`, or `rtdetr`) and `--detector-model` (model name for torchvision/RT-DETR)
 - `--step-log-every`, `--step-log-keep`, `--step-log-500` (step logging control)
 - `--cnn` (`custom` or `nature`) choose feature extractor
 - `--ckpt`, `--overlays`, `--tb` output paths (TB logs grouped under `grid_uv_yolo<ver>`)
@@ -291,13 +315,14 @@ Trace replay:
 ## Debugging and Tools
 
 - `tools/debug_grid_env.py` runs the env step-by-step and saves UV-on previews.
+- `tools/debug_detector_image.py` prints all detections for a single image (with optional box overlay).
 - `tools/area_sweep_debug.py` sweeps coverage levels and logs confidence/IoU/misclass stats.
 - `tools/area_sweep_analyze.py` summarizes sweep results and generates plots.
-- `tools/combination_counts.py` prints color-combination counts for the current palette.
+- `tools/area_sweep_rank.py` ranks combos and computes per-detector summaries.
 - `tools/replay_area_sweep.py` replays logged sweep cases and saves images.
 - `tools/test_stop_sign_confidence.py` checks detector confidence on a single image.
 - `tools/cleanup_runs.py` removes old run outputs (defaults to `_runs`).
-- `tools/detector_server.py` runs a shared YOLO detector for multi-process training.
+- `tools/detector_server.py` runs a shared detector (YOLO/torchvision/RT-DETR) for multi-process training.
 - `setup_env.sh` contains a helper for local setup.
 
 Cleanup usage:
@@ -315,6 +340,11 @@ python tools/detector_server.py --model ./weights/yolo8n.pt --device cuda:0 --po
 
 # In training, point the detector device to the server:
 # --detector-device server://HOST:5009
+```
+
+For torchvision/RT-DETR, pass `--detector` and `--detector-model` (no `--model` needed):
+```bash
+python tools/detector_server.py --detector rtdetr --detector-model PekingU/rtdetr_r50vd --device cuda:0 --port 5009
 ```
 
 Single-command server + training (from `train.sh`):
@@ -353,6 +383,9 @@ Important `train.sh` knobs:
 
 ```
 .
+|-- .github/
+|-- .venv/
+|-- baselines/
 |-- data/
 |   |-- stop_sign.png
 |   |-- stop_sign_uv.png
@@ -360,21 +393,31 @@ Important `train.sh` knobs:
 |   |-- backgrounds/
 |
 |-- detectors/
+|   |-- factory.py
+|   |-- remote_detector.py
+|   |-- torchvision_wrapper.py
+|   |-- transformers_detr_wrapper.py
 |   |-- yolo_wrapper.py
 |
 |-- envs/
 |   |-- stop_sign_grid_env.py
 |
+|-- metrics/
+|
 |-- tools/
+|   |-- aggregate_baselines.py
 |   |-- debug_grid_env.py
+|   |-- debug_detector_image.py
 |   |-- area_sweep_debug.py
 |   |-- area_sweep_analyze.py
+|   |-- area_sweep_rank.py
 |   |-- eval_policy.py
 |   |-- replay_area_sweep.py
 |   |-- test_stop_sign_confidence.py
 |   |-- cleanup_runs.py
 |   |-- detector_server.py
 |   |-- parse_tb_events.py
+|   |-- run_baselines_compare.sh
 |
 |-- utils/
 |   |-- save_callbacks.py
@@ -384,12 +427,6 @@ Important `train.sh` knobs:
 |-- weights/
 |   |-- yolo11n.pt
 |   |-- yolo8n.pt
-|
-|-- _runs/
-|   |-- checkpoints/
-|   |-- overlays/
-|   |-- tb/
-|   |-- tb_eval/
 |
 |-- train_single_stop_sign.py
 |-- train.sh

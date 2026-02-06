@@ -18,12 +18,13 @@ class DetectorWrapper:
         debug: bool = False,    # NEW: print errors once if something goes wrong
     ):
         """
-        @param model_path: Path to YOLO weights.
-        @param target_class: Target class name or id.
-        @param device: Device string (cpu/cuda/auto).
-        @param conf: Confidence threshold.
-        @param iou: IoU threshold.
-        @param debug: Enable debug logging.
+        Args:
+            model_path: Path to YOLO weights.
+            target_class: Target class name or id.
+            device: Device string (cpu/cuda/auto).
+            conf: Confidence threshold.
+            iou: IoU threshold.
+            debug: Enable debug logging.
         """
         from ultralytics import YOLO
 

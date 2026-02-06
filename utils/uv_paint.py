@@ -9,8 +9,11 @@ def hex_to_rgb(h: str) -> Tuple[int, int, int]:
     """
     Convert a hex color string to an RGB tuple.
 
-    @param h: Hex color string.
-    @return: (r, g, b) tuple.
+    Args:
+        h: Hex color string.
+
+    Returns:
+        (r, g, b) tuple.
     """
     h = h.strip().lstrip("#")
     if len(h) == 3:

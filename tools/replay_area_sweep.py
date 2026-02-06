@@ -70,7 +70,7 @@ def apply_multi_color_overlay(sign_rgba: Image.Image, mode: str, env: StopSignGr
         mask = Image.composite(mask, Image.new("L", mask.size, 0), env._sign_alpha)
         if alpha < 1.0:
             arr = (np.array(mask, dtype=np.float32) * float(alpha)).astype(np.uint8)
-            mask = Image.fromarray(arr, mode="L")
+        mask = Image.fromarray(arr)
         rgb.paste(color, mask=mask)
 
     return Image.merge("RGBA", (*rgb.split(), a))
@@ -88,6 +88,10 @@ def main() -> None:
     p.add_argument("--bgdir", default="./data/backgrounds")
     p.add_argument("--yolo", default="./weights/yolo8n.pt")
     p.add_argument("--device", default="cuda")
+    p.add_argument("--detector", default="yolo",
+                   help="Detector backend: yolo, torchvision, or rtdetr.")
+    p.add_argument("--detector-model", default="",
+                   help="Torchvision model name (e.g., fasterrcnn_resnet50_fpn_v2).")
     args = p.parse_args()
 
     if not os.path.isfile(args.log):
@@ -140,6 +144,8 @@ def main() -> None:
             pole_image=pole,
             yolo_weights=args.yolo,
             yolo_device=args.device,
+            detector_type=str(args.detector),
+            detector_model=str(args.detector_model) if args.detector_model else None,
             eval_K=int(r.get("eval_k", 1)),
             grid_cell_px=int(args.grid_cell),
             uv_paint=paints[0],

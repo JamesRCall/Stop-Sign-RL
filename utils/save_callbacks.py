@@ -9,8 +9,11 @@ def _to_py(obj):
     """
     Recursively convert numpy / tensors / exotic types into JSON-serializable Python types.
 
-    @param obj: Object to convert.
-    @return: JSON-serializable Python type.
+    Args:
+        obj: Object to convert.
+
+    Returns:
+        JSON-serializable Python type.
     """
     if isinstance(obj, (np.generic,)):
         return obj.item()
@@ -34,9 +37,12 @@ def _safe_float(x, default=0.0) -> float:
     """
     Coerce a value to float, falling back to a default on failure.
 
-    @param x: Value to convert.
-    @param default: Fallback if conversion fails.
-    @return: Float value.
+    Args:
+        x: Value to convert.
+        default: Fallback if conversion fails.
+
+    Returns:
+        Float value.
     """
     try:
         return float(x)
@@ -68,12 +74,14 @@ class SaveImprovingOverlaysCallback(BaseCallback):
         tb_callback: Optional[object] = None,
     ):
         """
-        @param save_dir: Output directory for overlays.
-        @param threshold: Delta threshold for saving.
-        @param mode: Scoring mode.
-        @param max_saved: Max number of saved entries.
-        @param verbose: Verbosity level.
-        @param tb_callback: Optional TensorBoard callback.
+        Args:
+            save_dir: Output directory for overlays.
+            threshold: Delta threshold for saving.
+            mode: Scoring mode.
+            max_saved: Max number of saved entries.
+            diagnostic_max: Max number of diagnostic saves.
+            verbose: Verbosity level.
+            tb_callback: Optional TensorBoard callback.
         """
         super().__init__(verbose)
         self.save_dir = os.path.abspath(save_dir)
