@@ -19,7 +19,7 @@ Core ideas:
 - Reward that targets UV confidence drop while penalizing daylight drop and patch area.
 - Efficiency bonus (drop per area) and fixed area penalties to favor minimal patches.
 - Early termination on success or area cap.
-- Detector backends: Ultralytics YOLO, torchvision detectors, and optional Transformers DETR.
+- Detector backends: Ultralytics YOLO, torchvision detectors, and optional Transformers RT-DETR.
 
 ---
 
@@ -28,7 +28,7 @@ Core ideas:
 - Python 3.10+ recommended.
 - PyTorch, stable-baselines3, and sb3-contrib (MaskablePPO).
 - YOLO weights in `weights/` (see below).
-- Optional: `transformers` if you use the DETR backend.
+- Optional: `transformers` if you use the RT-DETR backend.
 
 ---
 
@@ -50,7 +50,7 @@ If you installed requirements before action masking was added, you may need:
 python -m pip install sb3-contrib
 ```
 
-Optional (DETR backend):
+Optional (RT-DETR backend):
 ```bash
 python -m pip install transformers
 ```
@@ -74,7 +74,7 @@ YOLO weights go in `weights/`:
 Torchvision detectors download pretrained weights automatically on first use
 (cached under `~/.cache/torch/hub/checkpoints`).
 
-Transformers DETR models download from Hugging Face on first use
+Transformers RT-DETR models download from Hugging Face on first use
 (cached under `~/.cache/huggingface`).
 
 ---
@@ -110,9 +110,9 @@ Torchvision detector example:
 python train_single_stop_sign.py --detector torchvision --detector-model retinanet_resnet50_fpn_v2
 ```
 
-Transformers DETR example:
+Transformers RT-DETR example:
 ```bash
-python train_single_stop_sign.py --detector detr --detector-model facebook/detr-resnet-50
+python train_single_stop_sign.py --detector rtdetr --detector-model PekingU/rtdetr_r50vd
 ```
 
 Evaluation (deterministic policy, logs to TensorBoard):
@@ -152,7 +152,7 @@ From `train_single_stop_sign.py`:
 - `--obs-size`, `--obs-margin`, `--obs-include-mask` (cropped observation + mask channel)
 - `--ent-coef`, `--ent-coef-start`, `--ent-coef-end`, `--ent-coef-steps` (entropy coefficient schedule; default 0.001)
 - `--detector-device` (e.g., `cpu`, `cuda`, or `auto`)
-- `--detector` (`yolo`, `torchvision`, or `detr`) and `--detector-model` (model name for torchvision/DETR)
+- `--detector` (`yolo`, `torchvision`, or `rtdetr`) and `--detector-model` (model name for torchvision/RT-DETR)
 - `--step-log-every`, `--step-log-keep`, `--step-log-500` (step logging control)
 - `--cnn` (`custom` or `nature`) choose feature extractor
 - `--ckpt`, `--overlays`, `--tb` output paths (TB logs grouped under `grid_uv_yolo<ver>`)
@@ -315,12 +315,14 @@ Trace replay:
 ## Debugging and Tools
 
 - `tools/debug_grid_env.py` runs the env step-by-step and saves UV-on previews.
+- `tools/debug_detector_image.py` prints all detections for a single image (with optional box overlay).
 - `tools/area_sweep_debug.py` sweeps coverage levels and logs confidence/IoU/misclass stats.
 - `tools/area_sweep_analyze.py` summarizes sweep results and generates plots.
+- `tools/area_sweep_rank.py` ranks combos and computes per-detector summaries.
 - `tools/replay_area_sweep.py` replays logged sweep cases and saves images.
 - `tools/test_stop_sign_confidence.py` checks detector confidence on a single image.
 - `tools/cleanup_runs.py` removes old run outputs (defaults to `_runs`).
-- `tools/detector_server.py` runs a shared detector (YOLO/torchvision/DETR) for multi-process training.
+- `tools/detector_server.py` runs a shared detector (YOLO/torchvision/RT-DETR) for multi-process training.
 - `setup_env.sh` contains a helper for local setup.
 
 Cleanup usage:
@@ -340,9 +342,9 @@ python tools/detector_server.py --model ./weights/yolo8n.pt --device cuda:0 --po
 # --detector-device server://HOST:5009
 ```
 
-For torchvision/DETR, pass `--detector` and `--detector-model` (no `--model` needed):
+For torchvision/RT-DETR, pass `--detector` and `--detector-model` (no `--model` needed):
 ```bash
-python tools/detector_server.py --detector detr --detector-model facebook/detr-resnet-50 --device cuda:0 --port 5009
+python tools/detector_server.py --detector rtdetr --detector-model PekingU/rtdetr_r50vd --device cuda:0 --port 5009
 ```
 
 Single-command server + training (from `train.sh`):
@@ -400,13 +402,15 @@ Important `train.sh` knobs:
 |-- envs/
 |   |-- stop_sign_grid_env.py
 |
-|-- slides/
+|-- metrics/
 |
 |-- tools/
 |   |-- aggregate_baselines.py
 |   |-- debug_grid_env.py
+|   |-- debug_detector_image.py
 |   |-- area_sweep_debug.py
 |   |-- area_sweep_analyze.py
+|   |-- area_sweep_rank.py
 |   |-- eval_policy.py
 |   |-- replay_area_sweep.py
 |   |-- test_stop_sign_confidence.py
@@ -423,8 +427,6 @@ Important `train.sh` knobs:
 |-- weights/
 |   |-- yolo11n.pt
 |   |-- yolo8n.pt
-|
-|-- _runs_remote/
 |
 |-- train_single_stop_sign.py
 |-- train.sh
