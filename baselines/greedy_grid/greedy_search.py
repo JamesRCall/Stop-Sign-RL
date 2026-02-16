@@ -55,6 +55,8 @@ def parse_args():
 
     ap.add_argument("--yolo-weights", default=None)
     ap.add_argument("--yolo-version", choices=["8", "11"], default="8")
+    ap.add_argument("--detector", choices=["yolo", "torchvision", "rtdetr"], default="yolo")
+    ap.add_argument("--detector-model", default="", help="Torchvision/RT-DETR detector model id.")
     ap.add_argument("--detector-device", default="auto")
     ap.add_argument("--detector-debug", type=int, default=0)
 
@@ -100,7 +102,7 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    run_id = time.strftime("greedy_%Y%m%d_%H%M%S")
+    run_id = f"greedy_seed{int(args.seed)}_{time.strftime('%Y%m%d_%H%M%S')}"
     out_dir = os.path.join(args.out, run_id)
     os.makedirs(out_dir, exist_ok=True)
     tb_dir = args.tb if args.tb else os.path.join(out_dir, "tb")
@@ -177,12 +179,54 @@ def main():
         log_metrics_tb(writer, metrics, step_idx, prefix="env/")
 
     save_final_images(env, out_dir)
+    final_step = step_logs[-1] if step_logs else {}
+    final_metrics = final_step.get("metrics", {}) if isinstance(final_step, dict) else {}
+    final_success = bool(final_metrics.get("uv_success", False))
+    area_frac = float(final_metrics.get("total_area_mask_frac", final_step.get("area_frac", np.nan))) if final_step else float("nan")
+    base_conf = float(final_metrics.get("base_conf", final_metrics.get("c0_day", np.nan))) if final_step else float("nan")
+    after_conf = float(final_metrics.get("after_conf", final_metrics.get("c_on", np.nan))) if final_step else float("nan")
+    drop_on = float(final_metrics.get("drop_on", final_step.get("drop_on", np.nan))) if final_step else float("nan")
+    mean_iou = float(final_metrics.get("mean_iou", np.nan)) if final_step else float("nan")
+    misclass = float(final_metrics.get("misclass_rate", np.nan)) if final_step else float("nan")
+    selected_cells = float(final_metrics.get("selected_cells", np.nan)) if final_step else float("nan")
+    drop_per_area = float("nan")
+    if np.isfinite(drop_on) and np.isfinite(area_frac) and area_frac > 0:
+        drop_per_area = float(drop_on / area_frac)
     summary = {
+        "method": "greedy",
         "run_id": run_id,
+        "seed": int(args.seed),
+        "detector": str(args.detector),
+        "detector_model": str(args.detector_model),
         "select_by": args.select_by,
         "actions": action_seq,
-        "final": step_logs[-1] if step_logs else {},
+        "final": final_step,
         "steps": len(step_logs),
+        "n_success": 1 if final_success else 0,
+        "success_rate": 1.0 if final_success else 0.0,
+        "mean_steps": float(len(step_logs)),
+        "mean_base_conf": base_conf,
+        "mean_after_conf": after_conf,
+        "mean_drop_on": drop_on,
+        "mean_area_frac": area_frac,
+        "mean_drop_per_area": drop_per_area,
+        "mean_iou": mean_iou,
+        "mean_misclass_rate": misclass,
+        "mean_selected_cells": selected_cells,
+        "episodes_detail": [{
+            "episode_index": 0,
+            "seed": int(args.seed),
+            "success": bool(final_success),
+            "steps": int(len(step_logs)),
+            "base_conf": base_conf,
+            "after_conf": after_conf,
+            "drop_on": drop_on,
+            "area_frac": area_frac,
+            "drop_per_area": drop_per_area,
+            "mean_iou": mean_iou,
+            "misclass_rate": misclass,
+            "selected_cells": selected_cells,
+        }],
         "episode_meta": episode_meta,
         "config": vars(args),
     }

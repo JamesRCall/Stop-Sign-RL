@@ -77,6 +77,8 @@ def build_backgrounds(bg_mode: str, folder: str, img_size: Tuple[int, int]) -> L
 
 def build_env_from_args(args) -> StopSignGridEnv:
     yolo_weights = resolve_yolo_weights(args.yolo_version, args.yolo_weights)
+    detector_type = str(getattr(args, "detector", "yolo")).strip().lower()
+    detector_model = str(getattr(args, "detector_model", "") or "").strip()
 
     stop_plain = Image.open(os.path.join(args.data, "stop_sign.png")).convert("RGBA")
     stop_uv_path = os.path.join(args.data, "stop_sign_uv.png")
@@ -95,6 +97,8 @@ def build_env_from_args(args) -> StopSignGridEnv:
         pole_image=pole_rgba,
         yolo_weights=yolo_weights,
         yolo_device=args.detector_device,
+        detector_type=detector_type,
+        detector_model=(detector_model if detector_model else None),
         img_size=img_size,
         obs_size=(int(args.obs_size), int(args.obs_size)),
         obs_margin=float(args.obs_margin),

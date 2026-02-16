@@ -12,6 +12,8 @@ TB_TAG="${TB_TAG:-eval}"
 CKPT_DIR="${CKPT_DIR:-./_runs/checkpoints}"
 MODEL="${MODEL:-}"
 VECNORM="${VECNORM:-}"
+OUT_JSON="${OUT_JSON:-}"
+OUT_EPISODES_JSON="${OUT_EPISODES_JSON:-}"
 SEED="${SEED:-}"
 
 # Env defaults (mirror train.sh)
@@ -64,6 +66,8 @@ Options:
   --ckpt DIR           (default: $CKPT_DIR)
   --model PATH         (default: latest in --ckpt)
   --vecnorm PATH       (optional VecNormalize stats .pkl)
+  --out-json PATH      (default: <tb_run_dir>/summary.json)
+  --out-episodes-json PATH (default: <tb_run_dir>/episodes.json)
   --eval-k K           (default: $EVAL_K)
   --grid-cell N        (default: $GRID_CELL)
   --lambda-area X      (default: $LAMBDA_AREA or --lambda-area-end if set)
@@ -117,6 +121,8 @@ while [[ $# -gt 0 ]]; do
     --ckpt) CKPT_DIR="$2"; shift 2;;
     --model) MODEL="$2"; shift 2;;
     --vecnorm) VECNORM="$2"; shift 2;;
+    --out-json) OUT_JSON="$2"; shift 2;;
+    --out-episodes-json) OUT_EPISODES_JSON="$2"; shift 2;;
     --eval-k) EVAL_K="$2"; shift 2;;
     --grid-cell) GRID_CELL="$2"; shift 2;;
     --lambda-area) LAMBDA_AREA="$2"; shift 2;;
@@ -202,9 +208,23 @@ if [[ -z "${tb_safe_tag}" ]]; then
 fi
 tb_stamp="$(date +%Y%m%d_%H%M%S)"
 TB_RUN_DIR="${TB_DIR}/${tb_safe_tag}_${tb_stamp}"
+if [[ -z "${OUT_JSON}" ]]; then
+  OUT_JSON="${TB_RUN_DIR}/summary.json"
+fi
+if [[ -z "${OUT_EPISODES_JSON}" ]]; then
+  OUT_EPISODES_JSON="${TB_RUN_DIR}/episodes.json"
+fi
+if [[ -n "${OUT_JSON}" ]]; then
+  EXTRA_ARGS+=(--out-json "${OUT_JSON}")
+fi
+if [[ -n "${OUT_EPISODES_JSON}" ]]; then
+  EXTRA_ARGS+=(--out-episodes-json "${OUT_EPISODES_JSON}")
+fi
 
 echo "[EVAL] Running evaluation:"
 echo "       episodes=${EPISODES} deterministic=${DETERMINISTIC} tb=${TB_RUN_DIR} tag=${TB_TAG}"
+echo "       out_json=${OUT_JSON}"
+echo "       out_episodes_json=${OUT_EPISODES_JSON}"
 echo ""
 
 if [[ "${START_TB}" == "1" ]]; then
