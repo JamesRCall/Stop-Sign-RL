@@ -137,6 +137,7 @@ def main():
     writer = SummaryWriter(log_dir=tb_dir)
 
     env = build_env_from_args(args)
+    run_start = time.perf_counter()
 
     best = None
     best_trial = None
@@ -146,8 +147,10 @@ def main():
     trial_rows = []
 
     for t in range(int(args.trials)):
+        trial_t0 = time.perf_counter()
         trial_seed = int(args.seed) + t
         actions, steps, final, meta = run_random_episode(env, trial_seed)
+        trial_runtime_sec = float(time.perf_counter() - trial_t0)
         score = score_from(final, final.get("reward", 0.0), args.select_by)
         final_metrics = final.get("metrics", {}) if isinstance(final, dict) else {}
         area = final_metrics.get("total_area_mask_frac", final.get("area_frac", 0.0))
@@ -176,6 +179,8 @@ def main():
             "mean_iou": float(mean_iou),
             "misclass_rate": float(misclass),
             "selected_cells": float(selected_cells),
+            "runtime_sec": trial_runtime_sec,
+            "runtime_per_step_sec": float(trial_runtime_sec / steps_count) if steps_count > 0 else float("nan"),
         })
         if (best is None) or (score > best):
             best = score
@@ -214,6 +219,14 @@ def main():
     drop_per_area = float("nan")
     if np.isfinite(drop_on) and np.isfinite(area_frac) and area_frac > 0:
         drop_per_area = float(drop_on / area_frac)
+    runtime_total_sec = float(time.perf_counter() - run_start)
+    trial_runtime_vals = [float(r.get("runtime_sec", np.nan)) for r in trial_rows]
+    best_trial_runtime_sec = float("nan")
+    if best_trial is not None:
+        for row in trial_rows:
+            if int(row.get("trial_seed", -1)) == int(best_trial):
+                best_trial_runtime_sec = float(row.get("runtime_sec", np.nan))
+                break
 
     summary = {
         "method": "random",
@@ -239,6 +252,10 @@ def main():
         "mean_iou": mean_iou,
         "mean_misclass_rate": misclass,
         "mean_selected_cells": selected_cells,
+        "runtime_total_sec": runtime_total_sec,
+        "mean_trial_runtime_sec": float(np.mean(trial_runtime_vals)) if trial_runtime_vals else float("nan"),
+        "std_trial_runtime_sec": float(np.std(trial_runtime_vals)) if trial_runtime_vals else float("nan"),
+        "best_trial_runtime_sec": best_trial_runtime_sec,
         "episodes_detail": [{
             "episode_index": 0,
             "seed": int(best_trial) if best_trial is not None else None,
@@ -252,6 +269,8 @@ def main():
             "mean_iou": mean_iou,
             "misclass_rate": misclass,
             "selected_cells": selected_cells,
+            "runtime_sec": best_trial_runtime_sec,
+            "runtime_per_step_sec": float(best_trial_runtime_sec / len(best_steps)) if best_steps and np.isfinite(best_trial_runtime_sec) else float("nan"),
         }],
         "trials_detail": trial_rows,
         "episode_meta": best_meta if best_trial is not None else None,

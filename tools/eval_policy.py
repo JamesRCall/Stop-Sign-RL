@@ -9,6 +9,7 @@ import sys
 import argparse
 import json
 import re
+import time
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, List
 
@@ -227,9 +228,12 @@ def main():
     misclass_list: List[float] = []
     efficiency_list: List[float] = []
     selected_cells_list: List[float] = []
+    episode_runtime_sec_list: List[float] = []
     episode_rows: List[Dict[str, Any]] = []
+    eval_t0 = time.perf_counter()
 
     for ep_idx in range(int(args.episodes)):
+        ep_t0 = time.perf_counter()
         seed_i = None
         if args.seed is not None:
             seed_i = int(args.seed) + int(ep_idx)
@@ -266,6 +270,7 @@ def main():
         selected_cells = _finite_or_nan(info_d.get("selected_cells", np.nan))
         reward_final = _finite_or_nan(info_d.get("reward", np.nan))
         eval_k_used = _finite_or_nan(info_d.get("eval_K_used", np.nan))
+        ep_runtime_sec = float(time.perf_counter() - ep_t0)
         drop_per_area = float("nan")
         if not np.isnan(drop_on) and not np.isnan(area_frac) and area_frac > 0:
             drop_per_area = float(drop_on / area_frac)
@@ -280,6 +285,7 @@ def main():
         misclass_list.append(misclass_rate)
         efficiency_list.append(drop_per_area)
         selected_cells_list.append(selected_cells)
+        episode_runtime_sec_list.append(ep_runtime_sec)
 
         episode_rows.append({
             "episode_index": int(ep_idx),
@@ -297,6 +303,8 @@ def main():
             "selected_cells": selected_cells,
             "reward_final": reward_final,
             "eval_K_used": eval_k_used,
+            "runtime_sec": ep_runtime_sec,
+            "runtime_per_step_sec": float(ep_runtime_sec / steps) if steps > 0 else float("nan"),
             "area_cap_exceeded": bool(info_d.get("area_cap_exceeded", False)),
             "note": str(info_d.get("note")) if "note" in info_d else "",
         })
@@ -316,6 +324,7 @@ def main():
                 writer.add_scalar(f"{tag}/episode_misclass_rate", misclass_rate, ep_idx)
             if not np.isnan(drop_per_area):
                 writer.add_scalar(f"{tag}/episode_drop_per_area", drop_per_area, ep_idx)
+            writer.add_scalar(f"{tag}/episode_runtime_sec", ep_runtime_sec, ep_idx)
             writer.add_scalar(f"{tag}/episode_success", 1.0 if success else 0.0, ep_idx)
             if image_budget > 0:
                 img = info_d.get("composited_pil", None)
@@ -336,12 +345,17 @@ def main():
     mean_misclass = _mean(misclass_list)
     mean_drop_per_area = _mean(efficiency_list)
     mean_selected_cells = _mean(selected_cells_list)
+    mean_runtime_sec = _mean(episode_runtime_sec_list)
+    total_runtime_sec = float(time.perf_counter() - eval_t0)
+    total_steps = float(np.nansum(steps_list)) if steps_list else 0.0
+    runtime_per_step_sec = float(total_runtime_sec / total_steps) if total_steps > 0 else float("nan")
 
     print(f"[EVAL] model={args.model}")
     print(f"[EVAL] episodes={args.episodes} success_rate={success_rate:.3f}")
     print(f"[EVAL] mean_steps={mean_steps:.2f} mean_area_frac={mean_area:.4f} mean_after_conf={mean_after:.4f}")
     print(f"[EVAL] mean_drop_on={mean_drop_on:.4f} mean_drop_per_area={mean_drop_per_area:.4f}")
     print(f"[EVAL] mean_iou={mean_iou:.4f} mean_misclass_rate={mean_misclass:.4f}")
+    print(f"[EVAL] runtime_total_sec={total_runtime_sec:.2f} runtime_per_episode_sec={mean_runtime_sec:.3f}")
 
     if writer is not None:
         tag = str(args.tb_tag)
@@ -353,6 +367,9 @@ def main():
         writer.add_scalar(f"{tag}/mean_drop_per_area", mean_drop_per_area, int(args.episodes))
         writer.add_scalar(f"{tag}/mean_iou", mean_iou, int(args.episodes))
         writer.add_scalar(f"{tag}/mean_misclass_rate", mean_misclass, int(args.episodes))
+        writer.add_scalar(f"{tag}/runtime_total_sec", total_runtime_sec, int(args.episodes))
+        writer.add_scalar(f"{tag}/runtime_per_episode_sec", mean_runtime_sec, int(args.episodes))
+        writer.add_scalar(f"{tag}/runtime_per_step_sec", runtime_per_step_sec, int(args.episodes))
         writer.flush()
         writer.close()
 
@@ -386,6 +403,10 @@ def main():
         "std_misclass_rate": _std(misclass_list),
         "mean_selected_cells": mean_selected_cells,
         "std_selected_cells": _std(selected_cells_list),
+        "runtime_total_sec": total_runtime_sec,
+        "runtime_per_episode_mean_sec": mean_runtime_sec,
+        "runtime_per_episode_std_sec": _std(episode_runtime_sec_list),
+        "runtime_per_step_sec": runtime_per_step_sec,
         "episodes_detail": episode_rows,
         "argv": list(sys.argv),
         "config": vars(args),

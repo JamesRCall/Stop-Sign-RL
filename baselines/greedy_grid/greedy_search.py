@@ -122,7 +122,9 @@ def main():
     done = False
     start = time.perf_counter()
     step_idx = 0
+    step_runtime_sec_list = []
     while not done:
+        step_t0 = time.perf_counter()
         masks = env.action_masks()
         candidates = np.where(masks)[0]
         if candidates.size == 0:
@@ -169,6 +171,8 @@ def main():
 
         done = bool(term) or bool(trunc)
         step_idx += 1
+        step_runtime_sec = float(time.perf_counter() - step_t0)
+        step_runtime_sec_list.append(step_runtime_sec)
         elapsed = time.perf_counter() - start
         print(f"[step {step_idx}] best_score={best:.4f} drop_on={step_logs[-1]['drop_on']:.4f} area={step_logs[-1]['area_frac']:.4f} elapsed {elapsed/60:.1f}m")
         writer.add_scalar("metrics/reward", float(reward), step_idx)
@@ -192,6 +196,8 @@ def main():
     drop_per_area = float("nan")
     if np.isfinite(drop_on) and np.isfinite(area_frac) and area_frac > 0:
         drop_per_area = float(drop_on / area_frac)
+    runtime_total_sec = float(time.perf_counter() - start)
+    runtime_per_step_sec = float(runtime_total_sec / len(step_logs)) if step_logs else float("nan")
     summary = {
         "method": "greedy",
         "run_id": run_id,
@@ -213,6 +219,10 @@ def main():
         "mean_iou": mean_iou,
         "mean_misclass_rate": misclass,
         "mean_selected_cells": selected_cells,
+        "runtime_total_sec": runtime_total_sec,
+        "runtime_per_step_sec": runtime_per_step_sec,
+        "runtime_per_step_mean_sec": float(np.mean(step_runtime_sec_list)) if step_runtime_sec_list else float("nan"),
+        "runtime_per_step_std_sec": float(np.std(step_runtime_sec_list)) if step_runtime_sec_list else float("nan"),
         "episodes_detail": [{
             "episode_index": 0,
             "seed": int(args.seed),
@@ -226,6 +236,8 @@ def main():
             "mean_iou": mean_iou,
             "misclass_rate": misclass,
             "selected_cells": selected_cells,
+            "runtime_sec": runtime_total_sec,
+            "runtime_per_step_sec": runtime_per_step_sec,
         }],
         "episode_meta": episode_meta,
         "config": vars(args),

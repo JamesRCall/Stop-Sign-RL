@@ -72,6 +72,8 @@ def _extract_episode_row_from_summary(run: Dict[str, Any], idx: int) -> Dict[str
         "mean_iou": _as_float(detail.get("mean_iou", metrics.get("mean_iou", np.nan))),
         "misclass_rate": _as_float(detail.get("misclass_rate", metrics.get("misclass_rate", np.nan))),
         "selected_cells": _as_float(detail.get("selected_cells", metrics.get("selected_cells", np.nan))),
+        "runtime_sec": _as_float(detail.get("runtime_sec", run.get("runtime_total_sec", np.nan))),
+        "runtime_per_step_sec": _as_float(detail.get("runtime_per_step_sec", run.get("runtime_per_step_sec", np.nan))),
         "run_id": str(run.get("run_id", "")),
         "run_dir": str(run.get("_run_dir", "")),
     }
@@ -90,6 +92,8 @@ def _summary_from_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     iou = [_as_float(r.get("mean_iou", np.nan)) for r in rows]
     mis = [_as_float(r.get("misclass_rate", np.nan)) for r in rows]
     cells = [_as_float(r.get("selected_cells", np.nan)) for r in rows]
+    runtime = [_as_float(r.get("runtime_sec", np.nan)) for r in rows]
+    runtime_step = [_as_float(r.get("runtime_per_step_sec", np.nan)) for r in rows]
     success = [1.0 if bool(r.get("success", False)) else 0.0 for r in rows]
     return {
         "n": len(rows),
@@ -113,6 +117,10 @@ def _summary_from_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "std_misclass_rate": _std(mis),
         "mean_selected_cells": _mean(cells),
         "std_selected_cells": _std(cells),
+        "mean_runtime_sec": _mean(runtime),
+        "std_runtime_sec": _std(runtime),
+        "mean_runtime_per_step_sec": _mean(runtime_step),
+        "std_runtime_per_step_sec": _std(runtime_step),
     }
 
 
@@ -120,7 +128,18 @@ def _paired_delta(ref_rows: List[Dict[str, Any]], other_rows: List[Dict[str, Any
     ref_by_seed = {int(r["seed"]): r for r in ref_rows if r.get("seed") is not None}
     oth_by_seed = {int(r["seed"]): r for r in other_rows if r.get("seed") is not None}
     common = sorted(set(ref_by_seed.keys()).intersection(oth_by_seed.keys()))
-    metrics = ["success", "steps", "area_frac", "after_conf", "drop_on", "drop_per_area", "mean_iou", "misclass_rate"]
+    metrics = [
+        "success",
+        "steps",
+        "area_frac",
+        "after_conf",
+        "drop_on",
+        "drop_per_area",
+        "mean_iou",
+        "misclass_rate",
+        "runtime_sec",
+        "runtime_per_step_sec",
+    ]
     deltas: Dict[str, List[float]] = {k: [] for k in metrics}
     for seed in common:
         a = ref_by_seed[seed]
@@ -174,6 +193,8 @@ def main() -> None:
                     "mean_iou": _as_float(row.get("mean_iou", np.nan)),
                     "misclass_rate": _as_float(row.get("misclass_rate", np.nan)),
                     "selected_cells": _as_float(row.get("selected_cells", np.nan)),
+                    "runtime_sec": _as_float(row.get("runtime_sec", np.nan)),
+                    "runtime_per_step_sec": _as_float(row.get("runtime_per_step_sec", np.nan)),
                     "run_id": str(ppo_obj.get("model", "")),
                     "run_dir": "",
                 })
