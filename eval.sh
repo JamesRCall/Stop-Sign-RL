@@ -96,6 +96,7 @@ EOF
 }
 
 TB_PID=""
+TB_RUN_DIR=""
 
 cleanup() {
   echo ""
@@ -193,17 +194,26 @@ if [[ -n "${AREA_CAP_END}" ]]; then
   AREA_CAP_FRAC="${AREA_CAP_END}"
 fi
 
+# Use an isolated TensorBoard run directory per eval invocation to avoid
+# mixing with stale root-level event files.
+tb_safe_tag="$(echo "${TB_TAG}" | sed -E 's/[^A-Za-z0-9._-]+/_/g; s/^[_ .-]+//; s/[_ .-]+$//')"
+if [[ -z "${tb_safe_tag}" ]]; then
+  tb_safe_tag="eval"
+fi
+tb_stamp="$(date +%Y%m%d_%H%M%S)"
+TB_RUN_DIR="${TB_DIR}/${tb_safe_tag}_${tb_stamp}"
+
 echo "[EVAL] Running evaluation:"
-echo "       episodes=${EPISODES} deterministic=${DETERMINISTIC} tb=${TB_DIR} tag=${TB_TAG}"
+echo "       episodes=${EPISODES} deterministic=${DETERMINISTIC} tb=${TB_RUN_DIR} tag=${TB_TAG}"
 echo ""
 
 if [[ "${START_TB}" == "1" ]]; then
-  mkdir -p "${TB_DIR}"
-  echo "[TB] Starting TensorBoard on port ${PORT}, logdir=${TB_DIR}"
-  tensorboard --logdir "${TB_DIR}" --port "${PORT}" > "${TB_DIR}/tensorboard.log" 2>&1 &
+  mkdir -p "${TB_RUN_DIR}"
+  echo "[TB] Starting TensorBoard on port ${PORT}, logdir=${TB_RUN_DIR}"
+  tensorboard --logdir "${TB_RUN_DIR}" --port "${PORT}" > "${TB_RUN_DIR}/tensorboard.log" 2>&1 &
   TB_PID=$!
   sleep 2
-  echo "[TB] PID=${TB_PID} | log: ${TB_DIR}/tensorboard.log"
+  echo "[TB] PID=${TB_PID} | log: ${TB_RUN_DIR}/tensorboard.log"
   echo "[TB] Open: http://localhost:${PORT}"
 fi
 
@@ -212,7 +222,7 @@ python tools/eval_policy.py \
   --ckpt "${CKPT_DIR}" \
   --episodes "${EPISODES}" \
   --deterministic "${DETERMINISTIC}" \
-  --tb "${TB_DIR}" \
+  --tb "${TB_RUN_DIR}" \
   --tb-tag "${TB_TAG}" \
   --eval-K "${EVAL_K}" \
   --grid-cell "${GRID_CELL}" \
