@@ -7,6 +7,8 @@ If VecNormalize was used in training, pass or auto-detect the saved stats.
 import os
 import sys
 import argparse
+import re
+from datetime import datetime
 from typing import Optional, Tuple
 
 # Ensure repo root is on sys.path when running as a script.
@@ -147,6 +149,12 @@ def parse_args():
     return ap.parse_args()
 
 
+def _sanitize_tb_component(value: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
+    name = name.strip("._-")
+    return name if name else "eval"
+
+
 def main():
     args = parse_args()
     args.yolo_weights = resolve_yolo_weights(args.yolo_version, args.yolo_weights)
@@ -173,9 +181,14 @@ def main():
 
     writer = None
     if args.tb:
-        tb_dir = os.path.abspath(args.tb)
+        tb_root = os.path.abspath(args.tb)
+        os.makedirs(tb_root, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_name = f"{_sanitize_tb_component(args.tb_tag)}_{stamp}"
+        tb_dir = os.path.join(tb_root, run_name)
         os.makedirs(tb_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=tb_dir)
+        print(f"[EVAL] tb_run_dir={tb_dir}")
 
     image_budget = int(max(0, args.log_images))
     successes = 0
