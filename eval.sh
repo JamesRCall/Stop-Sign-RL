@@ -14,6 +14,8 @@ MODEL="${MODEL:-}"
 VECNORM="${VECNORM:-}"
 OUT_JSON="${OUT_JSON:-}"
 OUT_EPISODES_JSON="${OUT_EPISODES_JSON:-}"
+SAVE_OVERLAY_DIR="${SAVE_OVERLAY_DIR:-}"
+SAVE_COMPOSITED_DIR="${SAVE_COMPOSITED_DIR:-}"
 SEED="${SEED:-}"
 
 # Env defaults (mirror train.sh)
@@ -68,6 +70,8 @@ Options:
   --vecnorm PATH       (optional VecNormalize stats .pkl)
   --out-json PATH      (default: <tb_run_dir>/summary.json)
   --out-episodes-json PATH (default: <tb_run_dir>/episodes.json)
+  --save-overlay-dir PATH (optional: save per-episode overlay pattern PNGs)
+  --save-composited-dir PATH (optional: save per-episode composited preview PNGs)
   --eval-k K           (default: $EVAL_K)
   --grid-cell N        (default: $GRID_CELL)
   --lambda-area X      (default: $LAMBDA_AREA or --lambda-area-end if set)
@@ -123,6 +127,8 @@ while [[ $# -gt 0 ]]; do
     --vecnorm) VECNORM="$2"; shift 2;;
     --out-json) OUT_JSON="$2"; shift 2;;
     --out-episodes-json) OUT_EPISODES_JSON="$2"; shift 2;;
+    --save-overlay-dir) SAVE_OVERLAY_DIR="$2"; shift 2;;
+    --save-composited-dir) SAVE_COMPOSITED_DIR="$2"; shift 2;;
     --eval-k) EVAL_K="$2"; shift 2;;
     --grid-cell) GRID_CELL="$2"; shift 2;;
     --lambda-area) LAMBDA_AREA="$2"; shift 2;;
@@ -220,11 +226,23 @@ fi
 if [[ -n "${OUT_EPISODES_JSON}" ]]; then
   EXTRA_ARGS+=(--out-episodes-json "${OUT_EPISODES_JSON}")
 fi
+if [[ -n "${SAVE_OVERLAY_DIR}" ]]; then
+  EXTRA_ARGS+=(--save-overlay-dir "${SAVE_OVERLAY_DIR}")
+fi
+if [[ -n "${SAVE_COMPOSITED_DIR}" ]]; then
+  EXTRA_ARGS+=(--save-composited-dir "${SAVE_COMPOSITED_DIR}")
+fi
 
 echo "[EVAL] Running evaluation:"
 echo "       episodes=${EPISODES} deterministic=${DETERMINISTIC} tb=${TB_RUN_DIR} tag=${TB_TAG}"
 echo "       out_json=${OUT_JSON}"
 echo "       out_episodes_json=${OUT_EPISODES_JSON}"
+if [[ -n "${SAVE_OVERLAY_DIR}" ]]; then
+  echo "       save_overlay_dir=${SAVE_OVERLAY_DIR}"
+fi
+if [[ -n "${SAVE_COMPOSITED_DIR}" ]]; then
+  echo "       save_composited_dir=${SAVE_COMPOSITED_DIR}"
+fi
 echo ""
 
 if [[ "${START_TB}" == "1" ]]; then

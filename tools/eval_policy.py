@@ -122,6 +122,10 @@ def parse_args():
     ap.add_argument("--log-images", type=int, default=10, help="Max eval images to log to TensorBoard.")
     ap.add_argument("--out-json", default="", help="Optional path to write eval summary JSON.")
     ap.add_argument("--out-episodes-json", default="", help="Optional path to write per-episode rows JSON.")
+    ap.add_argument("--save-overlay-dir", default="",
+                    help="Optional directory to save per-episode overlay pattern PNGs (info['overlay_pil']).")
+    ap.add_argument("--save-composited-dir", default="",
+                    help="Optional directory to save per-episode composited preview PNGs (info['composited_pil']).")
 
     # Env settings (match training defaults)
     ap.add_argument("--episode-steps", type=int, default=300)
@@ -181,6 +185,18 @@ def _median(vals: List[float]) -> float:
     return float(np.median(vals)) if vals else float("nan")
 
 
+def _safe_int_list(value: Any) -> List[int]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: List[int] = []
+    for v in value:
+        try:
+            out.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def main():
     args = parse_args()
     args.yolo_weights = resolve_yolo_weights(args.yolo_version, args.yolo_weights)
@@ -216,6 +232,15 @@ def main():
         os.makedirs(tb_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=tb_dir)
         print(f"[EVAL] tb_run_dir={tb_dir}")
+
+    overlay_save_dir = os.path.abspath(args.save_overlay_dir) if args.save_overlay_dir else ""
+    composited_save_dir = os.path.abspath(args.save_composited_dir) if args.save_composited_dir else ""
+    if overlay_save_dir:
+        os.makedirs(overlay_save_dir, exist_ok=True)
+        print(f"[EVAL] save_overlay_dir={overlay_save_dir}")
+    if composited_save_dir:
+        os.makedirs(composited_save_dir, exist_ok=True)
+        print(f"[EVAL] save_composited_dir={composited_save_dir}")
 
     image_budget = int(max(0, args.log_images))
     successes = 0
@@ -259,6 +284,15 @@ def main():
             last_info = info[0] if isinstance(info, list) and info else info
 
         info_d = last_info if isinstance(last_info, dict) else {}
+        trace_d = info_d.get("trace", {})
+        trace_d = trace_d if isinstance(trace_d, dict) else {}
+        trace_selected_indices = _safe_int_list(trace_d.get("selected_indices", []))
+        trace_transform_seeds = _safe_int_list(trace_d.get("transform_seeds", []))
+        trace_place_seed = trace_d.get("place_seed", None)
+        try:
+            trace_place_seed = int(trace_place_seed) if trace_place_seed is not None else None
+        except (TypeError, ValueError):
+            trace_place_seed = None
         success = bool(info_d.get("uv_success", False))
         base_conf = _finite_or_nan(info_d.get("base_conf", info_d.get("c0_day", np.nan)))
         after_conf = _finite_or_nan(info_d.get("after_conf", info_d.get("c_on", np.nan)))
@@ -287,6 +321,20 @@ def main():
         selected_cells_list.append(selected_cells)
         episode_runtime_sec_list.append(ep_runtime_sec)
 
+        overlay_img_path = ""
+        composited_img_path = ""
+        seed_suffix = f"_seed_{int(seed_i)}" if seed_i is not None else ""
+        if overlay_save_dir:
+            overlay_img = info_d.get("overlay_pil", None)
+            if overlay_img is not None and hasattr(overlay_img, "save"):
+                overlay_img_path = os.path.join(overlay_save_dir, f"ep_{int(ep_idx):04d}{seed_suffix}_overlay.png")
+                overlay_img.save(overlay_img_path, format="PNG")
+        if composited_save_dir:
+            composited_img = info_d.get("composited_pil", None)
+            if composited_img is not None and hasattr(composited_img, "save"):
+                composited_img_path = os.path.join(composited_save_dir, f"ep_{int(ep_idx):04d}{seed_suffix}_composited.png")
+                composited_img.save(composited_img_path, format="PNG")
+
         episode_rows.append({
             "episode_index": int(ep_idx),
             "seed": int(seed_i) if seed_i is not None else None,
@@ -307,6 +355,15 @@ def main():
             "runtime_per_step_sec": float(ep_runtime_sec / steps) if steps > 0 else float("nan"),
             "area_cap_exceeded": bool(info_d.get("area_cap_exceeded", False)),
             "note": str(info_d.get("note")) if "note" in info_d else "",
+            "trace": {
+                "phase": str(trace_d.get("phase", "")) if trace_d else "",
+                "grid_cell_px": int(trace_d.get("grid_cell_px")) if trace_d.get("grid_cell_px") is not None else None,
+                "selected_indices": trace_selected_indices,
+                "place_seed": trace_place_seed,
+                "transform_seeds": trace_transform_seeds,
+            },
+            "overlay_image_path": overlay_img_path,
+            "composited_image_path": composited_img_path,
         })
 
         if writer is not None:
@@ -381,6 +438,8 @@ def main():
         "vecnorm": args.vecnorm,
         "vecnorm_abs": os.path.abspath(args.vecnorm) if args.vecnorm else "",
         "tb_run_dir": tb_dir,
+        "save_overlay_dir": overlay_save_dir,
+        "save_composited_dir": composited_save_dir,
         "episodes": int(args.episodes),
         "n_success": int(successes),
         "success_rate": success_rate,
