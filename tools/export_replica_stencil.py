@@ -475,6 +475,8 @@ def main() -> int:
                     help="If set to letter/a4, also export tiled standard-paper pages at true scale.")
     ap.add_argument("--paper-orientation", default="auto", choices=["auto", "portrait", "landscape"],
                     help="Orientation for standard-paper tiled pages.")
+    ap.add_argument("--tile-content", default="sign-only", choices=["sign-only", "full-page"],
+                    help="What to tile onto standard paper: the sign region only (recommended) or the full stencil page.")
     ap.add_argument("--paper-margin", type=float, default=0.5,
                     help="Printable margin on each standard tile page (same units as sign size).")
     ap.add_argument("--tile-overlap", type=float, default=0.20,
@@ -565,8 +567,19 @@ def main() -> int:
     if str(args.paper_size).lower() != "custom":
         paper_margin_in = _to_inches(float(args.paper_margin), args.units)
         tile_overlap_in = _to_inches(float(args.tile_overlap), args.units)
+        sign_w_px = int(round(sign_w_in * int(args.dpi)))
+        sign_h_px = int(round(sign_h_in * int(args.dpi)))
+        margin_px = int(round(margin_in * int(args.dpi)))
+        header_px = int(round(0.45 * int(args.dpi)))
+        # Crop tiled source to sign region by default to avoid wasting paper on headers/footers.
+        tile_content = str(args.tile_content).lower()
+        if tile_content == "sign-only":
+            tile_master = page.crop((margin_px, margin_px + header_px, margin_px + sign_w_px, margin_px + header_px + sign_h_px))
+        else:
+            tile_master = page
+
         tiled_pages, tiled_meta = _make_tiled_standard_pages(
-            master_page=page,
+            master_page=tile_master,
             dpi=int(args.dpi),
             paper_size=str(args.paper_size),
             paper_orientation=str(args.paper_orientation),
@@ -594,6 +607,7 @@ def main() -> int:
             "enabled": True,
             "paper_size": str(args.paper_size).lower(),
             "paper_orientation": str(args.paper_orientation).lower(),
+            "tile_content": tile_content,
             "paper_margin_input": float(args.paper_margin),
             "paper_margin_units": str(args.units),
             "paper_margin_in": float(paper_margin_in),
