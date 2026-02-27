@@ -47,6 +47,8 @@ def parse_args():
 
     ap.add_argument("--yolo-weights", default=None)
     ap.add_argument("--yolo-version", choices=["8", "11"], default="8")
+    ap.add_argument("--detector", choices=["yolo", "torchvision", "rtdetr"], default="yolo")
+    ap.add_argument("--detector-model", default="", help="Torchvision/RT-DETR detector model id.")
     ap.add_argument("--detector-device", default="auto")
     ap.add_argument("--detector-debug", type=int, default=0)
 
@@ -128,27 +130,58 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    run_id = time.strftime("random_%Y%m%d_%H%M%S")
+    run_id = f"random_seed{int(args.seed)}_{time.strftime('%Y%m%d_%H%M%S')}"
     out_dir = os.path.join(args.out, run_id)
     os.makedirs(out_dir, exist_ok=True)
     tb_dir = args.tb if args.tb else os.path.join(out_dir, "tb")
     writer = SummaryWriter(log_dir=tb_dir)
 
     env = build_env_from_args(args)
+    run_start = time.perf_counter()
 
     best = None
     best_trial = None
     best_actions = None
     best_steps = None
     best_meta = None
+    trial_rows = []
 
     for t in range(int(args.trials)):
+        trial_t0 = time.perf_counter()
         trial_seed = int(args.seed) + t
         actions, steps, final, meta = run_random_episode(env, trial_seed)
+        trial_runtime_sec = float(time.perf_counter() - trial_t0)
         score = score_from(final, final.get("reward", 0.0), args.select_by)
         final_metrics = final.get("metrics", {}) if isinstance(final, dict) else {}
         area = final_metrics.get("total_area_mask_frac", final.get("area_frac", 0.0))
         after_conf = final_metrics.get("c_on", final.get("after_conf", None))
+        base_conf = final_metrics.get("base_conf", final_metrics.get("c0_day", np.nan))
+        drop_on = final_metrics.get("drop_on", final.get("drop_on", np.nan))
+        mean_iou = final_metrics.get("mean_iou", np.nan)
+        misclass = final_metrics.get("misclass_rate", np.nan)
+        selected_cells = final_metrics.get("selected_cells", np.nan)
+        success = bool(final_metrics.get("uv_success", False))
+        steps_count = len(steps)
+        drop_per_area = float("nan")
+        if np.isfinite(float(drop_on)) and np.isfinite(float(area)) and float(area) > 0:
+            drop_per_area = float(float(drop_on) / float(area))
+        trial_rows.append({
+            "trial_index": int(t),
+            "trial_seed": int(trial_seed),
+            "score": float(score),
+            "success": bool(success),
+            "steps": int(steps_count),
+            "base_conf": float(base_conf),
+            "after_conf": float(after_conf) if after_conf is not None else float("nan"),
+            "drop_on": float(drop_on),
+            "area_frac": float(area),
+            "drop_per_area": float(drop_per_area),
+            "mean_iou": float(mean_iou),
+            "misclass_rate": float(misclass),
+            "selected_cells": float(selected_cells),
+            "runtime_sec": trial_runtime_sec,
+            "runtime_per_step_sec": float(trial_runtime_sec / steps_count) if steps_count > 0 else float("nan"),
+        })
         if (best is None) or (score > best):
             best = score
             best_trial = trial_seed
@@ -173,16 +206,73 @@ def main():
         run_random_episode(env, best_trial)
 
     save_final_images(env, out_dir)
+    final_step = best_steps[-1] if best_steps else {}
+    final_metrics = final_step.get("metrics", {}) if isinstance(final_step, dict) else {}
+    final_success = bool(final_metrics.get("uv_success", False))
+    area_frac = float(final_metrics.get("total_area_mask_frac", final_step.get("area_frac", np.nan))) if final_step else float("nan")
+    base_conf = float(final_metrics.get("base_conf", final_metrics.get("c0_day", np.nan))) if final_step else float("nan")
+    after_conf = float(final_metrics.get("after_conf", final_metrics.get("c_on", np.nan))) if final_step else float("nan")
+    drop_on = float(final_metrics.get("drop_on", final_step.get("drop_on", np.nan))) if final_step else float("nan")
+    mean_iou = float(final_metrics.get("mean_iou", np.nan)) if final_step else float("nan")
+    misclass = float(final_metrics.get("misclass_rate", np.nan)) if final_step else float("nan")
+    selected_cells = float(final_metrics.get("selected_cells", np.nan)) if final_step else float("nan")
+    drop_per_area = float("nan")
+    if np.isfinite(drop_on) and np.isfinite(area_frac) and area_frac > 0:
+        drop_per_area = float(drop_on / area_frac)
+    runtime_total_sec = float(time.perf_counter() - run_start)
+    trial_runtime_vals = [float(r.get("runtime_sec", np.nan)) for r in trial_rows]
+    best_trial_runtime_sec = float("nan")
+    if best_trial is not None:
+        for row in trial_rows:
+            if int(row.get("trial_seed", -1)) == int(best_trial):
+                best_trial_runtime_sec = float(row.get("runtime_sec", np.nan))
+                break
 
     summary = {
+        "method": "random",
         "run_id": run_id,
+        "seed": int(args.seed),
+        "detector": str(args.detector),
+        "detector_model": str(args.detector_model),
         "select_by": args.select_by,
         "trials": int(args.trials),
         "best_score": float(best) if best is not None else None,
         "best_seed": int(best_trial) if best_trial is not None else None,
         "actions": best_actions or [],
-        "final": best_steps[-1] if best_steps else {},
+        "final": final_step,
         "steps": len(best_steps) if best_steps else 0,
+        "n_success": 1 if final_success else 0,
+        "success_rate": 1.0 if final_success else 0.0,
+        "mean_steps": float(len(best_steps)) if best_steps else float("nan"),
+        "mean_base_conf": base_conf,
+        "mean_after_conf": after_conf,
+        "mean_drop_on": drop_on,
+        "mean_area_frac": area_frac,
+        "mean_drop_per_area": drop_per_area,
+        "mean_iou": mean_iou,
+        "mean_misclass_rate": misclass,
+        "mean_selected_cells": selected_cells,
+        "runtime_total_sec": runtime_total_sec,
+        "mean_trial_runtime_sec": float(np.mean(trial_runtime_vals)) if trial_runtime_vals else float("nan"),
+        "std_trial_runtime_sec": float(np.std(trial_runtime_vals)) if trial_runtime_vals else float("nan"),
+        "best_trial_runtime_sec": best_trial_runtime_sec,
+        "episodes_detail": [{
+            "episode_index": 0,
+            "seed": int(best_trial) if best_trial is not None else None,
+            "success": bool(final_success),
+            "steps": int(len(best_steps)) if best_steps else 0,
+            "base_conf": base_conf,
+            "after_conf": after_conf,
+            "drop_on": drop_on,
+            "area_frac": area_frac,
+            "drop_per_area": drop_per_area,
+            "mean_iou": mean_iou,
+            "misclass_rate": misclass,
+            "selected_cells": selected_cells,
+            "runtime_sec": best_trial_runtime_sec,
+            "runtime_per_step_sec": float(best_trial_runtime_sec / len(best_steps)) if best_steps and np.isfinite(best_trial_runtime_sec) else float("nan"),
+        }],
+        "trials_detail": trial_rows,
         "episode_meta": best_meta if best_trial is not None else None,
         "config": vars(args),
     }

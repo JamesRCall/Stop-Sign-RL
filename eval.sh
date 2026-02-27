@@ -12,6 +12,10 @@ TB_TAG="${TB_TAG:-eval}"
 CKPT_DIR="${CKPT_DIR:-./_runs/checkpoints}"
 MODEL="${MODEL:-}"
 VECNORM="${VECNORM:-}"
+OUT_JSON="${OUT_JSON:-}"
+OUT_EPISODES_JSON="${OUT_EPISODES_JSON:-}"
+SAVE_OVERLAY_DIR="${SAVE_OVERLAY_DIR:-}"
+SAVE_COMPOSITED_DIR="${SAVE_COMPOSITED_DIR:-}"
 SEED="${SEED:-}"
 
 # Env defaults (mirror train.sh)
@@ -64,6 +68,10 @@ Options:
   --ckpt DIR           (default: $CKPT_DIR)
   --model PATH         (default: latest in --ckpt)
   --vecnorm PATH       (optional VecNormalize stats .pkl)
+  --out-json PATH      (default: <tb_run_dir>/summary.json)
+  --out-episodes-json PATH (default: <tb_run_dir>/episodes.json)
+  --save-overlay-dir PATH (optional: save per-episode overlay pattern PNGs)
+  --save-composited-dir PATH (optional: save per-episode composited preview PNGs)
   --eval-k K           (default: $EVAL_K)
   --grid-cell N        (default: $GRID_CELL)
   --lambda-area X      (default: $LAMBDA_AREA or --lambda-area-end if set)
@@ -96,6 +104,7 @@ EOF
 }
 
 TB_PID=""
+TB_RUN_DIR=""
 
 cleanup() {
   echo ""
@@ -116,6 +125,10 @@ while [[ $# -gt 0 ]]; do
     --ckpt) CKPT_DIR="$2"; shift 2;;
     --model) MODEL="$2"; shift 2;;
     --vecnorm) VECNORM="$2"; shift 2;;
+    --out-json) OUT_JSON="$2"; shift 2;;
+    --out-episodes-json) OUT_EPISODES_JSON="$2"; shift 2;;
+    --save-overlay-dir) SAVE_OVERLAY_DIR="$2"; shift 2;;
+    --save-composited-dir) SAVE_COMPOSITED_DIR="$2"; shift 2;;
     --eval-k) EVAL_K="$2"; shift 2;;
     --grid-cell) GRID_CELL="$2"; shift 2;;
     --lambda-area) LAMBDA_AREA="$2"; shift 2;;
@@ -193,17 +206,52 @@ if [[ -n "${AREA_CAP_END}" ]]; then
   AREA_CAP_FRAC="${AREA_CAP_END}"
 fi
 
+# Use an isolated TensorBoard run directory per eval invocation to avoid
+# mixing with stale root-level event files.
+tb_safe_tag="$(echo "${TB_TAG}" | sed -E 's/[^A-Za-z0-9._-]+/_/g; s/^[_ .-]+//; s/[_ .-]+$//')"
+if [[ -z "${tb_safe_tag}" ]]; then
+  tb_safe_tag="eval"
+fi
+tb_stamp="$(date +%Y%m%d_%H%M%S)"
+TB_RUN_DIR="${TB_DIR}/${tb_safe_tag}_${tb_stamp}"
+if [[ -z "${OUT_JSON}" ]]; then
+  OUT_JSON="${TB_RUN_DIR}/summary.json"
+fi
+if [[ -z "${OUT_EPISODES_JSON}" ]]; then
+  OUT_EPISODES_JSON="${TB_RUN_DIR}/episodes.json"
+fi
+if [[ -n "${OUT_JSON}" ]]; then
+  EXTRA_ARGS+=(--out-json "${OUT_JSON}")
+fi
+if [[ -n "${OUT_EPISODES_JSON}" ]]; then
+  EXTRA_ARGS+=(--out-episodes-json "${OUT_EPISODES_JSON}")
+fi
+if [[ -n "${SAVE_OVERLAY_DIR}" ]]; then
+  EXTRA_ARGS+=(--save-overlay-dir "${SAVE_OVERLAY_DIR}")
+fi
+if [[ -n "${SAVE_COMPOSITED_DIR}" ]]; then
+  EXTRA_ARGS+=(--save-composited-dir "${SAVE_COMPOSITED_DIR}")
+fi
+
 echo "[EVAL] Running evaluation:"
-echo "       episodes=${EPISODES} deterministic=${DETERMINISTIC} tb=${TB_DIR} tag=${TB_TAG}"
+echo "       episodes=${EPISODES} deterministic=${DETERMINISTIC} tb=${TB_RUN_DIR} tag=${TB_TAG}"
+echo "       out_json=${OUT_JSON}"
+echo "       out_episodes_json=${OUT_EPISODES_JSON}"
+if [[ -n "${SAVE_OVERLAY_DIR}" ]]; then
+  echo "       save_overlay_dir=${SAVE_OVERLAY_DIR}"
+fi
+if [[ -n "${SAVE_COMPOSITED_DIR}" ]]; then
+  echo "       save_composited_dir=${SAVE_COMPOSITED_DIR}"
+fi
 echo ""
 
 if [[ "${START_TB}" == "1" ]]; then
-  mkdir -p "${TB_DIR}"
-  echo "[TB] Starting TensorBoard on port ${PORT}, logdir=${TB_DIR}"
-  tensorboard --logdir "${TB_DIR}" --port "${PORT}" > "${TB_DIR}/tensorboard.log" 2>&1 &
+  mkdir -p "${TB_RUN_DIR}"
+  echo "[TB] Starting TensorBoard on port ${PORT}, logdir=${TB_RUN_DIR}"
+  tensorboard --logdir "${TB_RUN_DIR}" --port "${PORT}" > "${TB_RUN_DIR}/tensorboard.log" 2>&1 &
   TB_PID=$!
   sleep 2
-  echo "[TB] PID=${TB_PID} | log: ${TB_DIR}/tensorboard.log"
+  echo "[TB] PID=${TB_PID} | log: ${TB_RUN_DIR}/tensorboard.log"
   echo "[TB] Open: http://localhost:${PORT}"
 fi
 
@@ -212,7 +260,7 @@ python tools/eval_policy.py \
   --ckpt "${CKPT_DIR}" \
   --episodes "${EPISODES}" \
   --deterministic "${DETERMINISTIC}" \
-  --tb "${TB_DIR}" \
+  --tb "${TB_RUN_DIR}" \
   --tb-tag "${TB_TAG}" \
   --eval-K "${EVAL_K}" \
   --grid-cell "${GRID_CELL}" \
