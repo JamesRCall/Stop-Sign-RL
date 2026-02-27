@@ -40,3 +40,4 @@ weights/
 # Data (keep small sample, ignore big blobs if you add them later)
 StopSignExports/
 data/Real_World/
+data/Real_world_Testing/

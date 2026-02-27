@@ -110,6 +110,7 @@ class StopSignGridEnv(gym.Env):
         efficiency_eps: float = 0.02,
         lambda_perceptual: float = 0.0,
         transform_strength: float = 1.0,
+        fixed_angle_deg: Optional[float] = None,
         uv_min_alpha: float = 0.08,
         min_base_conf: float = 0.20,
         cell_cover_thresh: float = 0.60,
@@ -205,6 +206,9 @@ class StopSignGridEnv(gym.Env):
         self.efficiency_eps = float(efficiency_eps)
         self.lambda_perceptual = float(lambda_perceptual)
         self.transform_strength = float(transform_strength)
+        self.fixed_angle_deg = (
+            float(fixed_angle_deg) if fixed_angle_deg is not None else None
+        )
         self.uv_min_alpha = float(uv_min_alpha)
         self.min_base_conf = float(min_base_conf)
         self.info_image_every = int(info_image_every)
@@ -542,6 +546,7 @@ class StopSignGridEnv(gym.Env):
             "lambda_efficiency": float(self.lambda_efficiency),
             "efficiency_eps": float(self.efficiency_eps),
             "lambda_perceptual": float(self.lambda_perceptual),
+            "fixed_angle_deg": float(self.fixed_angle_deg) if self.fixed_angle_deg is not None else None,
             "perceptual_delta": float(perceptual),
             "paint_name": getattr(self.paint, "name", "unknown"),
             "base_conf": float(c0_day),
@@ -557,6 +562,7 @@ class StopSignGridEnv(gym.Env):
                 "selected_indices": self._selected_indices_list(),
                 "place_seed": int(self._place_seed),
                 "transform_seeds": [int(s) for s in self._transform_seeds],
+                "fixed_angle_deg": float(self.fixed_angle_deg) if self.fixed_angle_deg is not None else None,
             },
         }
         if max_cells_reached:
@@ -641,6 +647,7 @@ class StopSignGridEnv(gym.Env):
         if valid_total == 0:
             return 0.0
         return float(int(self._episode_cells.sum())) / float(valid_total)
+
 
     def _map_to_cell(self, a: np.ndarray) -> Tuple[int, int]:
         a = np.clip(np.asarray(a, dtype=np.float32), -1.0, 1.0)
@@ -953,32 +960,33 @@ class StopSignGridEnv(gym.Env):
         strength = max(0.0, min(1.0, float(self.transform_strength)))
         out = sign_rgba.copy()
 
-        if strength <= 0.0:
+        fixed_angle = self.fixed_angle_deg
+        if fixed_angle is None and strength <= 0.0:
             return out
 
-        angle = rng.uniform(-6.0 * strength, 6.0 * strength)
-        shear = rng.uniform(-4.0 * strength, 4.0 * strength)
-        scale = 1.0 + rng.uniform(-0.10 * strength, 0.10 * strength)
-        tx = rng.uniform(-0.02 * strength * W, 0.02 * strength * W)
-        ty = rng.uniform(-0.02 * strength * H, 0.02 * strength * H)
+        angle = float(fixed_angle) if fixed_angle is not None else rng.uniform(-6.0 * strength, 6.0 * strength)
+        shear = rng.uniform(-4.0 * strength, 4.0 * strength) if strength > 0.0 else 0.0
+        scale = 1.0 + rng.uniform(-0.10 * strength, 0.10 * strength) if strength > 0.0 else 1.0
+        tx = rng.uniform(-0.02 * strength * W, 0.02 * strength * W) if strength > 0.0 else 0.0
+        ty = rng.uniform(-0.02 * strength * H, 0.02 * strength * H) if strength > 0.0 else 0.0
 
         aff = _affine_matrix(angle, shear, scale, tx, ty, W, H)
         out = out.transform((W, H), Image.AFFINE, data=aff, resample=Image.BILINEAR, fillcolor=(0, 0, 0, 0))
 
-        if rng.random() < 0.5 * strength:
+        if strength > 0.0 and rng.random() < 0.5 * strength:
             coeffs = _random_perspective_coeffs(W, H, rng, max_shift=0.06 * strength)
             out = out.transform((W, H), Image.PERSPECTIVE, coeffs, resample=Image.BILINEAR, fillcolor=(0, 0, 0, 0))
 
         rgb, a = out.convert("RGB"), out.split()[-1]
-        if rng.random() < 0.7 * strength:
+        if strength > 0.0 and rng.random() < 0.7 * strength:
             rgb = ImageEnhance.Brightness(rgb).enhance(float(rng.uniform(1.0 - 0.1 * strength, 1.0 + 0.1 * strength)))
-        if rng.random() < 0.7 * strength:
+        if strength > 0.0 and rng.random() < 0.7 * strength:
             rgb = ImageEnhance.Contrast(rgb).enhance(float(rng.uniform(1.0 - 0.1 * strength, 1.0 + 0.1 * strength)))
-        if rng.random() < 0.3 * strength:
+        if strength > 0.0 and rng.random() < 0.3 * strength:
             rgb = ImageEnhance.Color(rgb).enhance(float(rng.uniform(1.0 - 0.1 * strength, 1.0 + 0.1 * strength)))
-        if rng.random() < 0.4 * strength:
+        if strength > 0.0 and rng.random() < 0.4 * strength:
             rgb = rgb.filter(ImageFilter.GaussianBlur(radius=float(rng.uniform(0.0, 0.8 * strength))))
-        if rng.random() < 0.6 * strength:
+        if strength > 0.0 and rng.random() < 0.6 * strength:
             arr = np.array(rgb, dtype=np.int16)
             sigma = rng.uniform(1.0 * strength, 3.0 * strength)
             noise = rng.normal(0.0, sigma, size=arr.shape)

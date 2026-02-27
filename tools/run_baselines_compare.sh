@@ -18,6 +18,7 @@ PPO_CKPT_DIR="${PPO_CKPT_DIR:-./_runs/checkpoints}"
 PPO_VECNORM="${PPO_VECNORM:-}"
 BG_MODE="${BG_MODE:-dataset}"
 TRANSFORM_STRENGTH="${TRANSFORM_STRENGTH:-1.0}"
+FIXED_ANGLE_DEG="${FIXED_ANGLE_DEG:-}"
 AREA_TARGET="${AREA_TARGET:-0.25}"
 LAMBDA_AREA="${LAMBDA_AREA:-0.70}"
 LAMBDA_DAY="${LAMBDA_DAY:-0.0}"
@@ -41,6 +42,14 @@ if [[ -n "${DETECTOR_MODEL}" ]]; then
 fi
 
 echo "[RUN] N=${N} seed_base=${SEED_BASE} eval_K=${EVAL_K} grid=${GRID_CELL} paint=${PAINT} detector=${DETECTOR} model=${DETECTOR_MODEL:-<default>}"
+if [[ -n "${FIXED_ANGLE_DEG}" ]]; then
+  echo "[RUN] fixed_angle_deg=${FIXED_ANGLE_DEG}"
+fi
+
+ANGLE_ARGS=()
+if [[ -n "${FIXED_ANGLE_DEG}" ]]; then
+  ANGLE_ARGS=(--fixed-angle-deg "${FIXED_ANGLE_DEG}")
+fi
 
 # 1) PPO eval over N episodes using seed base
 if [[ -n "${PPO_MODEL}" ]]; then
@@ -68,6 +77,7 @@ if [[ -n "${PPO_MODEL}" ]]; then
     "${DETECTOR_ARGS[@]}" \
     --bg-mode "${BG_MODE}" \
     --transform-strength "${TRANSFORM_STRENGTH}" \
+    "${ANGLE_ARGS[@]}" \
     --area-target "${AREA_TARGET}" \
     --lambda-area "${LAMBDA_AREA}" \
     --lambda-day "${LAMBDA_DAY}" \
@@ -93,6 +103,7 @@ for ((i=0; i<${N}; i++)); do
     "${DETECTOR_ARGS[@]}" \
     --bg-mode "${BG_MODE}" \
     --transform-strength "${TRANSFORM_STRENGTH}" \
+    "${ANGLE_ARGS[@]}" \
     --area-target "${AREA_TARGET}" \
     --lambda-area "${LAMBDA_AREA}" \
     --lambda-day "${LAMBDA_DAY}"
@@ -113,6 +124,7 @@ for ((i=0; i<${N}; i++)); do
     "${DETECTOR_ARGS[@]}" \
     --bg-mode "${BG_MODE}" \
     --transform-strength "${TRANSFORM_STRENGTH}" \
+    "${ANGLE_ARGS[@]}" \
     --area-target "${AREA_TARGET}" \
     --lambda-area "${LAMBDA_AREA}" \
     --lambda-day "${LAMBDA_DAY}"

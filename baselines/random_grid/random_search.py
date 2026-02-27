@@ -56,6 +56,8 @@ def parse_args():
     ap.add_argument("--grid-cell", type=int, default=16, choices=[2, 4, 8, 16, 32])
     ap.add_argument("--episode-steps", type=int, default=300)
     ap.add_argument("--transform-strength", type=float, default=1.0)
+    ap.add_argument("--fixed-angle-deg", type=float, default=None,
+                    help="If set, evaluate with a fixed sign rotation angle in degrees.")
     ap.add_argument("--day-tolerance", type=float, default=0.05)
 
     ap.add_argument("--lambda-area", type=float, default=0.70)

@@ -19,7 +19,7 @@ Core ideas:
 - Reward that targets UV confidence drop while penalizing daylight drop and patch area.
 - Efficiency bonus (drop per area) and fixed area penalties to favor minimal patches.
 - Early termination on success or area cap.
-- Detector backends: Ultralytics YOLO, torchvision detectors, and optional Transformers RT-DETR.
+- Detector backends: Ultralytics YOLO, torchvision detectors, and optional Transformers DETR.
 
 ---
 
@@ -28,7 +28,7 @@ Core ideas:
 - Python 3.10+ recommended.
 - PyTorch, stable-baselines3, and sb3-contrib (MaskablePPO).
 - YOLO weights in `weights/` (see below).
-- Optional: `transformers` if you use the RT-DETR backend.
+- Optional: `transformers` if you use the DETR backend.
 
 ---
 
@@ -50,7 +50,7 @@ If you installed requirements before action masking was added, you may need:
 python -m pip install sb3-contrib
 ```
 
-Optional (RT-DETR backend):
+Optional (DETR backend):
 ```bash
 python -m pip install transformers
 ```
@@ -74,7 +74,7 @@ YOLO weights go in `weights/`:
 Torchvision detectors download pretrained weights automatically on first use
 (cached under `~/.cache/torch/hub/checkpoints`).
 
-Transformers RT-DETR models download from Hugging Face on first use
+Transformers DETR models download from Hugging Face on first use
 (cached under `~/.cache/huggingface`).
 
 ---
@@ -110,9 +110,9 @@ Torchvision detector example:
 python train_single_stop_sign.py --detector torchvision --detector-model retinanet_resnet50_fpn_v2
 ```
 
-Transformers RT-DETR example:
+Transformers DETR example:
 ```bash
-python train_single_stop_sign.py --detector rtdetr --detector-model PekingU/rtdetr_r50vd
+python train_single_stop_sign.py --detector detr --detector-model facebook/detr-resnet-50
 ```
 
 Evaluation (deterministic policy, logs to TensorBoard):
@@ -152,7 +152,7 @@ From `train_single_stop_sign.py`:
 - `--obs-size`, `--obs-margin`, `--obs-include-mask` (cropped observation + mask channel)
 - `--ent-coef`, `--ent-coef-start`, `--ent-coef-end`, `--ent-coef-steps` (entropy coefficient schedule; default 0.001)
 - `--detector-device` (e.g., `cpu`, `cuda`, or `auto`)
-- `--detector` (`yolo`, `torchvision`, or `rtdetr`) and `--detector-model` (model name for torchvision/RT-DETR)
+- `--detector` (`yolo`, `torchvision`, or `detr`) and `--detector-model` (model name for torchvision/DETR)
 - `--step-log-every`, `--step-log-keep`, `--step-log-500` (step logging control)
 - `--cnn` (`custom` or `nature`) choose feature extractor
 - `--ckpt`, `--overlays`, `--tb` output paths (TB logs grouped under `grid_uv_yolo<ver>`)
@@ -187,74 +187,66 @@ Definitions:
 - `c0_day`: baseline day confidence (no overlay)
 - `c_day`: day confidence with overlay
 - `c_on`: UV-on confidence with overlay
-  - `drop_day = c0_day - c_day`
-  - `drop_on = c0_day - c_on`
-  - `area = total_area_mask_frac`
-  - `mean_iou`: mean IoU between target box and top detection
-  - `misclass_rate`: misclassification rate
-  - `conf_thr = success_conf_threshold`
-  - `area_target = area_target_frac if set else area_cap_frac`
+- `drop_day = c0_day - c_day`
+- `drop_on = c0_day - c_on`
+- `area = total_area_mask_frac`
+- `mean_iou`: mean IoU between target box and top detection
+- `misclass`: misclassification rate
 
-  Efficiency bonus:
-  ```
-  eff = log1p(max(0, drop_on) / max(area, efficiency_eps))
-  ```
+Efficiency bonus:
+```
+eff = log1p(max(0, drop_on) / max(area, efficiency_eps))
+```
 
-  Core reward:
-  ```
-  max_drop = max(0, c0_day - conf_thr)
-  drop_blend = min(drop_on, max_drop)
-  pen_day  = max(0, drop_day - day_tolerance)
-  raw_core = drop_blend
-           - lambda_day * pen_day
-           - lambda_area * area
-           - excess_penalty
-           - step_cost_penalty
-           + lambda_iou * (1 - mean_iou)
-           + lambda_misclass * misclass_rate
-           + lambda_efficiency * eff
-           - lambda_perceptual * perceptual_delta
-  ```
+Core reward:
+```
+drop_cap = max(0, c0_day - success_conf)
+drop_on = min(drop_on, drop_cap)
+pen_day  = max(0, drop_day - day_tolerance)
+raw_core = drop_on
+         - lambda_day * pen_day
+         - lambda_area * area
+         - excess_penalty
+         - step_cost_penalty
+         + lambda_iou * (1 - mean_iou)
+         + lambda_misclass * misclass
+         + lambda_efficiency * eff
+         - lambda_perceptual * perceptual_delta
+```
 
 Shaping + success:
 ```
-  shaping       = 0.35 * tanh(3.0 * (conf_thr - c_on))
-  success_bonus = 0.2 * (1 - area)^2 if c_on <= conf_thr else 0
-  raw_total     = raw_core + shaping + success_bonus
-  ```
+shaping       = 0.35 * tanh(3.0 * (success_conf - c_on))
+success_bonus = 0.2 * (1 - area)^2 if c_on <= success_conf else 0
+raw_total     = raw_core + shaping + success_bonus
+```
 
-  Excess penalty (when `area > area_target`):
+Excess penalty (when `area > area_target`):
 ```
 excess = area - area_target
 excess_penalty = lambda_area * (4.5 * excess + excess^2)
 ```
 
-  Step cost (global + target-scaled):
-  ```
-  step_cost_penalty = step_cost
-  if step_cost_after_target > 0 and area_target is not None and area > area_target:
-    excess = (area - area_target) / max(area_target, 1e-6)
-    step_cost_penalty += step_cost_after_target * (1 + max(0, excess))
-  ```
+Step cost (global + target-scaled):
+```
+step_cost_penalty = step_cost
+if area > area_target:
+  step_cost_penalty += step_cost_after_target * (1 + (area - area_target)/area_target)
+```
 
-  Soft cap override (if enabled and exceeded):
-  ```
+Soft cap override (if enabled and exceeded):
+```
 excess    = max(0, (area - area_cap) / area_cap)
 over_pen  = abs(area_cap_penalty) * (1 + 2 * excess)
 raw_total = -over_pen
 ```
 
-  Final reward:
-  ```
-  reward = tanh(1.2 * raw_total)
-  ```
+Final reward:
+```
+reward = tanh(1.2 * raw_total)
+```
 
-  Baseline / cap gates:
-  - If `c0_day < min_base_conf`, reward is `-0.05` and the step returns early.
-  - If `area_cap_mode == "hard"` and the *next* action would exceed `area_cap_frac`,
-    the episode terminates with reward `area_cap_penalty`.
-
-  If you need to change rendering or physics:
+If you need to change rendering or physics:
 - `_transform_sign()` controls camera jitter, blur, color, and noise.
 - `_compose_sign_and_pole()` controls pole ratio and placement.
 - `_place_group_on_background()` controls scale and background placement.
@@ -323,14 +315,12 @@ Trace replay:
 ## Debugging and Tools
 
 - `tools/debug_grid_env.py` runs the env step-by-step and saves UV-on previews.
-- `tools/debug_detector_image.py` prints all detections for a single image (with optional box overlay).
 - `tools/area_sweep_debug.py` sweeps coverage levels and logs confidence/IoU/misclass stats.
 - `tools/area_sweep_analyze.py` summarizes sweep results and generates plots.
-- `tools/area_sweep_rank.py` ranks combos and computes per-detector summaries.
 - `tools/replay_area_sweep.py` replays logged sweep cases and saves images.
 - `tools/test_stop_sign_confidence.py` checks detector confidence on a single image.
 - `tools/cleanup_runs.py` removes old run outputs (defaults to `_runs`).
-- `tools/detector_server.py` runs a shared detector (YOLO/torchvision/RT-DETR) for multi-process training.
+- `tools/detector_server.py` runs a shared detector (YOLO/torchvision/DETR) for multi-process training.
 - `setup_env.sh` contains a helper for local setup.
 
 Cleanup usage:
@@ -350,9 +340,9 @@ python tools/detector_server.py --model ./weights/yolo8n.pt --device cuda:0 --po
 # --detector-device server://HOST:5009
 ```
 
-For torchvision/RT-DETR, pass `--detector` and `--detector-model` (no `--model` needed):
+For torchvision/DETR, pass `--detector` and `--detector-model` (no `--model` needed):
 ```bash
-python tools/detector_server.py --detector rtdetr --detector-model PekingU/rtdetr_r50vd --device cuda:0 --port 5009
+python tools/detector_server.py --detector detr --detector-model facebook/detr-resnet-50 --device cuda:0 --port 5009
 ```
 
 Single-command server + training (from `train.sh`):
@@ -391,8 +381,6 @@ Important `train.sh` knobs:
 
 ```
 .
-|-- .github/
-|-- .venv/
 |-- baselines/
 |-- data/
 |   |-- stop_sign.png
@@ -410,15 +398,11 @@ Important `train.sh` knobs:
 |-- envs/
 |   |-- stop_sign_grid_env.py
 |
-|-- metrics/
-|
 |-- tools/
 |   |-- aggregate_baselines.py
 |   |-- debug_grid_env.py
-|   |-- debug_detector_image.py
 |   |-- area_sweep_debug.py
 |   |-- area_sweep_analyze.py
-|   |-- area_sweep_rank.py
 |   |-- eval_policy.py
 |   |-- replay_area_sweep.py
 |   |-- test_stop_sign_confidence.py

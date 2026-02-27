@@ -25,6 +25,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Iterable
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,7 @@ from detectors.factory import build_detector  # noqa: E402
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 EXTRA_CAMERA_EXTS = {".heic", ".heif", ".tif", ".tiff"}
 IMAGE_EXTS = IMAGE_EXTS | EXTRA_CAMERA_EXTS
+VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 
 
 @dataclass
@@ -66,18 +68,81 @@ def _label_for(det, cls_id: int | None) -> str:
     return ""
 
 
-def _collect_images(inp: Path, recursive: bool) -> list[Path]:
+def _is_image(path: Path) -> bool:
+    return path.suffix.lower() in IMAGE_EXTS
+
+
+def _is_video(path: Path) -> bool:
+    return path.suffix.lower() in VIDEO_EXTS
+
+
+def _collect_media(inp: Path, recursive: bool, include_videos: bool) -> list[Path]:
+    valid_exts = set(IMAGE_EXTS)
+    if include_videos:
+        valid_exts |= VIDEO_EXTS
     if inp.is_file():
-        if inp.suffix.lower() not in IMAGE_EXTS:
-            raise ValueError(f"Unsupported image extension: {inp}")
+        if inp.suffix.lower() not in valid_exts:
+            kind = "image/video" if include_videos else "image"
+            raise ValueError(f"Unsupported {kind} extension: {inp}")
         return [inp]
     if not inp.is_dir():
         raise FileNotFoundError(f"Input not found: {inp}")
-    if recursive:
-        files = [p for p in inp.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
-    else:
-        files = [p for p in inp.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
+    it = inp.rglob("*") if recursive else inp.iterdir()
+    files = [p for p in it if p.is_file() and p.suffix.lower() in valid_exts]
     return sorted(files)
+
+
+def _iter_video_frames(
+    video_path: Path,
+    frame_step: int,
+    max_frames: int,
+    start_sec: float,
+    end_sec: float,
+):
+    """Yield sampled PIL RGB frames from a video."""
+    try:
+        import cv2  # type: ignore
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError(
+            f"OpenCV is required for video support. Install with: pip install opencv-python. Error: {e}"
+        )
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video: {video_path}")
+
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    if fps <= 0:
+        fps = 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    start_idx = max(0, int(round(start_sec * fps)))
+    end_idx = (total_frames - 1) if end_sec <= 0 else int(round(end_sec * fps))
+    if total_frames > 0:
+        end_idx = min(end_idx, total_frames - 1)
+    if end_idx < start_idx:
+        cap.release()
+        return
+
+    step = max(1, int(frame_step))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_idx)
+    idx = start_idx
+    yielded = 0
+    while True:
+        if idx > end_idx:
+            break
+        ok, frame_bgr = cap.read()
+        if not ok or frame_bgr is None:
+            break
+        if ((idx - start_idx) % step) == 0:
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            pil = Image.fromarray(np.asarray(frame_rgb), mode="RGB")
+            ts = float(idx / fps) if fps > 0 else 0.0
+            yield idx, ts, pil
+            yielded += 1
+            if max_frames > 0 and yielded >= int(max_frames):
+                break
+        idx += 1
+    cap.release()
 
 
 def _maybe_enable_heif_support() -> tuple[bool, str | None]:
@@ -106,6 +171,19 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return float(v)
     except Exception:
         return default
+
+
+def _mean(vals: Iterable[float]) -> float:
+    vals = [float(v) for v in vals]
+    return (sum(vals) / len(vals)) if vals else 0.0
+
+
+def _std(vals: Iterable[float]) -> float:
+    vals = [float(v) for v in vals]
+    if not vals:
+        return 0.0
+    mu = sum(vals) / len(vals)
+    return (sum((v - mu) ** 2 for v in vals) / len(vals)) ** 0.5
 
 
 def _draw_boxes(img: Image.Image, boxes, confs, clss, det, out_path: Path, topk: int = 20) -> None:
@@ -184,12 +262,26 @@ def _summarize_detector_rows(rows: Iterable[dict]) -> dict[str, Any]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Compare real images across six detector backends.")
-    ap.add_argument("--input", required=True, help="Path to a single image or a folder of images")
+    ap = argparse.ArgumentParser(description="Compare real images/videos across six detector backends.")
+    ap.add_argument("--input", required=True, help="Path to a single image/video or a folder")
     ap.add_argument("--recursive", action="store_true", help="Recursively scan folder input")
+    ap.add_argument("--include-videos", action="store_true",
+                    help="Also process videos (*.mp4/*.mov/...); runs detector on sampled frames.")
+    ap.add_argument("--video-frame-step", type=int, default=30,
+                    help="Sample every Nth frame for videos (default: 30).")
+    ap.add_argument("--video-max-frames", type=int, default=0,
+                    help="Max sampled frames per video (0 = no limit).")
+    ap.add_argument("--video-start-sec", type=float, default=0.0,
+                    help="Start time (seconds) for video sampling.")
+    ap.add_argument("--video-end-sec", type=float, default=0.0,
+                    help="End time (seconds) for video sampling (<=0 means full video).")
     ap.add_argument("--device", default="auto", help="Detector device: cpu/cuda/auto")
     ap.add_argument("--conf", type=float, default=0.10, help="Detection confidence threshold")
     ap.add_argument("--iou", type=float, default=0.45, help="NMS/IoU threshold where applicable")
+    ap.add_argument("--repeats", type=int, default=1,
+                    help="Run each detector on each image multiple times and average metrics/runtime (default: 1).")
+    ap.add_argument("--warmup-runs", type=int, default=1,
+                    help="Warmup inference runs per detector before timed evaluation loop (default: 1).")
     ap.add_argument("--target-class", default="stop sign", help="Target class label or id")
     ap.add_argument("--yolo8-weights", default="", help="Override YOLOv8 weights path")
     ap.add_argument("--yolo11-weights", default="", help="Override YOLO11 weights path")
@@ -203,11 +295,13 @@ def main() -> int:
     args = ap.parse_args()
 
     inp = Path(args.input)
-    images = _collect_images(inp, recursive=bool(args.recursive))
-    if not images:
-        raise FileNotFoundError(f"No images found under: {inp}")
+    include_videos = bool(args.include_videos) or _is_video(inp)
+    media = _collect_media(inp, recursive=bool(args.recursive), include_videos=include_videos)
+    if not media:
+        kind = "media" if include_videos else "images"
+        raise FileNotFoundError(f"No {kind} found under: {inp}")
 
-    has_heif = any(p.suffix.lower() in {".heic", ".heif"} for p in images)
+    has_heif = any(p.suffix.lower() in {".heic", ".heif"} for p in media if _is_image(p))
     heif_enabled = False
     heif_err = None
     if has_heif:
@@ -222,8 +316,17 @@ def main() -> int:
     if not specs:
         raise ValueError("No detector specs selected. Check --only values.")
 
-    print(f"[COMPARE] images={len(images)} detectors={len(specs)} device={args.device}")
+    n_images = sum(1 for p in media if _is_image(p))
+    n_videos = sum(1 for p in media if _is_video(p))
+    print(f"[COMPARE] media={len(media)} (images={n_images}, videos={n_videos}) detectors={len(specs)} device={args.device}")
     print("[COMPARE] detector set:", ", ".join(s.name for s in specs))
+    print(f"[COMPARE] repeats={int(max(1, args.repeats))} warmup_runs={int(max(0, args.warmup_runs))}")
+    if include_videos:
+        print(
+            f"[COMPARE] video sampling: step={int(args.video_frame_step)} "
+            f"max_frames={int(args.video_max_frames)} start_sec={float(args.video_start_sec):.2f} "
+            f"end_sec={float(args.video_end_sec):.2f}"
+        )
 
     detectors: dict[str, Any] = {}
     for spec in specs:
@@ -240,54 +343,99 @@ def main() -> int:
         )
         detectors[spec.name] = det
 
+    repeats = int(max(1, args.repeats))
+    warmup_runs = int(max(0, args.warmup_runs))
+
     per_image_results: list[dict[str, Any]] = []
+    processed_image_files = 0
+    processed_video_files = 0
+    sampled_video_frames = 0
 
-    for img_path in images:
-        try:
-            pil = Image.open(img_path).convert("RGB")
-        except Exception as e:
-            if img_path.suffix.lower() in {".heic", ".heif"} and not heif_enabled:
-                print(
-                    f"[WARN] Failed to open {img_path.name} (HEIC). "
-                    f"Install HEIC support: pip install pillow-heif | detail={heif_err}"
-                )
-            else:
-                print(f"[WARN] Failed to open {img_path}: {e}")
-            continue
-
+    def _process_sample(
+        pil: Image.Image,
+        image_path: str,
+        source_type: str,
+        source_path: str,
+        overlay_stem: str,
+        overlay_suffix: str,
+        frame_index: int | None = None,
+        frame_time_sec: float | None = None,
+    ) -> None:
         image_record = {
-            "image_path": str(img_path),
+            "image_path": image_path,
+            "source_type": source_type,
+            "source_path": source_path,
+            "frame_index": frame_index,
+            "frame_time_sec": frame_time_sec,
             "width": pil.width,
             "height": pil.height,
             "detectors": {},
         }
-        print(f"[IMG] {img_path.name}")
+        print(f"[SAMPLE] {image_path}")
 
         for spec in specs:
             det = detectors[spec.name]
-            t0 = time.perf_counter()
-            out = det.infer_detections_batch([pil])[0]
-            dt_ms = (time.perf_counter() - t0) * 1000.0
+            # Optional warmup helps runtime measurement stability (especially first call/JIT/cache effects).
+            for _ in range(warmup_runs):
+                _ = det.infer_detections_batch([pil])[0]
+
+            repeat_records: list[dict[str, Any]] = []
+            first_out = None
+            for rep in range(repeats):
+                t0 = time.perf_counter()
+                out_rep = det.infer_detections_batch([pil])[0]
+                dt_ms_rep = (time.perf_counter() - t0) * 1000.0
+                if first_out is None:
+                    first_out = out_rep
+
+                rep_target_conf = _safe_float(out_rep.get("target_conf"))
+                rep_top_conf = _safe_float(out_rep.get("top_conf"))
+                rep_top_class = out_rep.get("top_class", None)
+                rep_target_id = getattr(det, "target_id", None)
+                rep_top_is_target = (
+                    rep_top_class is not None and rep_target_id is not None and int(rep_top_class) == int(rep_target_id)
+                )
+                rep_confs = out_rep.get("confs", []) or []
+                repeat_records.append({
+                    "repeat_index": int(rep),
+                    "target_conf": rep_target_conf,
+                    "top_conf": rep_top_conf,
+                    "top_class": rep_top_class,
+                    "top_label": _label_for(det, rep_top_class) if rep_top_class is not None else "",
+                    "top_is_target": bool(rep_top_is_target),
+                    "target_missing": bool(rep_target_conf <= 0.0),
+                    "top_misclass": bool(len(rep_confs) > 0 and not rep_top_is_target),
+                    "num_detections": int(len(rep_confs)),
+                    "runtime_ms": dt_ms_rep,
+                })
+
+            out = first_out if first_out is not None else {}
+            dt_ms = _mean(r["runtime_ms"] for r in repeat_records)
 
             boxes = out.get("boxes", []) or []
             confs = out.get("confs", []) or []
             clss = out.get("clss", []) or []
-            target_conf = _safe_float(out.get("target_conf"))
-            top_conf = _safe_float(out.get("top_conf"))
+            target_conf = _mean(r["target_conf"] for r in repeat_records)
+            top_conf = _mean(r["top_conf"] for r in repeat_records)
+            target_conf_std = _std(r["target_conf"] for r in repeat_records)
+            top_conf_std = _std(r["top_conf"] for r in repeat_records)
+            runtime_ms_std = _std(r["runtime_ms"] for r in repeat_records)
             top_class = out.get("top_class", None)
             target_id = getattr(det, "target_id", None)
             top_is_target = (top_class is not None and target_id is not None and int(top_class) == int(target_id))
             target_missing = (target_conf <= 0.0)
             # Proxy misclassification for stop-sign images: detector fires but top class is not target.
-            top_misclass = (len(confs) > 0 and not top_is_target)
+            top_misclass = bool(any(bool(r["top_misclass"]) for r in repeat_records))
             row = {
                 "detector_name": spec.name,
                 "detector_type": spec.detector_type,
                 "detector_model": spec.detector_model,
                 "target_id": target_id,
                 "target_conf": target_conf,
+                "target_conf_std": target_conf_std,
                 "target_box": out.get("target_box"),
                 "top_conf": top_conf,
+                "top_conf_std": top_conf_std,
                 "top_class": top_class,
                 "top_label": _label_for(det, top_class) if top_class is not None else "",
                 "top_box": out.get("top_box"),
@@ -296,6 +444,10 @@ def main() -> int:
                 "top_misclass": bool(top_misclass),
                 "num_detections": len(confs),
                 "runtime_ms": dt_ms,
+                "runtime_ms_std": runtime_ms_std,
+                "repeats": repeats,
+                "warmup_runs": warmup_runs,
+                "repeat_records": repeat_records,
                 # keep full detections for downstream analysis/reproducibility
                 "boxes": boxes,
                 "confs": confs,
@@ -303,16 +455,69 @@ def main() -> int:
             }
             image_record["detectors"][spec.name] = row
             print(
-                f"  - {spec.name:<14} target={target_conf:.4f} top={top_conf:.4f} "
-                f"n={len(confs):<3d} miss={int(top_misclass)} t={dt_ms:7.1f} ms"
+                f"  - {spec.name:<14} target={target_conf:.4f}+/-{target_conf_std:.4f} "
+                f"top={top_conf:.4f}+/-{top_conf_std:.4f} n={len(confs):<3d} "
+                f"mis={int(top_misclass)} t={dt_ms:7.1f}+/-{runtime_ms_std:6.1f} ms"
             )
 
             if args.save_overlays:
                 out_dir = Path(args.overlay_dir) / spec.name
-                overlay_name = f"{img_path.stem}_{spec.name}{img_path.suffix}"
+                overlay_name = f"{overlay_stem}_{spec.name}{overlay_suffix}"
                 _draw_boxes(pil.copy(), boxes, confs, clss, det, out_dir / overlay_name, topk=int(args.overlay_topk))
 
         per_image_results.append(image_record)
+
+    for media_path in media:
+        if _is_image(media_path):
+            try:
+                pil = Image.open(media_path).convert("RGB")
+            except Exception as e:
+                if media_path.suffix.lower() in {".heic", ".heif"} and not heif_enabled:
+                    print(
+                        f"[WARN] Failed to open {media_path.name} (HEIC). "
+                        f"Install HEIC support: pip install pillow-heif | detail={heif_err}"
+                    )
+                else:
+                    print(f"[WARN] Failed to open {media_path}: {e}")
+                continue
+            processed_image_files += 1
+            _process_sample(
+                pil=pil,
+                image_path=str(media_path),
+                source_type="image",
+                source_path=str(media_path),
+                overlay_stem=media_path.stem,
+                overlay_suffix=media_path.suffix,
+            )
+            continue
+
+        if _is_video(media_path):
+            processed_video_files += 1
+            print(f"[VIDEO] {media_path.name}")
+            try:
+                for frame_idx, frame_ts, frame_pil in _iter_video_frames(
+                    video_path=media_path,
+                    frame_step=int(args.video_frame_step),
+                    max_frames=int(args.video_max_frames),
+                    start_sec=float(args.video_start_sec),
+                    end_sec=float(args.video_end_sec),
+                ):
+                    sampled_video_frames += 1
+                    _process_sample(
+                        pil=frame_pil,
+                        image_path=f"{media_path}::frame_{int(frame_idx):06d}",
+                        source_type="video",
+                        source_path=str(media_path),
+                        overlay_stem=f"{media_path.stem}_f{int(frame_idx):06d}",
+                        overlay_suffix=".png",
+                        frame_index=int(frame_idx),
+                        frame_time_sec=float(frame_ts),
+                    )
+            except Exception as e:
+                print(f"[WARN] Failed to process video {media_path}: {e}")
+            continue
+
+        print(f"[WARN] Skipping unsupported file: {media_path}")
 
     # Aggregate summaries
     detector_rows: dict[str, list[dict[str, Any]]] = {s.name: [] for s in specs}
@@ -325,7 +530,16 @@ def main() -> int:
         "meta": {
             "input": str(inp),
             "recursive": bool(args.recursive),
-            "num_images": len(per_image_results),
+            "num_images": len(per_image_results),  # kept for backward compatibility
+            "num_records": len(per_image_results),
+            "num_image_files": int(processed_image_files),
+            "num_video_files": int(processed_video_files),
+            "num_video_frames_sampled": int(sampled_video_frames),
+            "include_videos": bool(include_videos),
+            "video_frame_step": int(args.video_frame_step),
+            "video_max_frames": int(args.video_max_frames),
+            "video_start_sec": float(args.video_start_sec),
+            "video_end_sec": float(args.video_end_sec),
             "device": args.device,
             "conf": float(args.conf),
             "iou": float(args.iou),
@@ -349,11 +563,17 @@ def main() -> int:
             writer = csv.writer(f)
             writer.writerow([
                 "image_path",
+                "source_type",
+                "source_path",
+                "frame_index",
+                "frame_time_sec",
                 "detector_name",
                 "detector_type",
                 "detector_model",
                 "target_conf",
+                "target_conf_std",
                 "top_conf",
+                "top_conf_std",
                 "top_class",
                 "top_label",
                 "top_is_target",
@@ -361,6 +581,8 @@ def main() -> int:
                 "top_misclass",
                 "num_detections",
                 "runtime_ms",
+                "runtime_ms_std",
+                "repeats",
                 "target_box",
                 "top_box",
             ])
@@ -368,11 +590,17 @@ def main() -> int:
                 for name, row in rec["detectors"].items():
                     writer.writerow([
                         rec["image_path"],
+                        rec.get("source_type", "image"),
+                        rec.get("source_path", rec["image_path"]),
+                        rec.get("frame_index", ""),
+                        rec.get("frame_time_sec", ""),
                         name,
                         row.get("detector_type", ""),
                         row.get("detector_model", ""),
                         row.get("target_conf", 0.0),
+                        row.get("target_conf_std", 0.0),
                         row.get("top_conf", 0.0),
+                        row.get("top_conf_std", 0.0),
                         row.get("top_class", ""),
                         row.get("top_label", ""),
                         row.get("top_is_target", False),
@@ -380,6 +608,8 @@ def main() -> int:
                         row.get("top_misclass", False),
                         row.get("num_detections", 0),
                         row.get("runtime_ms", 0.0),
+                        row.get("runtime_ms_std", 0.0),
+                        row.get("repeats", 1),
                         json.dumps(row.get("target_box")),
                         json.dumps(row.get("top_box")),
                     ])
