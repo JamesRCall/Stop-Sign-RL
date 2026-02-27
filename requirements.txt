@@ -24,3 +24,4 @@ transformers>=4.36
 
 # Optional but commonly needed
 opencv-python>=4.8
+pillow-heif>=0.16

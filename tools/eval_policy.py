@@ -71,6 +71,7 @@ def make_env(
         lambda_efficiency=float(args.lambda_efficiency),
         efficiency_eps=float(args.efficiency_eps),
         transform_strength=float(args.transform_strength),
+        fixed_angle_deg=(float(args.fixed_angle_deg) if args.fixed_angle_deg is not None else None),
         day_tolerance=0.05,
         lambda_day=float(args.lambda_day),
         lambda_area=float(args.lambda_area),
@@ -144,6 +145,8 @@ def parse_args():
     ap.add_argument("--step-cost", type=float, default=0.012)
     ap.add_argument("--step-cost-after-target", type=float, default=0.14)
     ap.add_argument("--transform-strength", type=float, default=1.0)
+    ap.add_argument("--fixed-angle-deg", type=float, default=None,
+                    help="If set, use a fixed sign rotation angle (degrees) for all transforms.")
     ap.add_argument("--area-cap-frac", type=float, default=0.30)
     ap.add_argument("--area-cap-penalty", type=float, default=-0.20)
     ap.add_argument("--area-cap-mode", choices=["soft", "hard"], default="soft")

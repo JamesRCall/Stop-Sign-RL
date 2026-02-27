@@ -120,6 +120,11 @@ def build_env_from_args(args) -> StopSignGridEnv:
         lambda_efficiency=float(args.lambda_efficiency),
         efficiency_eps=float(args.efficiency_eps),
         transform_strength=float(args.transform_strength),
+        fixed_angle_deg=(
+            float(args.fixed_angle_deg)
+            if getattr(args, "fixed_angle_deg", None) is not None
+            else None
+        ),
         day_tolerance=float(args.day_tolerance),
         lambda_day=float(args.lambda_day),
         lambda_area=float(args.lambda_area),

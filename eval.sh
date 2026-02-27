@@ -42,6 +42,7 @@ OBS_INCLUDE_MASK="${OBS_INCLUDE_MASK:-1}"
 CELL_COVER_THRESH="${CELL_COVER_THRESH:-0.60}"
 SUCCESS_CONF="${SUCCESS_CONF:-0.20}"
 TRANSFORM_STRENGTH="${TRANSFORM_STRENGTH:-1.0}"
+FIXED_ANGLE_DEG="${FIXED_ANGLE_DEG:-}"
 PAINT="${PAINT:-yellow}"
 PAINT_LIST="${PAINT_LIST:-}"
 EPISODE_STEPS="${EPISODE_STEPS:-300}"
@@ -91,6 +92,7 @@ Options:
   --cell-cover-thresh X (default: $CELL_COVER_THRESH)
   --success-conf X     (default: $SUCCESS_CONF)
   --transform-strength X (default: $TRANSFORM_STRENGTH)
+  --fixed-angle-deg X  (default: $FIXED_ANGLE_DEG)
   --paint NAME         (default: $PAINT)
   --paint-list LIST    (default: $PAINT_LIST)
   --episode-steps N    (default: $EPISODE_STEPS)
@@ -148,6 +150,7 @@ while [[ $# -gt 0 ]]; do
     --cell-cover-thresh) CELL_COVER_THRESH="$2"; shift 2;;
     --success-conf) SUCCESS_CONF="$2"; shift 2;;
     --transform-strength) TRANSFORM_STRENGTH="$2"; shift 2;;
+    --fixed-angle-deg) FIXED_ANGLE_DEG="$2"; shift 2;;
     --paint) PAINT="$2"; shift 2;;
     --paint-list) PAINT_LIST="$2"; shift 2;;
     --episode-steps) EPISODE_STEPS="$2"; shift 2;;
@@ -196,6 +199,9 @@ if [[ -n "${DETECTOR}" ]]; then
 fi
 if [[ -n "${DETECTOR_MODEL}" ]]; then
   EXTRA_ARGS+=(--detector-model "${DETECTOR_MODEL}")
+fi
+if [[ -n "${FIXED_ANGLE_DEG}" ]]; then
+  EXTRA_ARGS+=(--fixed-angle-deg "${FIXED_ANGLE_DEG}")
 fi
 
 # If curriculum end values are provided, use those for evaluation.
