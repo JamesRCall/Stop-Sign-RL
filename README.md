@@ -28,7 +28,9 @@ Core ideas:
 - Python 3.10+ recommended.
 - PyTorch, stable-baselines3, and sb3-contrib (MaskablePPO).
 - YOLO weights in `weights/` (see below).
-- Optional: `transformers` if you use the DETR backend.
+- Optional: `transformers` if you use the RT-DETR backend.
+- `opencv-python` for video inputs in real-world detector comparison.
+- Optional: `pillow-heif` if you want direct HEIC/HEIF image loading.
 
 ---
 
@@ -53,6 +55,11 @@ python -m pip install sb3-contrib
 Optional (DETR backend):
 ```bash
 python -m pip install transformers
+```
+
+Optional (HEIC/HEIF camera images):
+```bash
+python -m pip install pillow-heif
 ```
 
 ---
@@ -110,15 +117,20 @@ Torchvision detector example:
 python train_single_stop_sign.py --detector torchvision --detector-model retinanet_resnet50_fpn_v2
 ```
 
-Transformers DETR example:
+RT-DETR example:
 ```bash
-python train_single_stop_sign.py --detector detr --detector-model facebook/detr-resnet-50
+python train_single_stop_sign.py --detector rtdetr --detector-model PekingU/rtdetr_r50vd
 ```
 
 Evaluation (deterministic policy, logs to TensorBoard):
 
 ```bash
 bash eval.sh
+```
+
+Dedicated-angle evaluation (fixed rotation only):
+```bash
+bash eval.sh --transform-strength 0 --fixed-angle-deg 12
 ```
 
 ---
@@ -150,9 +162,10 @@ From `train_single_stop_sign.py`:
 - Phase penalties are uniform across phases (background/pole/transform are the only curriculum changes).
 - `--bg-mode` (`dataset` or `solid`) and `--no-pole` for single-phase
 - `--obs-size`, `--obs-margin`, `--obs-include-mask` (cropped observation + mask channel)
+- `--fixed-angle-deg` fixed sign rotation angle in degrees for dedicated angle sweeps
 - `--ent-coef`, `--ent-coef-start`, `--ent-coef-end`, `--ent-coef-steps` (entropy coefficient schedule; default 0.001)
 - `--detector-device` (e.g., `cpu`, `cuda`, or `auto`)
-- `--detector` (`yolo`, `torchvision`, or `detr`) and `--detector-model` (model name for torchvision/DETR)
+- `--detector` (`yolo`, `torchvision`, or `rtdetr`) and `--detector-model` (model name/id)
 - `--step-log-every`, `--step-log-keep`, `--step-log-500` (step logging control)
 - `--cnn` (`custom` or `nature`) choose feature extractor
 - `--ckpt`, `--overlays`, `--tb` output paths (TB logs grouped under `grid_uv_yolo<ver>`)
@@ -318,9 +331,13 @@ Trace replay:
 - `tools/area_sweep_debug.py` sweeps coverage levels and logs confidence/IoU/misclass stats.
 - `tools/area_sweep_analyze.py` summarizes sweep results and generates plots.
 - `tools/replay_area_sweep.py` replays logged sweep cases and saves images.
+- `tools/compare_real_images_detectors.py` compares detectors on real-world images and videos.
+- `tools/tabulate_real_world_results.py` converts real-world compare CSV into ECCV-style PDF tables.
+- `tools/replay_patterns_over_angles.py` replays saved PPO/greedy/random patterns over fixed angles.
+- `tools/tabulate_angle_compare.py` builds compact angle robustness tables from compare outputs.
 - `tools/test_stop_sign_confidence.py` checks detector confidence on a single image.
 - `tools/cleanup_runs.py` removes old run outputs (defaults to `_runs`).
-- `tools/detector_server.py` runs a shared detector (YOLO/torchvision/DETR) for multi-process training.
+- `tools/detector_server.py` runs a shared detector (YOLO/torchvision/RT-DETR) for multi-process training.
 - `setup_env.sh` contains a helper for local setup.
 
 Cleanup usage:
@@ -340,9 +357,22 @@ python tools/detector_server.py --model ./weights/yolo8n.pt --device cuda:0 --po
 # --detector-device server://HOST:5009
 ```
 
-For torchvision/DETR, pass `--detector` and `--detector-model` (no `--model` needed):
+For torchvision/RT-DETR, pass `--detector` and `--detector-model` (no `--model` needed):
 ```bash
-python tools/detector_server.py --detector detr --detector-model facebook/detr-resnet-50 --device cuda:0 --port 5009
+python tools/detector_server.py --detector rtdetr --detector-model PekingU/rtdetr_r50vd --device cuda:0 --port 5009
+```
+
+Real-world compare (images + videos):
+```bash
+python tools/compare_real_images_detectors.py \
+  --input ./data/Real_World \
+  --recursive \
+  --include-videos \
+  --video-frame-step 15 \
+  --video-max-frames 200 \
+  --target-class "stop sign" \
+  --out-json ./_runs/paper_data/real_detector_compare/results.json \
+  --out-csv ./_runs/paper_data/real_detector_compare/results.csv
 ```
 
 Single-command server + training (from `train.sh`):
@@ -400,11 +430,15 @@ Important `train.sh` knobs:
 |
 |-- tools/
 |   |-- aggregate_baselines.py
+|   |-- compare_real_images_detectors.py
 |   |-- debug_grid_env.py
 |   |-- area_sweep_debug.py
 |   |-- area_sweep_analyze.py
 |   |-- eval_policy.py
 |   |-- replay_area_sweep.py
+|   |-- replay_patterns_over_angles.py
+|   |-- tabulate_angle_compare.py
+|   |-- tabulate_real_world_results.py
 |   |-- test_stop_sign_confidence.py
 |   |-- cleanup_runs.py
 |   |-- detector_server.py

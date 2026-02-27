@@ -19,4 +19,5 @@ dependencies:
       - tensorboard>=2.14
       - ultralytics>=8.1
       - opencv-python>=4.8
+      - pillow-heif>=0.16
       - transformers>=4.36
