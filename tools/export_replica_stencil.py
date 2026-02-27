@@ -10,12 +10,16 @@ Outputs (default):
   - <out-prefix>_stencil_page.pdf   (same printable page)
   - <out-prefix>_cutmask.png        (exact clipped pattern mask in sign coordinates, scaled)
   - <out-prefix>_metadata.json      (grid geometry + selected cells for reproducibility)
+Optional:
+  - <out-prefix>_<mode>_mask.svg    (vector mask at true size; --export-svg)
+  - <out-prefix>_<mode>_mask.stl    (3D-printable mask tiles in mm; --export-stl)
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -363,6 +367,284 @@ def _tile_starts(total_px: int, window_px: int, stride_px: int) -> list[int]:
     return starts
 
 
+def _tile_starts_mm(total_mm: float, window_mm: float, stride_mm: float) -> list[float]:
+    if total_mm <= window_mm:
+        return [0.0]
+    starts = [0.0]
+    pos = 0.0
+    while True:
+        nxt = pos + stride_mm
+        if nxt + window_mm >= total_mm:
+            last = max(0.0, total_mm - window_mm)
+            if last - starts[-1] > 1e-6:
+                starts.append(last)
+            break
+        starts.append(nxt)
+        pos = nxt
+    return starts
+
+
+def _split_indices_by_mm(widths_mm: list[float], groups: int) -> list[tuple[int, int]]:
+    if groups <= 1:
+        return [(0, len(widths_mm))]
+    total = float(sum(widths_mm))
+    if total <= 0:
+        return [(0, len(widths_mm))]
+    splits: list[tuple[int, int]] = []
+    start = 0
+    used = 0.0
+    for g in range(groups):
+        remaining_groups = groups - g
+        remaining_width = total - used
+        target = remaining_width / remaining_groups
+        if g == groups - 1:
+            splits.append((start, len(widths_mm)))
+            break
+        acc = 0.0
+        idx = start
+        while idx < len(widths_mm):
+            acc += widths_mm[idx]
+            idx += 1
+            cols_remaining = len(widths_mm) - idx
+            if acc >= target and cols_remaining >= remaining_groups - 1:
+                break
+        splits.append((start, idx))
+        used += acc
+        start = idx
+    return splits
+
+
+def _mask_cells_from_mode(geom: GridGeom, selected_cells: list[tuple[int, int]], mode: str) -> list[tuple[int, int]]:
+    mode = str(mode).lower().strip()
+    if mode == "selected":
+        return list(selected_cells)
+    if mode != "cover":
+        raise ValueError(f"Unsupported mask mode: {mode}")
+    sel = set(selected_cells)
+    out: list[tuple[int, int]] = []
+    for r in range(geom.Gh):
+        for c in range(geom.Gw):
+            if geom.valid[r, c] and (r, c) not in sel:
+                out.append((r, c))
+    return out
+
+
+def _rect_mm_from_cell(geom: GridGeom, r: int, c: int, scale_x: float, scale_y: float) -> tuple[float, float, float, float]:
+    x0, y0, x1, y1 = geom.rects[r * geom.Gw + c]
+    x0_mm = float(x0) * scale_x
+    x1_mm = float(x1) * scale_x
+    # Flip Y so STL uses bottom-left origin (y up)
+    y0_mm = float(geom.H - y1) * scale_y
+    y1_mm = float(geom.H - y0) * scale_y
+    return x0_mm, y0_mm, x1_mm, y1_mm
+
+
+def _export_svg(
+    path: Path,
+    geom: GridGeom,
+    mask_cells: list[tuple[int, int]],
+    sign_w_mm: float,
+    sign_h_mm: float,
+) -> None:
+    scale_x = sign_w_mm / float(geom.W)
+    scale_y = sign_h_mm / float(geom.H)
+    header = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{sign_w_mm:.3f}mm" height="{sign_h_mm:.3f}mm" viewBox="0 0 {sign_w_mm:.3f} {sign_h_mm:.3f}">',
+        '<g fill="#000000" stroke="none">',
+    ]
+    rects = []
+    for r, c in mask_cells:
+        x0, y0, x1, y1 = geom.rects[r * geom.Gw + c]
+        x = float(x0) * scale_x
+        y = float(y0) * scale_y
+        w = float(x1 - x0) * scale_x
+        h = float(y1 - y0) * scale_y
+        rects.append(f'<rect x="{x:.3f}" y="{y:.3f}" width="{w:.3f}" height="{h:.3f}" />')
+    footer = ["</g>", "</svg>"]
+    svg = "\n".join(header + rects + footer) + "\n"
+    path.write_text(svg, encoding="utf-8")
+
+
+def _normal(v1: tuple[float, float, float], v2: tuple[float, float, float], v3: tuple[float, float, float]) -> tuple[float, float, float]:
+    ax, ay, az = v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]
+    bx, by, bz = v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2]
+    nx = ay * bz - az * by
+    ny = az * bx - ax * bz
+    nz = ax * by - ay * bx
+    norm = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if norm <= 0:
+        return (0.0, 0.0, 0.0)
+    return (nx / norm, ny / norm, nz / norm)
+
+
+def _add_tri(tris: list[tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]],
+             v1: tuple[float, float, float],
+             v2: tuple[float, float, float],
+             v3: tuple[float, float, float]) -> None:
+    tris.append((_normal(v1, v2, v3), v1, v2, v3))
+
+
+def _add_quad(tris: list[tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]],
+              v0: tuple[float, float, float],
+              v1: tuple[float, float, float],
+              v2: tuple[float, float, float],
+              v3: tuple[float, float, float]) -> None:
+    _add_tri(tris, v0, v1, v2)
+    _add_tri(tris, v0, v2, v3)
+
+
+def _write_binary_stl(path: Path, tris: list[tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]]) -> None:
+    header = b"stop_sign_cover".ljust(80, b" ")
+    with path.open("wb") as f:
+        f.write(header[:80])
+        f.write(struct.pack("<I", len(tris)))
+        for n, v1, v2, v3 in tris:
+            f.write(struct.pack("<3f", float(n[0]), float(n[1]), float(n[2])))
+            f.write(struct.pack("<3f", float(v1[0]), float(v1[1]), float(v1[2])))
+            f.write(struct.pack("<3f", float(v2[0]), float(v2[1]), float(v2[2])))
+            f.write(struct.pack("<3f", float(v3[0]), float(v3[1]), float(v3[2])))
+            f.write(struct.pack("<H", 0))
+
+
+def _triangles_for_tile(
+    geom: GridGeom,
+    mask: np.ndarray,
+    r0: int,
+    r1: int,
+    c0: int,
+    c1: int,
+    scale_x: float,
+    scale_y: float,
+    thickness_mm: float,
+    tile_x0_mm: float,
+    tile_y0_mm: float,
+) -> list[tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]]:
+    tris: list[tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]] = []
+    z0 = 0.0
+    z1 = float(thickness_mm)
+    for r in range(r0, r1):
+        for c in range(c0, c1):
+            if not mask[r, c]:
+                continue
+            x0_mm, y0_mm, x1_mm, y1_mm = _rect_mm_from_cell(geom, r, c, scale_x, scale_y)
+            x0 = x0_mm - tile_x0_mm
+            x1 = x1_mm - tile_x0_mm
+            y0 = y0_mm - tile_y0_mm
+            y1 = y1_mm - tile_y0_mm
+
+            # Neighbor checks within tile only; outside tile = boundary.
+            has_left = (c - 1 >= c0) and mask[r, c - 1]
+            has_right = (c + 1 < c1) and mask[r, c + 1]
+            has_down = (r + 1 < r1) and mask[r + 1, c]
+            has_up = (r - 1 >= r0) and mask[r - 1, c]
+
+            # Top (+Z)
+            _add_quad(tris,
+                      (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1))
+            # Bottom (-Z)
+            _add_quad(tris,
+                      (x0, y0, z0), (x0, y1, z0), (x1, y1, z0), (x1, y0, z0))
+
+            # Left (-X)
+            if not has_left:
+                _add_quad(tris,
+                          (x0, y0, z0), (x0, y0, z1), (x0, y1, z1), (x0, y1, z0))
+            # Right (+X)
+            if not has_right:
+                _add_quad(tris,
+                          (x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1))
+            # Down (-Y)
+            if not has_down:
+                _add_quad(tris,
+                          (x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1))
+            # Up (+Y)
+            if not has_up:
+                _add_quad(tris,
+                          (x0, y1, z0), (x0, y1, z1), (x1, y1, z1), (x1, y1, z0))
+    return tris
+
+
+def _export_stl_tiles(
+    out_prefix: Path,
+    geom: GridGeom,
+    mask_cells: list[tuple[int, int]],
+    sign_w_mm: float,
+    sign_h_mm: float,
+    thickness_mm: float,
+    tile_max_mm: float,
+) -> list[str]:
+    scale_x = sign_w_mm / float(geom.W)
+    scale_y = sign_h_mm / float(geom.H)
+
+    mask = np.zeros((geom.Gh, geom.Gw), dtype=bool)
+    for r, c in mask_cells:
+        if 0 <= r < geom.Gh and 0 <= c < geom.Gw:
+            mask[r, c] = True
+
+    # Compute per-column/row physical sizes to split on cell boundaries.
+    col_widths = []
+    for c in range(geom.Gw):
+        x0, _, x1, _ = geom.rects[c]
+        col_widths.append(float(x1 - x0) * scale_x)
+    row_heights = []
+    for r in range(geom.Gh):
+        _, y0, _, y1 = geom.rects[r * geom.Gw]
+        row_heights.append(float(y1 - y0) * scale_y)
+
+    total_w = sum(col_widths)
+    total_h = sum(row_heights)
+    tile_max = float(tile_max_mm)
+    if tile_max <= 0:
+        tile_max = max(total_w, total_h)
+    n_x = max(1, int(math.ceil(total_w / tile_max)))
+    n_y = max(1, int(math.ceil(total_h / tile_max)))
+
+    col_splits = _split_indices_by_mm(col_widths, n_x)
+    row_splits = _split_indices_by_mm(row_heights, n_y)
+
+    # Precompute column and row origins in mm (bottom-left origin for STL).
+    col_x0_mm = [0.0] * geom.Gw
+    acc = 0.0
+    for c in range(geom.Gw):
+        col_x0_mm[c] = acc
+        acc += col_widths[c]
+
+    # Row bottom coordinates in STL space (y up, origin at bottom-left).
+    row_y0_mm = [0.0] * geom.Gh
+    for r in range(geom.Gh):
+        _, y0, _, y1 = geom.rects[r * geom.Gw]
+        row_y0_mm[r] = float(geom.H - y1) * scale_y
+
+    tile_paths: list[str] = []
+    tile_idx = 0
+    for ry, (r0, r1) in enumerate(row_splits):
+        for cx, (c0, c1) in enumerate(col_splits):
+            tile_idx += 1
+            tile_x0 = col_x0_mm[c0]
+            tile_y0 = row_y0_mm[r1 - 1]
+            tris = _triangles_for_tile(
+                geom=geom,
+                mask=mask,
+                r0=r0,
+                r1=r1,
+                c0=c0,
+                c1=c1,
+                scale_x=scale_x,
+                scale_y=scale_y,
+                thickness_mm=thickness_mm,
+                tile_x0_mm=tile_x0,
+                tile_y0_mm=tile_y0,
+            )
+            if n_x == 1 and n_y == 1:
+                stl_path = out_prefix.with_name(out_prefix.name + ".stl")
+            else:
+                stl_path = out_prefix.with_name(out_prefix.name + f"_tile_{ry+1:02d}x{cx+1:02d}.stl")
+            _write_binary_stl(stl_path, tris)
+            tile_paths.append(str(stl_path))
+    return tile_paths
+
+
 def _draw_tile_registration(draw: ImageDraw.ImageDraw, x0: int, y0: int, x1: int, y1: int):
     col = (0, 0, 0, 160)
     L = 12
@@ -482,6 +764,13 @@ def main() -> int:
     ap.add_argument("--tile-overlap", type=float, default=0.20,
                     help="Overlap between neighboring standard-paper tiles (same units as sign size).")
     ap.add_argument("--label-cells", action="store_true", help="Print selected cell (r,c) list on page")
+    ap.add_argument("--mask-mode", default="selected", choices=["selected", "cover"],
+                    help="Mask mode for SVG/STL output: selected cells (stencil) or cover (valid minus selected).")
+    ap.add_argument("--export-svg", action="store_true", help="Export SVG of the selected/cover mask at real size.")
+    ap.add_argument("--export-stl", action="store_true", help="Export STL (mm units) of the selected/cover mask.")
+    ap.add_argument("--thickness-mm", type=float, default=1.6, help="STL extrusion thickness in mm.")
+    ap.add_argument("--tile-max-mm", type=float, default=300.0,
+                    help="Max tile size for STL (mm). Set <=0 to disable tiling.")
     ap.add_argument("--out-prefix", default="./_runs/paper_data/replica_stencil/replica_stop_sign", help="Output file prefix")
     args = ap.parse_args()
 
@@ -516,6 +805,8 @@ def main() -> int:
     sign_w_in = _to_inches(float(args.sign_width), args.units)
     sign_h_in = _to_inches(float(args.sign_height), args.units)
     margin_in = _to_inches(float(args.margin), args.units)
+    sign_w_mm = sign_w_in * 25.4
+    sign_h_mm = sign_h_in * 25.4
 
     page, cutmask = _draw_page(
         sign_rgba=sign_rgba,
@@ -540,6 +831,27 @@ def main() -> int:
     page.convert("RGB").save(pdf_page, format="PDF", resolution=int(args.dpi))
     cutmask.save(cutmask_png, format="PNG", dpi=(int(args.dpi), int(args.dpi)))
 
+    mask_mode = str(args.mask_mode).lower().strip()
+    mask_cells = _mask_cells_from_mode(geom, selected_cells, mask_mode)
+
+    svg_path = None
+    if bool(args.export_svg):
+        svg_path = out_prefix.with_name(out_prefix.name + f"_{mask_mode}_mask.svg")
+        _export_svg(svg_path, geom, mask_cells, sign_w_mm, sign_h_mm)
+
+    stl_paths: list[str] = []
+    if bool(args.export_stl):
+        stl_prefix = out_prefix.with_name(out_prefix.name + f"_{mask_mode}_mask")
+        stl_paths = _export_stl_tiles(
+            out_prefix=stl_prefix,
+            geom=geom,
+            mask_cells=mask_cells,
+            sign_w_mm=sign_w_mm,
+            sign_h_mm=sign_h_mm,
+            thickness_mm=float(args.thickness_mm),
+            tile_max_mm=float(args.tile_max_mm),
+        )
+
     meta = {
         "sign_image": str(sign_path),
         "grid_cell_px": int(args.grid_cell),
@@ -554,12 +866,17 @@ def main() -> int:
             "units": str(args.units),
             "width_in": sign_w_in,
             "height_in": sign_h_in,
+            "width_mm": float(sign_w_mm),
+            "height_mm": float(sign_h_mm),
         },
         "print": {"dpi": int(args.dpi), "margin_input": float(args.margin), "margin_units": str(args.units), "margin_in": margin_in},
         "outputs": {
             "stencil_page_png": str(png_page),
             "stencil_page_pdf": str(pdf_page),
             "cutmask_png": str(cutmask_png),
+            "mask_mode": mask_mode,
+            "mask_svg": str(svg_path) if svg_path else "",
+            "mask_stl": stl_paths,
         },
     }
 
@@ -631,6 +948,13 @@ def main() -> int:
     print(f"[SAVE] {png_page}")
     print(f"[SAVE] {pdf_page}")
     print(f"[SAVE] {cutmask_png}")
+    if svg_path:
+        print(f"[SAVE] {svg_path}")
+    if stl_paths:
+        if len(stl_paths) == 1:
+            print(f"[SAVE] {stl_paths[0]}")
+        else:
+            print(f"[SAVE] {len(stl_paths)} STL tiles")
     print(f"[SAVE] {meta_json}")
     print(
         f"[INFO] grid={geom.Gh}x{geom.Gw} valid={int(geom.valid.sum())} selected={len(selected_cells)} "
