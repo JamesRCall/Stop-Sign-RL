@@ -18,7 +18,7 @@ import math
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -103,6 +103,26 @@ def _load_action_patterns_from_list(list_path: Path, method: str) -> List[Dict[s
             }
         )
     return out
+
+
+def _first_run_config_from_list(list_path: Path) -> Optional[Dict[str, Any]]:
+    if not list_path.is_file():
+        return None
+    for line in list_path.read_text(encoding="utf-8").splitlines():
+        run_dir = line.strip()
+        if not run_dir:
+            continue
+        s = Path(run_dir) / "summary.json"
+        if not s.is_file():
+            continue
+        try:
+            obj = _read_json(s)
+        except Exception:
+            continue
+        cfg = obj.get("config", {})
+        if isinstance(cfg, dict) and cfg:
+            return dict(cfg)
+    return None
 
 
 def _default_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -243,6 +263,11 @@ def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
             w.writerow(r)
 
 
+def _write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Replay saved PPO/greedy/random patterns across fixed angles.")
     p.add_argument("--compare-root", default="_runs/paper_data/compare")
@@ -264,14 +289,24 @@ def main() -> int:
 
     all_rows: List[Dict[str, Any]] = []
     total_jobs = 0
+    processed_detectors: List[str] = []
+    skipped: List[Dict[str, str]] = []
     for d in run_dirs:
         ppo_summary = d / "ppo_summary.json"
-        if not ppo_summary.is_file():
-            print(f"[WARN] missing ppo_summary.json in {d}, skipping")
+        cfg: Dict[str, Any] = {}
+        if ppo_summary.is_file():
+            ppo_obj = _read_json(ppo_summary)
+            cfg = ppo_obj.get("config", {}) if isinstance(ppo_obj, dict) else {}
+            cfg = cfg if isinstance(cfg, dict) else {}
+        if not cfg:
+            cfg = _first_run_config_from_list(d / "greedy_runs.txt") or {}
+        if not cfg:
+            cfg = _first_run_config_from_list(d / "random_runs.txt") or {}
+        if not cfg:
+            msg = f"missing usable config (ppo_summary or baseline summary config)"
+            print(f"[WARN] {d.name}: {msg}")
+            skipped.append({"detector": d.name, "reason": msg})
             continue
-        ppo_obj = _read_json(ppo_summary)
-        cfg = ppo_obj.get("config", {}) if isinstance(ppo_obj, dict) else {}
-        cfg = cfg if isinstance(cfg, dict) else {}
         detector_name = d.name
 
         patterns = []
@@ -279,8 +314,11 @@ def main() -> int:
         patterns.extend(_load_action_patterns_from_list(d / "greedy_runs.txt", "greedy"))
         patterns.extend(_load_action_patterns_from_list(d / "random_runs.txt", "random"))
         if not patterns:
-            print(f"[WARN] no patterns found in {d}, skipping")
+            msg = "no patterns found (ppo_episodes or baseline actions)"
+            print(f"[WARN] {d.name}: {msg}")
+            skipped.append({"detector": d.name, "reason": msg})
             continue
+        processed_detectors.append(d.name)
 
         total_jobs += len(patterns) * len(angles)
         done = 0
@@ -313,12 +351,32 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     _write_csv(out_dir / "angle_replay_rows.csv", all_rows)
     _write_csv(out_dir / "angle_replay_summary.csv", summary_rows)
+    _write_json(out_dir / "angle_replay_rows.json", all_rows)
+    _write_json(out_dir / "angle_replay_summary.json", summary_rows)
+    _write_json(
+        out_dir / "angle_replay_meta.json",
+        {
+            "compare_root": str(compare_root),
+            "run_glob": str(args.run_glob),
+            "angles": [float(a) for a in angles],
+            "eval_k": int(args.eval_k),
+            "detector_device": str(args.detector_device),
+            "processed_detectors": processed_detectors,
+            "skipped": skipped,
+            "n_run_dirs_matched": int(len(run_dirs)),
+            "n_processed_detectors": int(len(processed_detectors)),
+            "n_rows": int(len(all_rows)),
+            "n_summary_rows": int(len(summary_rows)),
+        },
+    )
     print(f"[SAVE] {out_dir / 'angle_replay_rows.csv'}")
     print(f"[SAVE] {out_dir / 'angle_replay_summary.csv'}")
-    print(f"[DONE] rows={len(all_rows)} summary_rows={len(summary_rows)}")
+    print(f"[SAVE] {out_dir / 'angle_replay_rows.json'}")
+    print(f"[SAVE] {out_dir / 'angle_replay_summary.json'}")
+    print(f"[SAVE] {out_dir / 'angle_replay_meta.json'}")
+    print(f"[DONE] detectors={len(processed_detectors)} rows={len(all_rows)} summary_rows={len(summary_rows)}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
