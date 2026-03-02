@@ -275,6 +275,12 @@ def main() -> int:
                     help="Start time (seconds) for video sampling.")
     ap.add_argument("--video-end-sec", type=float, default=0.0,
                     help="End time (seconds) for video sampling (<=0 means full video).")
+    ap.add_argument("--speed-mph", type=float, default=0.0,
+                    help="If >0, estimate traveled distance per sampled video frame using this speed.")
+    ap.add_argument("--distance-fps", type=float, default=0.0,
+                    help="If >0, use this FPS for distance estimate (e.g., 30). Otherwise use video timestamps.")
+    ap.add_argument("--initial-distance-m", type=float, default=0.0,
+                    help="If >0, also report estimated remaining distance to sign: max(0, initial - traveled).")
     ap.add_argument("--device", default="auto", help="Detector device: cpu/cuda/auto")
     ap.add_argument("--conf", type=float, default=0.10, help="Detection confidence threshold")
     ap.add_argument("--iou", type=float, default=0.45, help="NMS/IoU threshold where applicable")
@@ -327,6 +333,12 @@ def main() -> int:
             f"max_frames={int(args.video_max_frames)} start_sec={float(args.video_start_sec):.2f} "
             f"end_sec={float(args.video_end_sec):.2f}"
         )
+        if float(args.speed_mph) > 0.0:
+            fps_mode = f"{float(args.distance_fps):.2f} (override)" if float(args.distance_fps) > 0.0 else "video timestamps"
+            print(
+                f"[COMPARE] distance est: speed_mph={float(args.speed_mph):.3f} "
+                f"fps_mode={fps_mode} initial_distance_m={float(args.initial_distance_m):.3f}"
+            )
 
     detectors: dict[str, Any] = {}
     for spec in specs:
@@ -360,6 +372,11 @@ def main() -> int:
         overlay_suffix: str,
         frame_index: int | None = None,
         frame_time_sec: float | None = None,
+        distance_elapsed_sec: float | None = None,
+        distance_traveled_m: float | None = None,
+        distance_traveled_ft: float | None = None,
+        distance_to_sign_m: float | None = None,
+        distance_to_sign_ft: float | None = None,
     ) -> None:
         image_record = {
             "image_path": image_path,
@@ -367,6 +384,11 @@ def main() -> int:
             "source_path": source_path,
             "frame_index": frame_index,
             "frame_time_sec": frame_time_sec,
+            "distance_elapsed_sec": distance_elapsed_sec,
+            "distance_traveled_m": distance_traveled_m,
+            "distance_traveled_ft": distance_traveled_ft,
+            "distance_to_sign_m": distance_to_sign_m,
+            "distance_to_sign_ft": distance_to_sign_ft,
             "width": pil.width,
             "height": pil.height,
             "detectors": {},
@@ -503,6 +525,25 @@ def main() -> int:
                     end_sec=float(args.video_end_sec),
                 ):
                     sampled_video_frames += 1
+                    d_elapsed_sec = None
+                    d_traveled_m = None
+                    d_traveled_ft = None
+                    d_to_sign_m = None
+                    d_to_sign_ft = None
+                    speed_mph = float(args.speed_mph)
+                    if speed_mph > 0.0:
+                        if float(args.distance_fps) > 0.0:
+                            d_fps = float(args.distance_fps)
+                            start_idx_d = int(round(float(args.video_start_sec) * d_fps))
+                            d_elapsed_sec = max(0.0, (float(frame_idx) - float(start_idx_d)) / d_fps)
+                        else:
+                            d_elapsed_sec = max(0.0, float(frame_ts) - float(args.video_start_sec))
+                        speed_mps = speed_mph * 0.44704
+                        d_traveled_m = d_elapsed_sec * speed_mps
+                        d_traveled_ft = d_traveled_m * 3.280839895
+                        if float(args.initial_distance_m) > 0.0:
+                            d_to_sign_m = max(0.0, float(args.initial_distance_m) - d_traveled_m)
+                            d_to_sign_ft = d_to_sign_m * 3.280839895
                     _process_sample(
                         pil=frame_pil,
                         image_path=f"{media_path}::frame_{int(frame_idx):06d}",
@@ -512,6 +553,11 @@ def main() -> int:
                         overlay_suffix=".png",
                         frame_index=int(frame_idx),
                         frame_time_sec=float(frame_ts),
+                        distance_elapsed_sec=d_elapsed_sec,
+                        distance_traveled_m=d_traveled_m,
+                        distance_traveled_ft=d_traveled_ft,
+                        distance_to_sign_m=d_to_sign_m,
+                        distance_to_sign_ft=d_to_sign_ft,
                     )
             except Exception as e:
                 print(f"[WARN] Failed to process video {media_path}: {e}")
@@ -540,6 +586,9 @@ def main() -> int:
             "video_max_frames": int(args.video_max_frames),
             "video_start_sec": float(args.video_start_sec),
             "video_end_sec": float(args.video_end_sec),
+            "speed_mph": float(args.speed_mph),
+            "distance_fps": float(args.distance_fps),
+            "initial_distance_m": float(args.initial_distance_m),
             "device": args.device,
             "conf": float(args.conf),
             "iou": float(args.iou),
@@ -567,6 +616,11 @@ def main() -> int:
                 "source_path",
                 "frame_index",
                 "frame_time_sec",
+                "distance_elapsed_sec",
+                "distance_traveled_m",
+                "distance_traveled_ft",
+                "distance_to_sign_m",
+                "distance_to_sign_ft",
                 "detector_name",
                 "detector_type",
                 "detector_model",
@@ -594,6 +648,11 @@ def main() -> int:
                         rec.get("source_path", rec["image_path"]),
                         rec.get("frame_index", ""),
                         rec.get("frame_time_sec", ""),
+                        rec.get("distance_elapsed_sec", ""),
+                        rec.get("distance_traveled_m", ""),
+                        rec.get("distance_traveled_ft", ""),
+                        rec.get("distance_to_sign_m", ""),
+                        rec.get("distance_to_sign_ft", ""),
                         name,
                         row.get("detector_type", ""),
                         row.get("detector_model", ""),
