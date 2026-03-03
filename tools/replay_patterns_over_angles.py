@@ -16,11 +16,16 @@ import glob
 import json
 import math
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.append(ROOT)
 
 from baselines.grid_utils import build_env_from_args
 
