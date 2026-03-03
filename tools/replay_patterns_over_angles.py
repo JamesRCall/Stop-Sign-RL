@@ -229,7 +229,7 @@ def _default_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 def _build_env_args(base_cfg: Dict[str, Any], angle: float, eval_k: int, detector_device: str) -> SimpleNamespace:
     cfg = _default_cfg(base_cfg)
-    cfg["transform_strength"] = 0.0
+    cfg["transform_strength"] = 1.0
     cfg["fixed_angle_deg"] = float(angle)
     cfg["eval_K"] = int(eval_k)
     cfg["detector_device"] = detector_device
