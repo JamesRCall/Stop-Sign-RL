@@ -14,7 +14,7 @@ if ROOT not in sys.path:
     sys.path.append(ROOT)
 
 from torch.utils.tensorboard import SummaryWriter
-from baselines.grid_utils import build_env_from_args, save_final_images, info_metrics, log_metrics_tb, eval_pattern_over_angles, parse_angle_list
+from baselines.grid_utils import build_env_from_args, save_final_images, info_metrics, log_metrics_tb, eval_pattern_over_angles_in_env, parse_angle_list
 
 
 def snapshot_state(env):
@@ -190,14 +190,12 @@ def main():
     angle_list = parse_angle_list(args.angle_list)
     angle_results = []
     if angle_list and action_seq:
-        angle_results = eval_pattern_over_angles(
-            args,
+        angle_results = eval_pattern_over_angles_in_env(
+            env,
             pattern_type="actions",
             pattern=action_seq,
-            seed=int(args.seed),
             angles=angle_list,
             eval_k=int(args.eval_K),
-            detector_device=str(args.detector_device),
         )
     final_step = step_logs[-1] if step_logs else {}
     final_metrics = final_step.get("metrics", {}) if isinstance(final_step, dict) else {}

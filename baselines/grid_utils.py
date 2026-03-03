@@ -338,3 +338,46 @@ def eval_pattern_over_angles(
         metrics["angle_deg"] = float(angle)
         out.append(metrics)
     return out
+
+
+def eval_pattern_over_angles_in_env(
+    env,
+    pattern_type: str,
+    pattern: List[int],
+    angles: List[float],
+    eval_k: int,
+) -> List[Dict[str, float]]:
+    if not angles or not pattern:
+        return []
+    orig_fixed = getattr(env, "fixed_angle_deg", None)
+    orig_cells = env._episode_cells.copy()
+    _apply_pattern(env, pattern_type, pattern)
+    out: List[Dict[str, float]] = []
+    for angle in angles:
+        env.fixed_angle_deg = float(angle)
+        k = max(1, min(int(eval_k), len(env._transform_seeds)))
+        seeds = env._transform_seeds[:k]
+        c0_day_list, c0_on_list = env._eval_plain_over_K(seeds)
+        overlay = env._eval_overlay_over_K(seeds)
+        c0_day = _as_float(np.mean(c0_day_list)) if c0_day_list else float("nan")
+        c0_on = _as_float(np.mean(c0_on_list)) if c0_on_list else float("nan")
+        c_day = _as_float(overlay.get("c_day", float("nan")))
+        c_on = _as_float(overlay.get("c_on", float("nan")))
+        drop_on = _as_float(c0_day - c_on)
+        area_frac = _as_float(env._area_frac_selected())
+        success = 1.0 if (math.isfinite(c_on) and c_on <= float(env.success_conf_threshold)) else 0.0
+        out.append(
+            {
+                "angle_deg": float(angle),
+                "c0_day": c0_day,
+                "c0_on": c0_on,
+                "c_day": c_day,
+                "c_on": c_on,
+                "drop_on": drop_on,
+                "area_frac": area_frac,
+                "success": success,
+            }
+        )
+    env.fixed_angle_deg = orig_fixed
+    env._episode_cells = orig_cells
+    return out

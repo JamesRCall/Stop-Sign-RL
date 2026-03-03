@@ -33,7 +33,7 @@ from train_single_stop_sign import (
     resolve_yolo_weights,
     find_latest_checkpoint,
 )
-from baselines.grid_utils import eval_pattern_over_angles, parse_angle_list
+from baselines.grid_utils import eval_pattern_over_angles_in_env, parse_angle_list
 
 
 def make_env(
@@ -226,6 +226,10 @@ def main():
 
     env = make_env(args, stop_plain, stop_uv, pole_rgba, img_size, use_vecnorm=use_vecnorm)
     model.set_env(env)
+    base_env = env
+    while hasattr(base_env, "venv"):
+        base_env = base_env.venv
+    base_env = base_env.envs[0].unwrapped
 
     writer = None
     tb_dir = ""
@@ -374,14 +378,12 @@ def main():
             "composited_image_path": composited_img_path,
         })
         if angle_list and seed_i is not None and trace_selected_indices:
-            angle_results = eval_pattern_over_angles(
-                args,
+            angle_results = eval_pattern_over_angles_in_env(
+                base_env,
                 pattern_type="selected_indices",
                 pattern=trace_selected_indices,
-                seed=int(seed_i),
                 angles=angle_list,
                 eval_k=int(args.eval_K),
-                detector_device=str(args.detector_device),
             )
             episode_rows[-1]["angle_results"] = angle_results
             for r in angle_results:

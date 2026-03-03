@@ -14,7 +14,7 @@ if ROOT not in sys.path:
     sys.path.append(ROOT)
 
 from torch.utils.tensorboard import SummaryWriter
-from baselines.grid_utils import build_env_from_args, save_final_images, info_metrics, log_metrics_tb, eval_pattern_over_angles, parse_angle_list
+from baselines.grid_utils import build_env_from_args, save_final_images, info_metrics, log_metrics_tb, eval_pattern_over_angles_in_env, parse_angle_list
 
 
 def score_from(info, reward, mode: str) -> float:
@@ -212,15 +212,13 @@ def main():
     save_final_images(env, out_dir)
     angle_list = parse_angle_list(args.angle_list)
     angle_results = []
-    if angle_list and best_actions and best_trial is not None:
-        angle_results = eval_pattern_over_angles(
-            args,
+    if angle_list and best_actions:
+        angle_results = eval_pattern_over_angles_in_env(
+            env,
             pattern_type="actions",
             pattern=best_actions,
-            seed=int(best_trial),
             angles=angle_list,
             eval_k=int(args.eval_K),
-            detector_device=str(args.detector_device),
         )
     final_step = best_steps[-1] if best_steps else {}
     final_metrics = final_step.get("metrics", {}) if isinstance(final_step, dict) else {}
