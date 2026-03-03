@@ -224,6 +224,7 @@ def main():
     if use_vecnorm and not args.vecnorm:
         print("[EVAL] WARN: model expects normalized obs but no vecnorm stats provided; using fresh VecNormalize.")
 
+    angle_list = parse_angle_list(args.angle_list)
     env = make_env(args, stop_plain, stop_uv, pole_rgba, img_size, use_vecnorm=use_vecnorm)
     model.set_env(env)
     base_env = env
@@ -255,7 +256,6 @@ def main():
         print(f"[EVAL] save_composited_dir={composited_save_dir}")
 
     image_budget = int(max(0, args.log_images))
-    angle_list = parse_angle_list(args.angle_list)
     angle_after_vals: Dict[float, List[float]] = {float(a): [] for a in angle_list}
     successes = 0
     steps_list: List[float] = []
