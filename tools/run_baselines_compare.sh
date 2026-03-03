@@ -4,8 +4,8 @@ set -euo pipefail
 # Simple runner to compare PPO vs greedy/random baselines over multiple seeds.
 # Configure via env vars or CLI flags below.
 
-N="${N:-20}"
-SEED_BASE="${SEED_BASE:-123}"
+N="${N:-5}"
+SEED_BASE="${SEED_BASE:-1000}"
 EVAL_K="${EVAL_K:-3}"
 GRID_CELL="${GRID_CELL:-16}"
 PAINT="${PAINT:-yellow}"
@@ -27,6 +27,14 @@ ANGLE_REPLAY="${ANGLE_REPLAY:-1}"
 ANGLE_LIST="${ANGLE_LIST:--24,-18,-12,-6,0,6,12,18,24}"
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
 OUT_ROOT="${OUT_ROOT:-./_runs/baseline_compare_${RUN_TAG}}"
+if [[ -e "${OUT_ROOT}" ]]; then
+  base="${OUT_ROOT}"
+  i=1
+  while [[ -e "${base}_v${i}" ]]; do
+    i=$((i + 1))
+  done
+  OUT_ROOT="${base}_v${i}"
+fi
 mkdir -p "${OUT_ROOT}"
 GREEDY_LIST="${OUT_ROOT}/greedy_runs.txt"
 RANDOM_LIST="${OUT_ROOT}/random_runs.txt"
