@@ -265,6 +265,48 @@ def _eval_pattern(env, eval_k: int) -> Dict[str, float]:
     }
 
 
+def _default_cfg_for_env(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    d = dict(cfg)
+    d.setdefault("data", "./data")
+    d.setdefault("bgdir", "./data/backgrounds")
+    d.setdefault("bg_mode", "dataset")
+    d.setdefault("no_pole", False)
+    d.setdefault("yolo_version", "8")
+    d.setdefault("yolo_weights", None)
+    d.setdefault("detector", "yolo")
+    d.setdefault("detector_model", "")
+    d.setdefault("detector_device", "auto")
+    d.setdefault("detector_debug", 0)
+    d.setdefault("eval_K", 3)
+    d.setdefault("grid_cell", 16)
+    d.setdefault("episode_steps", 300)
+    d.setdefault("transform_strength", 1.0)
+    d.setdefault("fixed_angle_deg", None)
+    d.setdefault("day_tolerance", 0.05)
+    d.setdefault("lambda_area", 0.70)
+    d.setdefault("lambda_efficiency", 0.40)
+    d.setdefault("efficiency_eps", 0.02)
+    d.setdefault("lambda_day", 0.0)
+    d.setdefault("lambda_iou", 0.40)
+    d.setdefault("lambda_misclass", 0.60)
+    d.setdefault("lambda_perceptual", 0.0)
+    d.setdefault("area_target", 0.25)
+    d.setdefault("step_cost", 0.012)
+    d.setdefault("step_cost_after_target", 0.14)
+    d.setdefault("area_cap_frac", 0.30)
+    d.setdefault("area_cap_penalty", -0.20)
+    d.setdefault("area_cap_mode", "soft")
+    d.setdefault("uv_threshold", 0.75)
+    d.setdefault("success_conf", 0.20)
+    d.setdefault("paint", "yellow")
+    d.setdefault("paint_list", "")
+    d.setdefault("cell_cover_thresh", 0.60)
+    d.setdefault("obs_size", 224)
+    d.setdefault("obs_margin", 0.10)
+    d.setdefault("obs_include_mask", 1)
+    return d
+
+
 def eval_pattern_over_angles(
     base_args,
     pattern_type: str,
@@ -283,6 +325,7 @@ def eval_pattern_over_angles(
     if detector_device is not None:
         base_cfg["detector_device"] = detector_device
     base_cfg["eval_K"] = int(eval_k)
+    base_cfg = _default_cfg_for_env(base_cfg)
 
     out: List[Dict[str, float]] = []
     for angle in angles:
