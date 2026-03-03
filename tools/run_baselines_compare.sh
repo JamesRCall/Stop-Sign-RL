@@ -23,6 +23,8 @@ AREA_TARGET="${AREA_TARGET:-0.25}"
 LAMBDA_AREA="${LAMBDA_AREA:-0.70}"
 LAMBDA_DAY="${LAMBDA_DAY:-0.0}"
 RANDOM_TRIALS="${RANDOM_TRIALS:-50}"
+ANGLE_REPLAY="${ANGLE_REPLAY:-1}"
+ANGLE_LIST="${ANGLE_LIST:--24,-18,-12,-6,0,6,12,18,24}"
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
 OUT_ROOT="${OUT_ROOT:-./_runs/baseline_compare_${RUN_TAG}}"
 mkdir -p "${OUT_ROOT}"
@@ -32,6 +34,7 @@ PPO_SUMMARY_JSON="${OUT_ROOT}/ppo_summary.json"
 PPO_EPISODES_JSON="${OUT_ROOT}/ppo_episodes.json"
 GREEDY_OUT_ROOT="${OUT_ROOT}/greedy"
 RANDOM_OUT_ROOT="${OUT_ROOT}/random"
+ANGLE_REPLAY_DIR="${OUT_ROOT}/angle_replay"
 mkdir -p "${GREEDY_OUT_ROOT}" "${RANDOM_OUT_ROOT}"
 > "${GREEDY_LIST}"
 > "${RANDOM_LIST}"
@@ -50,6 +53,18 @@ ANGLE_ARGS=()
 if [[ -n "${FIXED_ANGLE_DEG}" ]]; then
   ANGLE_ARGS=(--fixed-angle-deg "${FIXED_ANGLE_DEG}")
 fi
+
+run_angle_replay() {
+  if [[ "${ANGLE_REPLAY}" == "1" ]]; then
+    python tools/replay_patterns_over_angles.py \
+      --compare-root "$(dirname "${OUT_ROOT}")" \
+      --run-glob "$(basename "${OUT_ROOT}")" \
+      --angles "${ANGLE_LIST}" \
+      --eval-k "${EVAL_K}" \
+      --out-dir "${ANGLE_REPLAY_DIR}" \
+      --episode-json auto
+  fi
+}
 
 # 1) PPO eval over N episodes using seed base
 if [[ -n "${PPO_MODEL}" ]]; then
@@ -84,6 +99,7 @@ if [[ -n "${PPO_MODEL}" ]]; then
     --out-json "${PPO_SUMMARY_JSON}" \
     --out-episodes-json "${PPO_EPISODES_JSON}" \
     "${VECNORM_ARG[@]}"
+  run_angle_replay
 else
   echo "[PPO] PPO_MODEL not set; skipping PPO eval."
 fi
@@ -130,6 +146,8 @@ for ((i=0; i<${N}; i++)); do
     --lambda-day "${LAMBDA_DAY}"
   latest_random="$(ls -td "${RANDOM_OUT_ROOT}"/random_* 2>/dev/null | head -n 1 || true)"
   [[ -n "${latest_random}" ]] && echo "${latest_random}" >> "${RANDOM_LIST}"
+
+  run_angle_replay
 done
 
 python tools/aggregate_baselines.py \

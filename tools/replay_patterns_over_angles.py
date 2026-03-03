@@ -336,6 +336,11 @@ def main() -> int:
     p.add_argument("--eval-k", type=int, default=3)
     p.add_argument("--detector-device", default="auto")
     p.add_argument("--out-dir", default="runs/paper_data/compare/angle_replay")
+    p.add_argument(
+        "--episode-json",
+        default="",
+        help="Optional JSON path to save per-episode angle results (use 'auto' for <out-dir>/angle_replay_by_episode.json).",
+    )
     args = p.parse_args()
 
     compare_root = Path(args.compare_root)
@@ -355,6 +360,7 @@ def main() -> int:
         raise ValueError("No angles parsed from --angles")
 
     all_rows: List[Dict[str, Any]] = []
+    episode_rows: List[Dict[str, Any]] = []
     total_jobs = 0
     processed_detectors: List[str] = []
     skipped: List[Dict[str, str]] = []
@@ -398,12 +404,14 @@ def main() -> int:
         done = 0
         for pat in patterns:
             seed = int(pat["seed"])
+            angle_results: List[Dict[str, Any]] = []
             for angle in angles:
                 env_args = _build_env_args(cfg, angle=angle, eval_k=int(args.eval_k), detector_device=str(args.detector_device))
                 env = build_env_from_args(env_args)
                 env.reset(seed=seed)
                 _apply_pattern(env, pat["pattern_type"], pat["pattern"])
                 m = _eval_pattern(env, eval_k=int(args.eval_k))
+                angle_results.append({"angle_deg": float(angle), **m})
                 row = {
                     "detector": detector_name,
                     "method": str(pat["method"]),
@@ -417,6 +425,17 @@ def main() -> int:
                 done += 1
                 if done % 20 == 0:
                     print(f"[{detector_name}] progress {done}/{len(patterns)*len(angles)}")
+            episode_rows.append(
+                {
+                    "detector": detector_name,
+                    "method": str(pat["method"]),
+                    "seed": int(seed),
+                    "pattern_type": str(pat["pattern_type"]),
+                    "pattern_len": int(len(pat["pattern"])),
+                    "pattern": list(pat["pattern"]),
+                    "angles": angle_results,
+                }
+            )
 
     if not all_rows:
         raise RuntimeError("No rows generated. Check compare directories and input files.")
@@ -427,6 +446,12 @@ def main() -> int:
     _write_csv(out_dir / "angle_replay_summary.csv", summary_rows)
     _write_json(out_dir / "angle_replay_rows.json", all_rows)
     _write_json(out_dir / "angle_replay_summary.json", summary_rows)
+    if str(args.episode_json).strip():
+        if str(args.episode_json).strip().lower() == "auto":
+            ep_path = out_dir / "angle_replay_by_episode.json"
+        else:
+            ep_path = Path(str(args.episode_json))
+        _write_json(ep_path, episode_rows)
     _write_json(
         out_dir / "angle_replay_meta.json",
         {
@@ -441,6 +466,7 @@ def main() -> int:
             "n_processed_detectors": int(len(processed_detectors)),
             "n_rows": int(len(all_rows)),
             "n_summary_rows": int(len(summary_rows)),
+            "episode_json": str(args.episode_json),
         },
     )
     print(f"[SAVE] {out_dir / 'angle_replay_rows.csv'}")
