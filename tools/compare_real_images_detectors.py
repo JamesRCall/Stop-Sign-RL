@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 import time
 from dataclasses import dataclass, asdict
@@ -186,6 +187,172 @@ def _std(vals: Iterable[float]) -> float:
     return (sum((v - mu) ** 2 for v in vals) / len(vals)) ** 0.5
 
 
+def _parse_float_list_csv(text: str) -> list[float]:
+    vals: list[float] = []
+    for tok in str(text).split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        vals.append(float(tok))
+    return vals
+
+
+def _parse_distance_range(text: str) -> tuple[float, float]:
+    vals = _parse_float_list_csv(text)
+    if len(vals) != 2:
+        raise ValueError("--distance-range-m must be exactly two comma-separated numbers, e.g. 20,0")
+    return float(vals[0]), float(vals[1])
+
+
+def _assign_distance_bin(distance_m: float | None, edges: list[float]) -> str | None:
+    if distance_m is None:
+        return None
+    if not edges or len(edges) < 2:
+        return None
+    x = float(distance_m)
+    lo0 = float(min(edges))
+    hi0 = float(max(edges))
+    x = max(lo0, min(hi0, x))
+    for i in range(len(edges) - 1):
+        lo = float(edges[i])
+        hi = float(edges[i + 1])
+        if i < len(edges) - 2:
+            if lo <= x < hi:
+                return f"{int(lo)}-{int(hi)}m"
+        else:
+            if lo <= x <= hi:
+                return f"{int(lo)}-{int(hi)}m"
+    return None
+
+
+def _parse_video_name_meta(source_path: str) -> dict[str, Any]:
+    stem = Path(str(source_path)).stem.lower()
+    toks = [t for t in re.split(r"[^a-z0-9]+", stem) if t]
+
+    def has_any(opts: set[str]) -> bool:
+        return any(t in opts for t in toks)
+
+    video_type = "unknown"
+    if has_any({"base", "baseline"}):
+        video_type = "base"
+    elif has_any({"spray"}):
+        video_type = "spray"
+    elif has_any({"paint"}):
+        video_type = "paint"
+
+    daynight = "unknown"
+    if has_any({"day"}):
+        daynight = "day"
+    elif has_any({"night"}):
+        daynight = "night"
+
+    uvnorm = "unknown"
+    if has_any({"uv"}):
+        uvnorm = "uv"
+    elif has_any({"norm", "normal"}):
+        uvnorm = "norm"
+    elif has_any({"baseline", "base"}):
+        uvnorm = "norm"
+
+    trial = None
+    numeric_toks = [t for t in toks if t.isdigit()]
+    if numeric_toks:
+        try:
+            trial = int(numeric_toks[-1])
+        except Exception:
+            trial = None
+
+    parse_ok = (video_type != "unknown" and daynight != "unknown" and uvnorm != "unknown" and trial is not None)
+    condition_key = f"{video_type}_{daynight}_{uvnorm}"
+    trial_key = f"{condition_key}_t{trial}" if trial is not None else f"{condition_key}_t?"
+    return {
+        "video_type": video_type,
+        "daynight": daynight,
+        "uvnorm": uvnorm,
+        "trial": trial,
+        "condition_key": condition_key,
+        "trial_key": trial_key,
+        "parse_ok": bool(parse_ok),
+    }
+
+
+def _aggregate_condition_summaries(
+    by_video: dict[str, Any],
+    detector_names: list[str],
+    bin_labels: list[str],
+) -> dict[str, Any]:
+    """Aggregate per-video summaries into mean/std over numbered trials."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for _video_id, v in by_video.items():
+        cond = str(v.get("condition_key", "unknown_unknown_unknown"))
+        grouped.setdefault(cond, []).append(v)
+
+    out: dict[str, Any] = {}
+    for cond, vids in grouped.items():
+        cond_payload: dict[str, Any] = {
+            "n_trials": len(vids),
+            "videos": [str(v.get("video_id", "")) for v in vids],
+            "detectors": {},
+        }
+        for det_name in detector_names:
+            ov_rows = []
+            bin_rows: dict[str, list[dict[str, Any]]] = {b: [] for b in bin_labels}
+            for v in vids:
+                d = (v.get("detectors", {}) or {}).get(det_name)
+                if not isinstance(d, dict):
+                    continue
+                if isinstance(d.get("overall"), dict):
+                    ov_rows.append(d["overall"])
+                bins_obj = d.get("bins", {}) or {}
+                for b in bin_labels:
+                    if isinstance(bins_obj.get(b), dict):
+                        bin_rows[b].append(bins_obj[b])
+
+            def _ms(rows: list[dict[str, Any]], key: str) -> tuple[float, float]:
+                vals = [_safe_float(r.get(key)) for r in rows if r is not None]
+                return _mean(vals), _std(vals)
+
+            if not ov_rows and not any(bin_rows.values()):
+                continue
+
+            det_payload: dict[str, Any] = {}
+            if ov_rows:
+                mu_conf, sd_conf = _ms(ov_rows, "mean_target_conf")
+                mu_det, sd_det = _ms(ov_rows, "target_detect_rate")
+                mu_mis, sd_mis = _ms(ov_rows, "top_misclass_rate")
+                det_payload["overall_mean_over_trials"] = {
+                    "mean_target_conf": mu_conf,
+                    "std_target_conf": sd_conf,
+                    "target_detect_rate": mu_det,
+                    "std_detect_rate": sd_det,
+                    "top_misclass_rate": mu_mis,
+                    "std_top_misclass_rate": sd_mis,
+                    "n_trials": len(ov_rows),
+                }
+
+            bins_payload: dict[str, Any] = {}
+            for b in bin_labels:
+                rows = bin_rows.get(b, [])
+                if not rows:
+                    continue
+                mu_conf, sd_conf = _ms(rows, "mean_target_conf")
+                mu_det, sd_det = _ms(rows, "target_detect_rate")
+                mu_mis, sd_mis = _ms(rows, "top_misclass_rate")
+                bins_payload[b] = {
+                    "mean_target_conf": mu_conf,
+                    "std_target_conf": sd_conf,
+                    "target_detect_rate": mu_det,
+                    "std_detect_rate": sd_det,
+                    "top_misclass_rate": mu_mis,
+                    "std_top_misclass_rate": sd_mis,
+                    "n_trials": len(rows),
+                }
+            det_payload["distance_bins_mean_over_trials"] = bins_payload
+            cond_payload["detectors"][det_name] = det_payload
+        out[cond] = cond_payload
+    return out
+
+
 def _draw_boxes(img: Image.Image, boxes, confs, clss, det, out_path: Path, topk: int = 20) -> None:
     draw = ImageDraw.Draw(img)
     rows = list(zip(boxes or [], confs or [], clss or []))
@@ -275,6 +442,10 @@ def main() -> int:
                     help="Start time (seconds) for video sampling.")
     ap.add_argument("--video-end-sec", type=float, default=0.0,
                     help="End time (seconds) for video sampling (<=0 means full video).")
+    ap.add_argument("--distance-range-m", default="20,0",
+                    help="Video distance mapping range as start,end in meters (default: 20,0).")
+    ap.add_argument("--distance-bins-m", default="0,5,10,15,20",
+                    help="Distance bin edges in meters for grouped JSON (default: 0,5,10,15,20).")
     ap.add_argument("--speed-mph", type=float, default=0.0,
                     help="If >0, estimate traveled distance per sampled video frame using this speed.")
     ap.add_argument("--distance-fps", type=float, default=0.0,
@@ -299,6 +470,15 @@ def main() -> int:
     ap.add_argument("--out-csv", default="_runs/paper_data/real_detector_compare/results.csv", help="Output CSV path")
     ap.add_argument("--skip-csv", action="store_true", help="Do not write CSV")
     args = ap.parse_args()
+
+    dist_start_m, dist_end_m = _parse_distance_range(args.distance_range_m)
+    dist_edges = sorted(set(_parse_float_list_csv(args.distance_bins_m)))
+    if len(dist_edges) < 2:
+        raise ValueError("--distance-bins-m must include at least two edges.")
+    bin_labels = [
+        f"{int(dist_edges[i])}-{int(dist_edges[i + 1])}m"
+        for i in range(len(dist_edges) - 1)
+    ]
 
     inp = Path(args.input)
     include_videos = bool(args.include_videos) or _is_video(inp)
@@ -332,6 +512,10 @@ def main() -> int:
             f"[COMPARE] video sampling: step={int(args.video_frame_step)} "
             f"max_frames={int(args.video_max_frames)} start_sec={float(args.video_start_sec):.2f} "
             f"end_sec={float(args.video_end_sec):.2f}"
+        )
+        print(
+            f"[COMPARE] quartile distance mapping: start_m={dist_start_m:.2f} "
+            f"end_m={dist_end_m:.2f} bins={','.join(bin_labels)}"
         )
         if float(args.speed_mph) > 0.0:
             fps_mode = f"{float(args.distance_fps):.2f} (override)" if float(args.distance_fps) > 0.0 else "video timestamps"
@@ -377,7 +561,13 @@ def main() -> int:
         distance_traveled_ft: float | None = None,
         distance_to_sign_m: float | None = None,
         distance_to_sign_ft: float | None = None,
+        video_progress_0_1: float | None = None,
+        distance_est_m_quarter: float | None = None,
+        distance_bin_m: str | None = None,
+        video_name_meta: dict[str, Any] | None = None,
     ) -> None:
+        if video_name_meta is None:
+            video_name_meta = {}
         image_record = {
             "image_path": image_path,
             "source_type": source_type,
@@ -389,6 +579,10 @@ def main() -> int:
             "distance_traveled_ft": distance_traveled_ft,
             "distance_to_sign_m": distance_to_sign_m,
             "distance_to_sign_ft": distance_to_sign_ft,
+            "video_progress_0_1": video_progress_0_1,
+            "distance_est_m_quarter": distance_est_m_quarter,
+            "distance_bin_m": distance_bin_m,
+            "video_name_meta": video_name_meta,
             "width": pil.width,
             "height": pil.height,
             "detectors": {},
@@ -517,19 +711,28 @@ def main() -> int:
             processed_video_files += 1
             print(f"[VIDEO] {media_path.name}")
             try:
-                for frame_idx, frame_ts, frame_pil in _iter_video_frames(
+                vmeta = _parse_video_name_meta(str(media_path))
+                frames = list(_iter_video_frames(
                     video_path=media_path,
                     frame_step=int(args.video_frame_step),
                     max_frames=int(args.video_max_frames),
                     start_sec=float(args.video_start_sec),
                     end_sec=float(args.video_end_sec),
-                ):
+                ))
+                n_frames = len(frames)
+                if n_frames == 0:
+                    print(f"[WARN] No sampled frames for video: {media_path}")
+                    continue
+                for order_idx, (frame_idx, frame_ts, frame_pil) in enumerate(frames):
                     sampled_video_frames += 1
                     d_elapsed_sec = None
                     d_traveled_m = None
                     d_traveled_ft = None
                     d_to_sign_m = None
                     d_to_sign_ft = None
+                    progress_0_1 = 0.0 if n_frames <= 1 else float(order_idx) / float(n_frames - 1)
+                    d_est_quarter = float(dist_start_m + (dist_end_m - dist_start_m) * progress_0_1)
+                    d_bin_quarter = _assign_distance_bin(d_est_quarter, dist_edges)
                     speed_mph = float(args.speed_mph)
                     if speed_mph > 0.0:
                         if float(args.distance_fps) > 0.0:
@@ -558,6 +761,10 @@ def main() -> int:
                         distance_traveled_ft=d_traveled_ft,
                         distance_to_sign_m=d_to_sign_m,
                         distance_to_sign_ft=d_to_sign_ft,
+                        video_progress_0_1=progress_0_1,
+                        distance_est_m_quarter=d_est_quarter,
+                        distance_bin_m=d_bin_quarter,
+                        video_name_meta=vmeta,
                     )
             except Exception as e:
                 print(f"[WARN] Failed to process video {media_path}: {e}")
@@ -571,6 +778,72 @@ def main() -> int:
         for name, row in rec["detectors"].items():
             detector_rows[name].append(row)
     summary = {name: _summarize_detector_rows(rows) for name, rows in detector_rows.items()}
+
+    # Video distance-binned summaries (quartile mapping + filename condition parsing)
+    video_distance_grouped: dict[str, Any] = {
+        "distance_mapping": {
+            "method": "video_quartile_progress_linear",
+            "range_start_m": float(dist_start_m),
+            "range_end_m": float(dist_end_m),
+            "bins_m": dist_edges,
+            "bin_labels": bin_labels,
+        },
+        "by_video": {},
+        "by_condition": {},
+    }
+    video_recs = [r for r in per_image_results if str(r.get("source_type", "")) == "video"]
+    if video_recs:
+        by_source: dict[str, list[dict[str, Any]]] = {}
+        for r in video_recs:
+            src = str(r.get("source_path", ""))
+            by_source.setdefault(src, []).append(r)
+
+        by_video: dict[str, Any] = {}
+        detector_names = [s.name for s in specs]
+        for src, rows_v in by_source.items():
+            rows_v = sorted(rows_v, key=lambda rr: int(rr.get("frame_index") or -1))
+            vm = rows_v[0].get("video_name_meta", {}) if rows_v else {}
+            vid = Path(src).stem
+            det_payload: dict[str, Any] = {}
+            for dname in detector_names:
+                d_all = [rv["detectors"][dname] for rv in rows_v if dname in rv.get("detectors", {})]
+                if not d_all:
+                    continue
+                bins_payload: dict[str, Any] = {}
+                for bl in bin_labels:
+                    d_bin = [
+                        rv["detectors"][dname]
+                        for rv in rows_v
+                        if dname in rv.get("detectors", {}) and str(rv.get("distance_bin_m") or "") == bl
+                    ]
+                    bsum = _summarize_detector_rows(d_bin)
+                    bsum["frames"] = len(d_bin)
+                    bins_payload[bl] = bsum
+                ov = _summarize_detector_rows(d_all)
+                ov["frames"] = len(d_all)
+                det_payload[dname] = {
+                    "overall": ov,
+                    "bins": bins_payload,
+                }
+            by_video[vid] = {
+                "video_id": vid,
+                "source_path": src,
+                "video_type": vm.get("video_type", "unknown"),
+                "daynight": vm.get("daynight", "unknown"),
+                "uvnorm": vm.get("uvnorm", "unknown"),
+                "trial": vm.get("trial", None),
+                "condition_key": vm.get("condition_key", "unknown_unknown_unknown"),
+                "trial_key": vm.get("trial_key", "unknown_unknown_unknown_t?"),
+                "parse_ok": bool(vm.get("parse_ok", False)),
+                "num_sampled_frames": len(rows_v),
+                "detectors": det_payload,
+            }
+        video_distance_grouped["by_video"] = by_video
+        video_distance_grouped["by_condition"] = _aggregate_condition_summaries(
+            by_video=by_video,
+            detector_names=[s.name for s in specs],
+            bin_labels=bin_labels,
+        )
 
     payload = {
         "meta": {
@@ -586,6 +859,8 @@ def main() -> int:
             "video_max_frames": int(args.video_max_frames),
             "video_start_sec": float(args.video_start_sec),
             "video_end_sec": float(args.video_end_sec),
+            "distance_range_m": [float(dist_start_m), float(dist_end_m)],
+            "distance_bins_m": [float(x) for x in dist_edges],
             "speed_mph": float(args.speed_mph),
             "distance_fps": float(args.distance_fps),
             "initial_distance_m": float(args.initial_distance_m),
@@ -597,6 +872,7 @@ def main() -> int:
             "ssd_removed": True,
         },
         "summary": summary,
+        "video_distance_grouped": video_distance_grouped,
         "images": per_image_results,
     }
 
@@ -621,6 +897,16 @@ def main() -> int:
                 "distance_traveled_ft",
                 "distance_to_sign_m",
                 "distance_to_sign_ft",
+                "video_progress_0_1",
+                "distance_est_m_quarter",
+                "distance_bin_m",
+                "video_type",
+                "daynight",
+                "uvnorm",
+                "trial",
+                "condition_key",
+                "trial_key",
+                "parse_ok",
                 "detector_name",
                 "detector_type",
                 "detector_model",
@@ -653,6 +939,16 @@ def main() -> int:
                         rec.get("distance_traveled_ft", ""),
                         rec.get("distance_to_sign_m", ""),
                         rec.get("distance_to_sign_ft", ""),
+                        rec.get("video_progress_0_1", ""),
+                        rec.get("distance_est_m_quarter", ""),
+                        rec.get("distance_bin_m", ""),
+                        (rec.get("video_name_meta", {}) or {}).get("video_type", ""),
+                        (rec.get("video_name_meta", {}) or {}).get("daynight", ""),
+                        (rec.get("video_name_meta", {}) or {}).get("uvnorm", ""),
+                        (rec.get("video_name_meta", {}) or {}).get("trial", ""),
+                        (rec.get("video_name_meta", {}) or {}).get("condition_key", ""),
+                        (rec.get("video_name_meta", {}) or {}).get("trial_key", ""),
+                        (rec.get("video_name_meta", {}) or {}).get("parse_ok", ""),
                         name,
                         row.get("detector_type", ""),
                         row.get("detector_model", ""),
