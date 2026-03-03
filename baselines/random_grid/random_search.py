@@ -14,7 +14,7 @@ if ROOT not in sys.path:
     sys.path.append(ROOT)
 
 from torch.utils.tensorboard import SummaryWriter
-from baselines.grid_utils import build_env_from_args, save_final_images, info_metrics, log_metrics_tb
+from baselines.grid_utils import build_env_from_args, save_final_images, info_metrics, log_metrics_tb, eval_pattern_over_angles, parse_angle_list
 
 
 def score_from(info, reward, mode: str) -> float:
@@ -89,6 +89,8 @@ def parse_args():
     ap.add_argument("--select-by", choices=["reward", "drop_on", "reward_raw_total", "drop_on_smooth", "success_area"], default="success_area")
     ap.add_argument("--out", default="./baselines/random_grid/_runs")
     ap.add_argument("--tb", default="", help="TensorBoard log dir (default: <run_dir>/tb).")
+    ap.add_argument("--angle-list", default="",
+                    help="Optional comma-separated list of angles to evaluate after selecting the best trial.")
     return ap.parse_args()
 
 
@@ -208,6 +210,18 @@ def main():
         run_random_episode(env, best_trial)
 
     save_final_images(env, out_dir)
+    angle_list = parse_angle_list(args.angle_list)
+    angle_results = []
+    if angle_list and best_actions and best_trial is not None:
+        angle_results = eval_pattern_over_angles(
+            args,
+            pattern_type="actions",
+            pattern=best_actions,
+            seed=int(best_trial),
+            angles=angle_list,
+            eval_k=int(args.eval_K),
+            detector_device=str(args.detector_device),
+        )
     final_step = best_steps[-1] if best_steps else {}
     final_metrics = final_step.get("metrics", {}) if isinstance(final_step, dict) else {}
     final_success = bool(final_metrics.get("uv_success", False))
@@ -258,6 +272,15 @@ def main():
         "mean_trial_runtime_sec": float(np.mean(trial_runtime_vals)) if trial_runtime_vals else float("nan"),
         "std_trial_runtime_sec": float(np.std(trial_runtime_vals)) if trial_runtime_vals else float("nan"),
         "best_trial_runtime_sec": best_trial_runtime_sec,
+        "angle_eval": [
+            {
+                "angle_deg": float(r.get("angle_deg", 0.0)),
+                "n": 1,
+                "after_conf_mean": float(r.get("c_on", np.nan)),
+                "after_conf_std": float("nan"),
+            }
+            for r in angle_results
+        ] if angle_results else [],
         "episodes_detail": [{
             "episode_index": 0,
             "seed": int(best_trial) if best_trial is not None else None,
@@ -273,6 +296,7 @@ def main():
             "selected_cells": selected_cells,
             "runtime_sec": best_trial_runtime_sec,
             "runtime_per_step_sec": float(best_trial_runtime_sec / len(best_steps)) if best_steps and np.isfinite(best_trial_runtime_sec) else float("nan"),
+            "angle_results": angle_results,
         }],
         "trials_detail": trial_rows,
         "episode_meta": best_meta if best_trial is not None else None,

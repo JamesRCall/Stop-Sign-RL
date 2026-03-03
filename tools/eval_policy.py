@@ -33,6 +33,7 @@ from train_single_stop_sign import (
     resolve_yolo_weights,
     find_latest_checkpoint,
 )
+from baselines.grid_utils import eval_pattern_over_angles, parse_angle_list
 
 
 def make_env(
@@ -123,6 +124,8 @@ def parse_args():
     ap.add_argument("--log-images", type=int, default=10, help="Max eval images to log to TensorBoard.")
     ap.add_argument("--out-json", default="", help="Optional path to write eval summary JSON.")
     ap.add_argument("--out-episodes-json", default="", help="Optional path to write per-episode rows JSON.")
+    ap.add_argument("--angle-list", default="",
+                    help="Optional comma-separated list of angles to evaluate after each episode (e.g., -24,-12,0,12,24).")
     ap.add_argument("--save-overlay-dir", default="",
                     help="Optional directory to save per-episode overlay pattern PNGs (info['overlay_pil']).")
     ap.add_argument("--save-composited-dir", default="",
@@ -246,6 +249,8 @@ def main():
         print(f"[EVAL] save_composited_dir={composited_save_dir}")
 
     image_budget = int(max(0, args.log_images))
+    angle_list = parse_angle_list(args.angle_list)
+    angle_after_vals: Dict[float, List[float]] = {float(a): [] for a in angle_list}
     successes = 0
     steps_list: List[float] = []
     base_list: List[float] = []
@@ -368,6 +373,21 @@ def main():
             "overlay_image_path": overlay_img_path,
             "composited_image_path": composited_img_path,
         })
+        if angle_list and seed_i is not None and trace_selected_indices:
+            angle_results = eval_pattern_over_angles(
+                args,
+                pattern_type="selected_indices",
+                pattern=trace_selected_indices,
+                seed=int(seed_i),
+                angles=angle_list,
+                eval_k=int(args.eval_K),
+                detector_device=str(args.detector_device),
+            )
+            episode_rows[-1]["angle_results"] = angle_results
+            for r in angle_results:
+                a = float(r.get("angle_deg", 0.0))
+                after = _finite_or_nan(r.get("c_on", np.nan))
+                angle_after_vals.setdefault(a, []).append(after)
 
         if writer is not None:
             tag = str(args.tb_tag)
@@ -469,6 +489,15 @@ def main():
         "runtime_per_episode_mean_sec": mean_runtime_sec,
         "runtime_per_episode_std_sec": _std(episode_runtime_sec_list),
         "runtime_per_step_sec": runtime_per_step_sec,
+        "angle_eval": [
+            {
+                "angle_deg": float(a),
+                "n": int(len(vs)),
+                "after_conf_mean": _mean(vs),
+                "after_conf_std": _std(vs),
+            }
+            for a, vs in sorted(angle_after_vals.items(), key=lambda x: x[0])
+        ] if angle_list else [],
         "episodes_detail": episode_rows,
         "argv": list(sys.argv),
         "config": vars(args),

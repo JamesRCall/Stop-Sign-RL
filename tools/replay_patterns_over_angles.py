@@ -2,8 +2,8 @@
 """Replay saved PPO/greedy/random patterns across fixed angles.
 
 This script reuses already-saved patterns from baseline-compare outputs:
-  - PPO patterns from ppo_episodes.json -> trace.selected_indices
-  - Greedy/Random patterns from summary.json -> actions
+  - PPO patterns from ppo_episodes.json (or ppo_summary.json) -> trace.selected_indices
+  - Greedy/Random patterns from per-run summary.json -> actions
 
 It evaluates each fixed pattern across user-specified angles, without re-running
 search, and writes raw + aggregated CSV tables.
@@ -16,11 +16,16 @@ import glob
 import json
 import math
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.append(ROOT)
 
 from baselines.grid_utils import build_env_from_args
 
@@ -48,10 +53,17 @@ def _parse_angles(s: str) -> List[float]:
 
 
 def _load_ppo_patterns(compare_dir: Path) -> List[Dict[str, Any]]:
-    p = compare_dir / "ppo_episodes.json"
-    if not p.is_file():
+    ppo_paths = [compare_dir / "ppo_episodes.json", compare_dir / "ppo_summary.json"]
+    rows: Any = None
+    for p in ppo_paths:
+        if not p.is_file():
+            continue
+        rows = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(rows, dict):
+            rows = rows.get("episodes_detail", [])
+        break
+    if rows is None:
         return []
-    rows = json.loads(p.read_text(encoding="utf-8"))
     out: List[Dict[str, Any]] = []
     if not isinstance(rows, list):
         return out
@@ -105,6 +117,35 @@ def _load_action_patterns_from_list(list_path: Path, method: str) -> List[Dict[s
     return out
 
 
+def _load_action_patterns_from_dir(parent_dir: Path, method: str) -> List[Dict[str, Any]]:
+    if not parent_dir.is_dir():
+        return []
+    out: List[Dict[str, Any]] = []
+    for run_dir in sorted(parent_dir.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        s = run_dir / "summary.json"
+        if not s.is_file():
+            continue
+        try:
+            obj = _read_json(s)
+        except Exception:
+            continue
+        seed = obj.get("seed", None)
+        actions = obj.get("actions", [])
+        if seed is None or not isinstance(actions, list) or not actions:
+            continue
+        out.append(
+            {
+                "method": method,
+                "seed": int(seed),
+                "pattern_type": "actions",
+                "pattern": [int(a) for a in actions],
+            }
+        )
+    return out
+
+
 def _first_run_config_from_list(list_path: Path) -> Optional[Dict[str, Any]]:
     if not list_path.is_file():
         return None
@@ -113,6 +154,25 @@ def _first_run_config_from_list(list_path: Path) -> Optional[Dict[str, Any]]:
         if not run_dir:
             continue
         s = Path(run_dir) / "summary.json"
+        if not s.is_file():
+            continue
+        try:
+            obj = _read_json(s)
+        except Exception:
+            continue
+        cfg = obj.get("config", {})
+        if isinstance(cfg, dict) and cfg:
+            return dict(cfg)
+    return None
+
+
+def _first_run_config_from_dir(parent_dir: Path) -> Optional[Dict[str, Any]]:
+    if not parent_dir.is_dir():
+        return None
+    for run_dir in sorted(parent_dir.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        s = run_dir / "summary.json"
         if not s.is_file():
             continue
         try:
@@ -169,7 +229,7 @@ def _default_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 def _build_env_args(base_cfg: Dict[str, Any], angle: float, eval_k: int, detector_device: str) -> SimpleNamespace:
     cfg = _default_cfg(base_cfg)
-    cfg["transform_strength"] = 0.0
+    cfg["transform_strength"] = 1.0
     cfg["fixed_angle_deg"] = float(angle)
     cfg["eval_K"] = int(eval_k)
     cfg["detector_device"] = detector_device
@@ -270,15 +330,27 @@ def _write_json(path: Path, obj: Any) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Replay saved PPO/greedy/random patterns across fixed angles.")
-    p.add_argument("--compare-root", default="_runs/paper_data/compare")
+    p.add_argument("--compare-root", default="runs/paper_data/compare")
     p.add_argument("--run-glob", default="*_N5_seed1000", help="Glob for detector compare run directories.")
     p.add_argument("--angles", default="-24,-18,-12,-6,0,6,12,18,24")
     p.add_argument("--eval-k", type=int, default=3)
     p.add_argument("--detector-device", default="auto")
-    p.add_argument("--out-dir", default="_runs/paper_data/compare/angle_replay")
+    p.add_argument("--out-dir", default="runs/paper_data/compare/angle_replay")
+    p.add_argument(
+        "--episode-json",
+        default="",
+        help="Optional JSON path to save per-episode angle results (use 'auto' for <out-dir>/angle_replay_by_episode.json).",
+    )
     args = p.parse_args()
 
     compare_root = Path(args.compare_root)
+    if not compare_root.is_dir():
+        alt = None
+        if compare_root.parts and compare_root.parts[0] == "runs":
+            alt = Path("_runs", *compare_root.parts[1:])
+        if alt and alt.is_dir():
+            print(f"[WARN] compare_root not found: {compare_root}. Using {alt} instead.")
+            compare_root = alt
     run_dirs = sorted(Path(pth) for pth in glob.glob(str(compare_root / args.run_glob)) if Path(pth).is_dir())
     if not run_dirs:
         raise FileNotFoundError(f"No compare dirs found under {compare_root} with glob '{args.run_glob}'")
@@ -288,6 +360,7 @@ def main() -> int:
         raise ValueError("No angles parsed from --angles")
 
     all_rows: List[Dict[str, Any]] = []
+    episode_rows: List[Dict[str, Any]] = []
     total_jobs = 0
     processed_detectors: List[str] = []
     skipped: List[Dict[str, str]] = []
@@ -298,6 +371,10 @@ def main() -> int:
             ppo_obj = _read_json(ppo_summary)
             cfg = ppo_obj.get("config", {}) if isinstance(ppo_obj, dict) else {}
             cfg = cfg if isinstance(cfg, dict) else {}
+        if not cfg:
+            cfg = _first_run_config_from_dir(d / "greedy") or {}
+        if not cfg:
+            cfg = _first_run_config_from_dir(d / "random") or {}
         if not cfg:
             cfg = _first_run_config_from_list(d / "greedy_runs.txt") or {}
         if not cfg:
@@ -311,8 +388,11 @@ def main() -> int:
 
         patterns = []
         patterns.extend(_load_ppo_patterns(d))
-        patterns.extend(_load_action_patterns_from_list(d / "greedy_runs.txt", "greedy"))
-        patterns.extend(_load_action_patterns_from_list(d / "random_runs.txt", "random"))
+        patterns.extend(_load_action_patterns_from_dir(d / "greedy", "greedy"))
+        patterns.extend(_load_action_patterns_from_dir(d / "random", "random"))
+        if not patterns:
+            patterns.extend(_load_action_patterns_from_list(d / "greedy_runs.txt", "greedy"))
+            patterns.extend(_load_action_patterns_from_list(d / "random_runs.txt", "random"))
         if not patterns:
             msg = "no patterns found (ppo_episodes or baseline actions)"
             print(f"[WARN] {d.name}: {msg}")
@@ -324,12 +404,14 @@ def main() -> int:
         done = 0
         for pat in patterns:
             seed = int(pat["seed"])
+            angle_results: List[Dict[str, Any]] = []
             for angle in angles:
                 env_args = _build_env_args(cfg, angle=angle, eval_k=int(args.eval_k), detector_device=str(args.detector_device))
                 env = build_env_from_args(env_args)
                 env.reset(seed=seed)
                 _apply_pattern(env, pat["pattern_type"], pat["pattern"])
                 m = _eval_pattern(env, eval_k=int(args.eval_k))
+                angle_results.append({"angle_deg": float(angle), **m})
                 row = {
                     "detector": detector_name,
                     "method": str(pat["method"]),
@@ -343,6 +425,17 @@ def main() -> int:
                 done += 1
                 if done % 20 == 0:
                     print(f"[{detector_name}] progress {done}/{len(patterns)*len(angles)}")
+            episode_rows.append(
+                {
+                    "detector": detector_name,
+                    "method": str(pat["method"]),
+                    "seed": int(seed),
+                    "pattern_type": str(pat["pattern_type"]),
+                    "pattern_len": int(len(pat["pattern"])),
+                    "pattern": list(pat["pattern"]),
+                    "angles": angle_results,
+                }
+            )
 
     if not all_rows:
         raise RuntimeError("No rows generated. Check compare directories and input files.")
@@ -353,6 +446,12 @@ def main() -> int:
     _write_csv(out_dir / "angle_replay_summary.csv", summary_rows)
     _write_json(out_dir / "angle_replay_rows.json", all_rows)
     _write_json(out_dir / "angle_replay_summary.json", summary_rows)
+    if str(args.episode_json).strip():
+        if str(args.episode_json).strip().lower() == "auto":
+            ep_path = out_dir / "angle_replay_by_episode.json"
+        else:
+            ep_path = Path(str(args.episode_json))
+        _write_json(ep_path, episode_rows)
     _write_json(
         out_dir / "angle_replay_meta.json",
         {
@@ -367,6 +466,7 @@ def main() -> int:
             "n_processed_detectors": int(len(processed_detectors)),
             "n_rows": int(len(all_rows)),
             "n_summary_rows": int(len(summary_rows)),
+            "episode_json": str(args.episode_json),
         },
     )
     print(f"[SAVE] {out_dir / 'angle_replay_rows.csv'}")

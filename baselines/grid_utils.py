@@ -6,6 +6,7 @@ from typing import List, Tuple, Optional, Dict, Any
 import math
 import numpy as np
 from PIL import Image
+from types import SimpleNamespace
 
 from envs.stop_sign_grid_env import StopSignGridEnv
 from utils.uv_paint import (
@@ -45,6 +46,21 @@ def resolve_yolo_weights(yolo_version: str, yolo_weights: Optional[str]) -> str:
         return yolo_weights
     defaults = {"8": "./weights/yolo8n.pt", "11": "./weights/yolo11n.pt"}
     return defaults[str(yolo_version)]
+
+
+def parse_angle_list(value: str) -> List[float]:
+    if value is None:
+        return []
+    out: List[float] = []
+    for part in str(value).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(float(part))
+        except ValueError:
+            continue
+    return out
 
 
 def load_backgrounds(folder: str) -> List[Image.Image]:
@@ -197,3 +213,128 @@ def log_metrics_tb(writer, metrics: Dict[str, Any], step: int, prefix: str = "me
             fv = float(v)
             if math.isfinite(fv):
                 writer.add_scalar(f"{prefix}{k}", fv, step)
+
+
+def _as_float(v: Any, default: float = float("nan")) -> float:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return default
+    return x if math.isfinite(x) else default
+
+
+def _apply_pattern(env, pattern_type: str, pattern: List[int]) -> None:
+    env._episode_cells[:] = False
+    if pattern_type == "selected_indices":
+        for idx in pattern:
+            i = int(idx)
+            if i < 0 or i >= (env.Gh * env.Gw):
+                continue
+            r, c = divmod(i, env.Gw)
+            if env._valid_cells[r, c]:
+                env._episode_cells[r, c] = True
+        return
+    if pattern_type == "actions":
+        for a in pattern:
+            i = int(a)
+            if i < 0 or i >= int(env._n_valid):
+                continue
+            rr, cc = env._valid_coords[i]
+            env._episode_cells[int(rr), int(cc)] = True
+        return
+    raise ValueError(f"Unknown pattern_type: {pattern_type}")
+
+
+def _eval_pattern(env, eval_k: int) -> Dict[str, float]:
+    k = max(1, min(int(eval_k), len(env._transform_seeds)))
+    seeds = env._transform_seeds[:k]
+    overlay = env._eval_overlay_over_K(seeds)
+    c_day = _as_float(overlay.get("c_day", float("nan")))
+    c_on = _as_float(overlay.get("c_on", float("nan")))
+    c0_day = _as_float(env._mean_over_K(env._baseline_c0_day_list, k))
+    drop_on = _as_float(c0_day - c_on)
+    area_frac = _as_float(env._area_frac_selected())
+    success = 1.0 if (math.isfinite(c_on) and c_on <= float(env.success_conf_threshold)) else 0.0
+    return {
+        "c0_day": c0_day,
+        "c_day": c_day,
+        "c_on": c_on,
+        "drop_on": drop_on,
+        "area_frac": area_frac,
+        "success": success,
+    }
+
+
+def _default_cfg_for_env(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    d = dict(cfg)
+    d.setdefault("data", "./data")
+    d.setdefault("bgdir", "./data/backgrounds")
+    d.setdefault("bg_mode", "dataset")
+    d.setdefault("no_pole", False)
+    d.setdefault("yolo_version", "8")
+    d.setdefault("yolo_weights", None)
+    d.setdefault("detector", "yolo")
+    d.setdefault("detector_model", "")
+    d.setdefault("detector_device", "auto")
+    d.setdefault("detector_debug", 0)
+    d.setdefault("eval_K", 3)
+    d.setdefault("grid_cell", 16)
+    d.setdefault("episode_steps", 300)
+    d.setdefault("transform_strength", 1.0)
+    d.setdefault("fixed_angle_deg", None)
+    d.setdefault("day_tolerance", 0.05)
+    d.setdefault("lambda_area", 0.70)
+    d.setdefault("lambda_efficiency", 0.40)
+    d.setdefault("efficiency_eps", 0.02)
+    d.setdefault("lambda_day", 0.0)
+    d.setdefault("lambda_iou", 0.40)
+    d.setdefault("lambda_misclass", 0.60)
+    d.setdefault("lambda_perceptual", 0.0)
+    d.setdefault("area_target", 0.25)
+    d.setdefault("step_cost", 0.012)
+    d.setdefault("step_cost_after_target", 0.14)
+    d.setdefault("area_cap_frac", 0.30)
+    d.setdefault("area_cap_penalty", -0.20)
+    d.setdefault("area_cap_mode", "soft")
+    d.setdefault("uv_threshold", 0.75)
+    d.setdefault("success_conf", 0.20)
+    d.setdefault("paint", "yellow")
+    d.setdefault("paint_list", "")
+    d.setdefault("cell_cover_thresh", 0.60)
+    d.setdefault("obs_size", 224)
+    d.setdefault("obs_margin", 0.10)
+    d.setdefault("obs_include_mask", 1)
+    return d
+
+
+def eval_pattern_over_angles(
+    base_args,
+    pattern_type: str,
+    pattern: List[int],
+    seed: int,
+    angles: List[float],
+    eval_k: int,
+    detector_device: Optional[str] = None,
+) -> List[Dict[str, float]]:
+    if not angles or not pattern:
+        return []
+    if hasattr(base_args, "__dict__"):
+        base_cfg = dict(vars(base_args))
+    else:
+        base_cfg = dict(base_args)
+    if detector_device is not None:
+        base_cfg["detector_device"] = detector_device
+    base_cfg["eval_K"] = int(eval_k)
+    base_cfg = _default_cfg_for_env(base_cfg)
+
+    out: List[Dict[str, float]] = []
+    for angle in angles:
+        cfg = dict(base_cfg)
+        cfg["fixed_angle_deg"] = float(angle)
+        env = build_env_from_args(SimpleNamespace(**cfg))
+        env.reset(seed=int(seed))
+        _apply_pattern(env, pattern_type, pattern)
+        metrics = _eval_pattern(env, eval_k=eval_k)
+        metrics["angle_deg"] = float(angle)
+        out.append(metrics)
+    return out

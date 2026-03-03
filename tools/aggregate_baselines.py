@@ -156,6 +156,43 @@ def _paired_delta(ref_rows: List[Dict[str, Any]], other_rows: List[Dict[str, Any
     return out
 
 
+def _angle_eval_from_runs(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    angle_to_vals: Dict[float, List[float]] = {}
+    for run in runs:
+        angle_eval = run.get("angle_eval", [])
+        if isinstance(angle_eval, list) and angle_eval:
+            for r in angle_eval:
+                if not isinstance(r, dict):
+                    continue
+                angle = _as_float(r.get("angle_deg", np.nan))
+                val = _as_float(r.get("after_conf_mean", r.get("c_on", np.nan)))
+                if np.isnan(angle) or np.isnan(val):
+                    continue
+                angle_to_vals.setdefault(float(angle), []).append(float(val))
+            continue
+        details = run.get("episodes_detail", [])
+        detail = details[0] if isinstance(details, list) and details else {}
+        angle_results = detail.get("angle_results", []) if isinstance(detail, dict) else []
+        if isinstance(angle_results, list):
+            for r in angle_results:
+                if not isinstance(r, dict):
+                    continue
+                angle = _as_float(r.get("angle_deg", np.nan))
+                val = _as_float(r.get("c_on", np.nan))
+                if np.isnan(angle) or np.isnan(val):
+                    continue
+                angle_to_vals.setdefault(float(angle), []).append(float(val))
+    return [
+        {
+            "angle_deg": float(a),
+            "n": int(len(vs)),
+            "after_conf_mean": _mean(vs),
+            "after_conf_std": _std(vs),
+        }
+        for a, vs in sorted(angle_to_vals.items(), key=lambda x: x[0])
+    ]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser("Aggregate greedy/random baseline metrics")
     ap.add_argument("--ppo-json", default="", help="Path to PPO eval summary JSON (optional).")
@@ -204,6 +241,11 @@ def main() -> None:
         "greedy": _summary_from_rows(greedy_rows),
         "random": _summary_from_rows(random_rows),
         "ppo": ppo_obj,
+        "angle_eval": {
+            "greedy": _angle_eval_from_runs(greedy_runs),
+            "random": _angle_eval_from_runs(random_runs),
+            "ppo": ppo_obj.get("angle_eval", []) if isinstance(ppo_obj, dict) else [],
+        },
         "episodes": {
             "greedy": greedy_rows,
             "random": random_rows,

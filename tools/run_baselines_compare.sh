@@ -4,8 +4,8 @@ set -euo pipefail
 # Simple runner to compare PPO vs greedy/random baselines over multiple seeds.
 # Configure via env vars or CLI flags below.
 
-N="${N:-20}"
-SEED_BASE="${SEED_BASE:-123}"
+N="${N:-5}"
+SEED_BASE="${SEED_BASE:-1000}"
 EVAL_K="${EVAL_K:-3}"
 GRID_CELL="${GRID_CELL:-16}"
 PAINT="${PAINT:-yellow}"
@@ -23,8 +23,17 @@ AREA_TARGET="${AREA_TARGET:-0.25}"
 LAMBDA_AREA="${LAMBDA_AREA:-0.70}"
 LAMBDA_DAY="${LAMBDA_DAY:-0.0}"
 RANDOM_TRIALS="${RANDOM_TRIALS:-50}"
+ANGLE_LIST="${ANGLE_LIST:--24,-18,-12,-6,0,6,12,18,24}"
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
 OUT_ROOT="${OUT_ROOT:-./_runs/baseline_compare_${RUN_TAG}}"
+if [[ -e "${OUT_ROOT}" ]]; then
+  base="${OUT_ROOT}"
+  i=1
+  while [[ -e "${base}_v${i}" ]]; do
+    i=$((i + 1))
+  done
+  OUT_ROOT="${base}_v${i}"
+fi
 mkdir -p "${OUT_ROOT}"
 GREEDY_LIST="${OUT_ROOT}/greedy_runs.txt"
 RANDOM_LIST="${OUT_ROOT}/random_runs.txt"
@@ -49,6 +58,12 @@ fi
 ANGLE_ARGS=()
 if [[ -n "${FIXED_ANGLE_DEG}" ]]; then
   ANGLE_ARGS=(--fixed-angle-deg "${FIXED_ANGLE_DEG}")
+fi
+
+ANGLE_LIST_ARGS=()
+if [[ -n "${ANGLE_LIST}" ]]; then
+  angles="${ANGLE_LIST:--24,-18,-12,-6,0,6,12,18,24}"
+  ANGLE_LIST_ARGS=(--angle-list="${angles}")
 fi
 
 # 1) PPO eval over N episodes using seed base
@@ -78,6 +93,7 @@ if [[ -n "${PPO_MODEL}" ]]; then
     --bg-mode "${BG_MODE}" \
     --transform-strength "${TRANSFORM_STRENGTH}" \
     "${ANGLE_ARGS[@]}" \
+    "${ANGLE_LIST_ARGS[@]}" \
     --area-target "${AREA_TARGET}" \
     --lambda-area "${LAMBDA_AREA}" \
     --lambda-day "${LAMBDA_DAY}" \
@@ -104,6 +120,7 @@ for ((i=0; i<${N}; i++)); do
     --bg-mode "${BG_MODE}" \
     --transform-strength "${TRANSFORM_STRENGTH}" \
     "${ANGLE_ARGS[@]}" \
+    "${ANGLE_LIST_ARGS[@]}" \
     --area-target "${AREA_TARGET}" \
     --lambda-area "${LAMBDA_AREA}" \
     --lambda-day "${LAMBDA_DAY}"
@@ -125,11 +142,13 @@ for ((i=0; i<${N}; i++)); do
     --bg-mode "${BG_MODE}" \
     --transform-strength "${TRANSFORM_STRENGTH}" \
     "${ANGLE_ARGS[@]}" \
+    "${ANGLE_LIST_ARGS[@]}" \
     --area-target "${AREA_TARGET}" \
     --lambda-area "${LAMBDA_AREA}" \
     --lambda-day "${LAMBDA_DAY}"
   latest_random="$(ls -td "${RANDOM_OUT_ROOT}"/random_* 2>/dev/null | head -n 1 || true)"
   [[ -n "${latest_random}" ]] && echo "${latest_random}" >> "${RANDOM_LIST}"
+
 done
 
 python tools/aggregate_baselines.py \
