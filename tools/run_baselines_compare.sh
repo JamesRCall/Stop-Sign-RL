@@ -62,7 +62,8 @@ fi
 
 ANGLE_LIST_ARGS=()
 if [[ -n "${ANGLE_LIST}" ]]; then
-  ANGLE_LIST_ARGS=(--angle-list "${ANGLE_LIST}")
+  angles="${ANGLE_LIST:--24,-18,-12,-6,0,6,12,18,24}"
+  ANGLE_LIST_ARGS=(--angle-list="${angles}")
 fi
 
 # 1) PPO eval over N episodes using seed base
