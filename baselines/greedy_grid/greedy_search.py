@@ -14,7 +14,7 @@ if ROOT not in sys.path:
     sys.path.append(ROOT)
 
 from torch.utils.tensorboard import SummaryWriter
-from baselines.grid_utils import build_env_from_args, save_final_images, info_metrics, log_metrics_tb
+from baselines.grid_utils import build_env_from_args, save_final_images, info_metrics, log_metrics_tb, eval_pattern_over_angles, parse_angle_list
 
 
 def snapshot_state(env):
@@ -96,6 +96,8 @@ def parse_args():
     ap.add_argument("--select-by", choices=["reward", "drop_on", "reward_raw_total", "drop_on_smooth"], default="reward")
     ap.add_argument("--out", default="./baselines/greedy_grid/_runs")
     ap.add_argument("--tb", default="", help="TensorBoard log dir (default: <run_dir>/tb).")
+    ap.add_argument("--angle-list", default="",
+                    help="Optional comma-separated list of angles to evaluate after the episode.")
     return ap.parse_args()
 
 
@@ -185,6 +187,18 @@ def main():
         log_metrics_tb(writer, metrics, step_idx, prefix="env/")
 
     save_final_images(env, out_dir)
+    angle_list = parse_angle_list(args.angle_list)
+    angle_results = []
+    if angle_list and action_seq:
+        angle_results = eval_pattern_over_angles(
+            args,
+            pattern_type="actions",
+            pattern=action_seq,
+            seed=int(args.seed),
+            angles=angle_list,
+            eval_k=int(args.eval_K),
+            detector_device=str(args.detector_device),
+        )
     final_step = step_logs[-1] if step_logs else {}
     final_metrics = final_step.get("metrics", {}) if isinstance(final_step, dict) else {}
     final_success = bool(final_metrics.get("uv_success", False))
@@ -225,6 +239,15 @@ def main():
         "runtime_per_step_sec": runtime_per_step_sec,
         "runtime_per_step_mean_sec": float(np.mean(step_runtime_sec_list)) if step_runtime_sec_list else float("nan"),
         "runtime_per_step_std_sec": float(np.std(step_runtime_sec_list)) if step_runtime_sec_list else float("nan"),
+        "angle_eval": [
+            {
+                "angle_deg": float(r.get("angle_deg", 0.0)),
+                "n": 1,
+                "after_conf_mean": float(r.get("c_on", np.nan)),
+                "after_conf_std": float("nan"),
+            }
+            for r in angle_results
+        ] if angle_results else [],
         "episodes_detail": [{
             "episode_index": 0,
             "seed": int(args.seed),
@@ -240,6 +263,7 @@ def main():
             "selected_cells": selected_cells,
             "runtime_sec": runtime_total_sec,
             "runtime_per_step_sec": runtime_per_step_sec,
+            "angle_results": angle_results,
         }],
         "episode_meta": episode_meta,
         "config": vars(args),
