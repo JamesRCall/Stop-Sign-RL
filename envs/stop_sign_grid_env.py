@@ -209,6 +209,8 @@ class StopSignGridEnv(gym.Env):
         self.fixed_angle_deg = (
             float(fixed_angle_deg) if fixed_angle_deg is not None else None
         )
+        # Optional: enable per-episode angle evaluation (set externally).
+        self.angle_eval_list: List[float] = []
         self.uv_min_alpha = float(uv_min_alpha)
         self.min_base_conf = float(min_base_conf)
         self.info_image_every = int(info_image_every)
@@ -590,6 +592,8 @@ class StopSignGridEnv(gym.Env):
             info["overlay_pil"] = self._render_overlay_pattern(mode="on")
 
 
+        if (terminated or truncated) and self.angle_eval_list:
+            info["angle_results"] = self._eval_angles_current(self.angle_eval_list, eval_K)
         return obs, float(reward), bool(terminated), bool(truncated), info
 
     def action_masks(self) -> np.ndarray:
@@ -641,6 +645,38 @@ class StopSignGridEnv(gym.Env):
     def _selected_indices_list(self) -> List[int]:
         idxs = np.flatnonzero(self._episode_cells.reshape(-1)).tolist()
         return idxs
+
+    def _eval_angles_current(self, angles: List[float], eval_K: int) -> List[Dict[str, Any]]:
+        if not angles:
+            return []
+        orig_fixed = self.fixed_angle_deg
+        seeds = self._transform_seeds[:eval_K]
+        out: List[Dict[str, Any]] = []
+        for angle in angles:
+            self.fixed_angle_deg = float(angle)
+            c0_day_list, c0_on_list = self._eval_plain_over_K(seeds)
+            overlay = self._eval_overlay_over_K(seeds)
+            c0_day = float(np.mean(c0_day_list)) if c0_day_list else float("nan")
+            c0_on = float(np.mean(c0_on_list)) if c0_on_list else float("nan")
+            c_day = float(overlay.get("c_day", float("nan")))
+            c_on = float(overlay.get("c_on", float("nan")))
+            drop_on = float(c0_day - c_on) if np.isfinite(c0_day) and np.isfinite(c_on) else float("nan")
+            area_frac = float(self._area_frac_selected())
+            success = 1.0 if (np.isfinite(c_on) and c_on <= float(self.success_conf_threshold)) else 0.0
+            out.append(
+                {
+                    "angle_deg": float(angle),
+                    "c0_day": c0_day,
+                    "c0_on": c0_on,
+                    "c_day": c_day,
+                    "c_on": c_on,
+                    "drop_on": drop_on,
+                    "area_frac": area_frac,
+                    "success": success,
+                }
+            )
+        self.fixed_angle_deg = orig_fixed
+        return out
 
     def _area_frac_selected(self) -> float:
         valid_total = int(self._valid_cells.sum())
