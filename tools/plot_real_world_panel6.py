@@ -207,12 +207,6 @@ def main() -> int:
             if c == 0:
                 ax.set_ylabel("Stop-Sign Confidence")
 
-    title = "Real-World Confidence Curves (6 Detectors)"
-    subtitle = "Panels: Base/Spray/Paint × Norm/UV"
-    if args.daynight != "any":
-        subtitle += f" | {args.daynight.capitalize()} only"
-    fig.suptitle(f"{title}\n{subtitle}", fontsize=15, weight="bold", y=0.98)
-
     # Big global legend
     fig.legend(
         handles,
@@ -225,7 +219,7 @@ def main() -> int:
         framealpha=0.95,
         bbox_to_anchor=(0.5, 0.01),
     )
-    fig.tight_layout(rect=[0.02, 0.08, 0.98, 0.93])
+    fig.tight_layout(rect=[0.02, 0.08, 0.98, 0.98])
 
     out_png = out_dir / f"panel6_conf_vs_frame_{suffix}.png"
     out_pdf = out_dir / f"panel6_conf_vs_frame_{suffix}.pdf"
@@ -239,4 +233,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
