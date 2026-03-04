@@ -225,7 +225,7 @@ def _assign_distance_bin(distance_m: float | None, edges: list[float]) -> str | 
     return None
 
 
-def _parse_video_name_meta(source_path: str) -> dict[str, Any]:
+def _parse_media_name_meta(source_path: str) -> dict[str, Any]:
     stem = Path(str(source_path)).stem.lower()
     toks = [t for t in re.split(r"[^a-z0-9]+", stem) if t]
 
@@ -254,6 +254,24 @@ def _parse_video_name_meta(source_path: str) -> dict[str, Any]:
     elif has_any({"baseline", "base"}):
         uvnorm = "norm"
 
+    # Distance parsing:
+    #  - "05m_*", "5m_*", "..._10m_..."
+    #  - "5-20m_*" -> uses first number as the labeled capture distance.
+    distance_m = None
+    m_range = re.search(r"(\d+)\s*-\s*(\d+)\s*m", stem)
+    if m_range:
+        try:
+            distance_m = float(m_range.group(1))
+        except Exception:
+            distance_m = None
+    if distance_m is None:
+        m_single = re.search(r"(\d+)\s*m\b", stem)
+        if m_single:
+            try:
+                distance_m = float(m_single.group(1))
+            except Exception:
+                distance_m = None
+
     trial = None
     numeric_toks = [t for t in toks if t.isdigit()]
     if numeric_toks:
@@ -262,13 +280,19 @@ def _parse_video_name_meta(source_path: str) -> dict[str, Any]:
         except Exception:
             trial = None
 
-    parse_ok = (video_type != "unknown" and daynight != "unknown" and uvnorm != "unknown" and trial is not None)
+    parse_ok = (
+        video_type != "unknown"
+        and daynight != "unknown"
+        and uvnorm != "unknown"
+        and trial is not None
+    )
     condition_key = f"{video_type}_{daynight}_{uvnorm}"
     trial_key = f"{condition_key}_t{trial}" if trial is not None else f"{condition_key}_t?"
     return {
         "video_type": video_type,
         "daynight": daynight,
         "uvnorm": uvnorm,
+        "distance_m": distance_m,
         "trial": trial,
         "condition_key": condition_key,
         "trial_key": trial_key,
@@ -697,6 +721,9 @@ def main() -> int:
                     print(f"[WARN] Failed to open {media_path}: {e}")
                 continue
             processed_image_files += 1
+            mmeta = _parse_media_name_meta(str(media_path))
+            named_dist_m = mmeta.get("distance_m", None)
+            named_bin = _assign_distance_bin(named_dist_m, dist_edges)
             _process_sample(
                 pil=pil,
                 image_path=str(media_path),
@@ -704,6 +731,11 @@ def main() -> int:
                 source_path=str(media_path),
                 overlay_stem=media_path.stem,
                 overlay_suffix=media_path.suffix,
+                distance_to_sign_m=named_dist_m,
+                distance_to_sign_ft=(None if named_dist_m is None else float(named_dist_m) * 3.280839895),
+                distance_est_m_quarter=named_dist_m,
+                distance_bin_m=named_bin,
+                video_name_meta=mmeta,
             )
             continue
 
@@ -711,7 +743,7 @@ def main() -> int:
             processed_video_files += 1
             print(f"[VIDEO] {media_path.name}")
             try:
-                vmeta = _parse_video_name_meta(str(media_path))
+                vmeta = _parse_media_name_meta(str(media_path))
                 frames = list(_iter_video_frames(
                     video_path=media_path,
                     frame_step=int(args.video_frame_step),
@@ -779,10 +811,10 @@ def main() -> int:
             detector_rows[name].append(row)
     summary = {name: _summarize_detector_rows(rows) for name, rows in detector_rows.items()}
 
-    # Video distance-binned summaries (quartile mapping + filename condition parsing)
+    # Distance-binned summaries over named captures (videos + images)
     video_distance_grouped: dict[str, Any] = {
         "distance_mapping": {
-            "method": "video_quartile_progress_linear",
+            "method": "video_quartile_progress_linear + image_named_distance",
             "range_start_m": float(dist_start_m),
             "range_end_m": float(dist_end_m),
             "bins_m": dist_edges,
@@ -791,10 +823,14 @@ def main() -> int:
         "by_video": {},
         "by_condition": {},
     }
-    video_recs = [r for r in per_image_results if str(r.get("source_type", "")) == "video"]
-    if video_recs:
+    named_recs = [
+        r for r in per_image_results
+        if str(r.get("distance_bin_m") or "") != ""
+        and isinstance((r.get("video_name_meta") or {}), dict)
+    ]
+    if named_recs:
         by_source: dict[str, list[dict[str, Any]]] = {}
-        for r in video_recs:
+        for r in named_recs:
             src = str(r.get("source_path", ""))
             by_source.setdefault(src, []).append(r)
 
@@ -827,10 +863,12 @@ def main() -> int:
                 }
             by_video[vid] = {
                 "video_id": vid,
+                "source_type": rows_v[0].get("source_type", "unknown") if rows_v else "unknown",
                 "source_path": src,
                 "video_type": vm.get("video_type", "unknown"),
                 "daynight": vm.get("daynight", "unknown"),
                 "uvnorm": vm.get("uvnorm", "unknown"),
+                "distance_m": vm.get("distance_m", None),
                 "trial": vm.get("trial", None),
                 "condition_key": vm.get("condition_key", "unknown_unknown_unknown"),
                 "trial_key": vm.get("trial_key", "unknown_unknown_unknown_t?"),
