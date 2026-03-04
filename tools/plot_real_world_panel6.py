@@ -213,16 +213,16 @@ def main() -> int:
         labels,
         loc="lower center",
         ncol=6,
-        fontsize=13,
+        fontsize=20,
         frameon=True,
         fancybox=True,
         framealpha=0.95,
         bbox_to_anchor=(0.5, 0.03),
-        borderpad=0.6,
-        handlelength=2.2,
-        columnspacing=1.2,
+        borderpad=0.8,
+        handlelength=2.8,
+        columnspacing=1.5,
     )
-    fig.tight_layout(rect=[0.02, 0.10, 0.98, 0.98])
+    fig.tight_layout(rect=[0.02, 0.14, 0.98, 0.98])
 
     out_png = out_dir / f"panel6_conf_vs_frame_{suffix}.png"
     out_pdf = out_dir / f"panel6_conf_vs_frame_{suffix}.pdf"
