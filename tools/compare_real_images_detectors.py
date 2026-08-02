@@ -51,7 +51,7 @@ class DetectorSpec:
 
 
 DEFAULT_SIX = [
-    DetectorSpec("yolo8", "yolo", yolo_weights="weights/yolo8n.pt"),
+    DetectorSpec("yolo8", "yolo", yolo_weights="weights/yolov8n.pt"),
     DetectorSpec("yolo11", "yolo", yolo_weights="weights/yolo11n.pt"),
     DetectorSpec("fasterrcnn_v2", "torchvision", detector_model="fasterrcnn_resnet50_fpn_v2"),
     DetectorSpec("fcos", "torchvision", detector_model="fcos_resnet50_fpn"),
@@ -531,6 +531,11 @@ def main() -> int:
     print(f"[COMPARE] media={len(media)} (images={n_images}, videos={n_videos}) detectors={len(specs)} device={args.device}")
     print("[COMPARE] detector set:", ", ".join(s.name for s in specs))
     print(f"[COMPARE] repeats={int(max(1, args.repeats))} warmup_runs={int(max(0, args.warmup_runs))}")
+    print(
+        "[VALIDITY] top_misclass is a legacy full-frame proxy only. Without an "
+        "annotated sign ROI and paired clean/active records, it is not a valid "
+        "misclassification or joint-ASR measurement."
+    )
     if include_videos:
         print(
             f"[COMPARE] video sampling: step={int(args.video_frame_step)} "
@@ -908,6 +913,12 @@ def main() -> int:
             "target_class": args.target_class,
             "detectors": [asdict(s) for s in specs],
             "ssd_removed": True,
+            "metric_validity": {
+                "top_misclass": "legacy_global_top_proxy_not_attack_success",
+                "roi_localized": False,
+                "paired_clean_active": False,
+                "usable_for_joint_asr": False,
+            },
         },
         "summary": summary,
         "video_distance_grouped": video_distance_grouped,

@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0.0",
+  "calibration_type": "synthetic_non_empirical",
+  "provenance": {
+    "calibration_id": "synthetic-fluorescence-transport-example-v1",
+    "description": "Hand-constructed dimensioned example for deterministic software tests.",
+    "source": "Repository test fixture; no values were derived from physical measurements.",
+    "is_empirical": false,
+    "non_empirical_notice": "SYNTHETIC NON-EMPIRICAL DATA: FOR SOFTWARE TESTS AND API EXAMPLES ONLY. DO NOT REPORT AS A MEASUREMENT OR PHYSICAL RESULT."
+  },
+  "units": {
+    "wavelength": "nm",
+    "spectral_irradiance": "W m^-2 nm^-1",
+    "spectral_radiance": "W m^-2 sr^-1 nm^-1",
+    "camera_sensitivity": "relative",
+    "linear_rgb": "relative"
+  },
+  "wavelength_grid": {
+    "values_nm": [350, 400, 450, 500, 550, 600, 650, 700],
+    "integration": "trapezoidal"
+  },
+  "ambient_illuminant": {
+    "name": "synthetic broad-spectrum daylight-like illuminant",
+    "spectral_irradiance_w_m2_nm": [0.02, 0.18, 0.75, 1.05, 1.12, 1.0, 0.82, 0.58]
+  },
+  "uv_trigger": {
+    "name": "synthetic near-UV trigger",
+    "spectral_irradiance_w_m2_nm": [0.4, 0.28, 0.02, 0, 0, 0, 0, 0]
+  },
+  "substrate": {
+    "name": "synthetic red retroreflective-like substrate",
+    "spectral_reflectance": [0.15, 0.18, 0.42, 0.7, 0.82, 0.78, 0.68, 0.6]
+  },
+  "material": {
+    "name": "synthetic fluorescent coating",
+    "day_spectral_transmittance": [0.91, 0.92, 0.93, 0.94, 0.95, 0.95, 0.94, 0.93],
+    "fluorescence_model": {
+      "type": "excitation_emission",
+      "excitation_efficiency": [0.95, 0.7, 0.05, 0, 0, 0, 0, 0],
+      "emission_relative_spectrum": [0, 0, 0.05, 0.65, 1.0, 0.55, 0.1, 0],
+      "radiant_efficiency": 0.45
+    }
+  },
+  "camera": {
+    "name": "synthetic linear RGB camera",
+    "rgb_sensitivity": [
+      [0, 0, 0, 0.02, 0.12, 0.55, 1.0, 0.45],
+      [0, 0, 0.05, 0.55, 1.0, 0.5, 0.08, 0],
+      [0.05, 0.35, 1.0, 0.45, 0.05, 0, 0, 0]
+    ],
+    "exposure_scale_m2_sr_per_w": 0.015,
+    "isp_matrix_raw_to_linear_rgb": [
+      [1.08, -0.05, -0.02],
+      [-0.03, 1.05, -0.02],
+      [-0.01, -0.08, 1.12]
+    ],
+    "linear_rgb_offset": [0, 0, 0]
+  },
+  "uncertainty": {
+    "sampling": "independent_uniform",
+    "material_batch": {
+      "substrate_reflectance_scale": {"low": 0.94, "high": 1.05},
+      "day_transmittance_scale": {"low": 0.97, "high": 1.02},
+      "excitation_efficiency_scale": {"low": 0.95, "high": 1.04},
+      "fluorescence_output_scale": {"low": 0.9, "high": 1.1}
+    },
+    "camera": {
+      "rgb_sensitivity_channel_scale": [
+        {"low": 0.96, "high": 1.0},
+        {"low": 0.96, "high": 1.0},
+        {"low": 0.96, "high": 1.0}
+      ],
+      "exposure_scale": {"low": 0.95, "high": 1.05},
+      "isp_output_channel_scale": [
+        {"low": 0.98, "high": 1.02},
+        {"low": 0.98, "high": 1.02},
+        {"low": 0.98, "high": 1.02}
+      ]
+    },
+    "irradiance": {
+      "ambient_scale": {"low": 0.9, "high": 1.1},
+      "uv_scale": {"low": 0.85, "high": 1.15}
+    }
+  }
+}

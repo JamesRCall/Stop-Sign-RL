@@ -7,7 +7,7 @@ keeps the best episode based on a selected score (default: `drop_on`).
 
 ```bash
 python baselines/random_grid/random_search.py \
-  --yolo-weights ./weights/yolo8n.pt \
+  --yolo-weights ./weights/yolov8n.pt \
   --eval-K 3 \
   --grid-cell 16 \
   --area-target 0.25 \

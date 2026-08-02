@@ -19,6 +19,10 @@ export TORCH_CUDNN_V8_API_ENABLED="${TORCH_CUDNN_V8_API_ENABLED:-1}"
 # ==============================
 NUM_ENVS="${NUM_ENVS:-1}"            # with CUDA detector, keep 1 unless you build a detector server
 VEC="${VEC:-dummy}"                 # must be dummy for CUDA+YOLO in current architecture
+DATA_DIR="${DATA_DIR:-./data}"
+BG_DIR="${BG_DIR:-./data/backgrounds}"
+BG_MODE="${BG_MODE:-dataset}"
+NO_POLE="${NO_POLE:-0}"
 
 EVAL_K="${EVAL_K:-3}"
 GRID_CELL="${GRID_CELL:-16}"
@@ -26,7 +30,8 @@ LAMBDA_AREA="${LAMBDA_AREA:-0.70}"
 LAMBDA_EFFICIENCY="${LAMBDA_EFFICIENCY:-0.40}"
 EFFICIENCY_EPS="${EFFICIENCY_EPS:-0.02}"
 LAMBDA_PERCEPTUAL="${LAMBDA_PERCEPTUAL:-0.0}"
-LAMBDA_DAY="${LAMBDA_DAY:-0.0}"
+LAMBDA_DAY="${LAMBDA_DAY:-1.0}"
+DAY_TOLERANCE="${DAY_TOLERANCE:-0.05}"
 AREA_TARGET="${AREA_TARGET:-0.25}"
 STEP_COST="${STEP_COST:-0.012}"
 STEP_COST_AFTER_TARGET="${STEP_COST_AFTER_TARGET:-0.14}"
@@ -47,6 +52,20 @@ SUCCESS_CONF="${SUCCESS_CONF:-0.20}"
 TRANSFORM_STRENGTH="${TRANSFORM_STRENGTH:-1.0}"
 PAINT="${PAINT:-yellow}"
 PAINT_LIST="${PAINT_LIST:-}"
+SIGN_PROFILE="${SIGN_PROFILE:-stop}"
+SIGN_IMAGE="${SIGN_IMAGE:-}"
+SIGN_ACTIVE_IMAGE="${SIGN_ACTIVE_IMAGE:-}"
+SOURCE_CLASS="${SOURCE_CLASS:-}"
+ATTACK_MODE="${ATTACK_MODE:-disappearance}"
+ATTACK_TARGET_CLASS="${ATTACK_TARGET_CLASS:-}"
+ALLOWED_ALTERNATIVE_CLASSES="${ALLOWED_ALTERNATIVE_CLASSES:-}"
+TARGET_CONF="${TARGET_CONF:-0.40}"
+MIN_ATTACK_SUCCESS_RATE="${MIN_ATTACK_SUCCESS_RATE:-0.80}"
+MIN_CLEAN_DETECTION_RATE="${MIN_CLEAN_DETECTION_RATE:-0.80}"
+LOCALIZATION_IOU="${LOCALIZATION_IOU:-0.30}"
+REQUIRE_SOURCE_SUPPRESSION="${REQUIRE_SOURCE_SUPPRESSION:-1}"
+REQUIRE_DAY_PRESERVATION="${REQUIRE_DAY_PRESERVATION:-1}"
+SEED="${SEED:-0}"
 CNN="${CNN:-custom}"
 PHASE1_TRANSFORM_STRENGTH="${PHASE1_TRANSFORM_STRENGTH:-}"
 PHASE2_TRANSFORM_STRENGTH="${PHASE2_TRANSFORM_STRENGTH:-}"
@@ -84,7 +103,7 @@ SAVE_FREQ_UPDATES="${SAVE_FREQ_UPDATES:-2}"
 STEP_LOG_EVERY="${STEP_LOG_EVERY:-1}"
 STEP_LOG_KEEP="${STEP_LOG_KEEP:-1000}"
 STEP_LOG_500="${STEP_LOG_500:-500}"
-PY_MAIN="${PY_MAIN:-train_single_stop_sign.py}"
+PY_MAIN="${PY_MAIN:-train_traffic_sign.py}"
 MULTIPHASE="${MULTIPHASE:-0}"
 RESUME="${RESUME:-0}"
 CHECK_ENV="${CHECK_ENV:-1}"
@@ -104,6 +123,10 @@ Usage: $0 [options]
 Options:
   --num-envs N                (default: $NUM_ENVS)
   --vec {dummy|subproc}       (default: $VEC)
+  --data DIR                  (default: $DATA_DIR)
+  --bgdir DIR                 (default: $BG_DIR; use a disjoint certification directory for final evaluation)
+  --bg-mode {dataset|solid}   (default: $BG_MODE)
+  --no-pole                   (disable pole rendering)
 
   --eval-k K                  (default: $EVAL_K)
   --grid-cell {2|4|8|16|32}           (default: $GRID_CELL)
@@ -112,6 +135,7 @@ Options:
   --efficiency-eps X          (default: $EFFICIENCY_EPS)
   --lambda-perceptual X       (default: $LAMBDA_PERCEPTUAL)
   --lambda-day X              (default: $LAMBDA_DAY)
+  --day-tolerance X           (default: $DAY_TOLERANCE)
   --area-target F             (default: $AREA_TARGET)
   --step-cost X                (default: $STEP_COST)
   --step-cost-after-target X   (default: $STEP_COST_AFTER_TARGET)
@@ -119,6 +143,20 @@ Options:
   --transform-strength X      (default: $TRANSFORM_STRENGTH)
   --paint NAME                (default: $PAINT)
   --paint-list LIST           (comma-separated)
+  --sign-profile {stop|speed_limit|custom} (default: $SIGN_PROFILE)
+  --sign-image PATH           (required for custom/speed when built-in asset is absent)
+  --sign-active-image PATH    (defaults to day asset)
+  --source-class LABEL_OR_ID  (must exist in the detector label map)
+  --attack-mode {disappearance|untargeted_misclassification|targeted_misclassification}
+  --attack-target-class LABEL_OR_ID (required for targeted mode)
+  --allowed-alternative-classes LIST (comma-separated labels/ids for untargeted mode)
+  --target-conf X             (default: $TARGET_CONF)
+  --min-attack-success-rate X (default: $MIN_ATTACK_SUCCESS_RATE)
+  --min-clean-detection-rate X (default: $MIN_CLEAN_DETECTION_RATE)
+  --localization-iou X        (default: $LOCALIZATION_IOU)
+  --require-source-suppression {0|1} (default: $REQUIRE_SOURCE_SUPPRESSION)
+  --require-day-preservation {0|1} (default: $REQUIRE_DAY_PRESERVATION)
+  --seed N                    (default: $SEED)
   --cnn {custom|nature}       (default: $CNN)
   --cell-cover-thresh X       (default: $CELL_COVER_THRESH)
   --phase1-transform-strength X
@@ -191,6 +229,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --num-envs) NUM_ENVS="$2"; NUM_ENVS_SET=1; shift 2;;
     --vec) VEC="$2"; VEC_SET=1; shift 2;;
+    --data) DATA_DIR="$2"; shift 2;;
+    --bgdir) BG_DIR="$2"; shift 2;;
+    --bg-mode) BG_MODE="$2"; shift 2;;
+    --no-pole) NO_POLE="1"; shift 1;;
 
     --eval-k) EVAL_K="$2"; shift 2;;
     --grid-cell) GRID_CELL="$2"; shift 2;;
@@ -199,6 +241,7 @@ while [[ $# -gt 0 ]]; do
     --efficiency-eps) EFFICIENCY_EPS="$2"; shift 2;;
     --lambda-perceptual) LAMBDA_PERCEPTUAL="$2"; shift 2;;
     --lambda-day) LAMBDA_DAY="$2"; shift 2;;
+    --day-tolerance) DAY_TOLERANCE="$2"; shift 2;;
     --area-target) AREA_TARGET="$2"; shift 2;;
     --step-cost) STEP_COST="$2"; shift 2;;
     --step-cost-after-target) STEP_COST_AFTER_TARGET="$2"; shift 2;;
@@ -206,6 +249,20 @@ while [[ $# -gt 0 ]]; do
     --transform-strength) TRANSFORM_STRENGTH="$2"; shift 2;;
     --paint) PAINT="$2"; shift 2;;
     --paint-list) PAINT_LIST="$2"; shift 2;;
+    --sign-profile) SIGN_PROFILE="$2"; shift 2;;
+    --sign-image) SIGN_IMAGE="$2"; shift 2;;
+    --sign-active-image) SIGN_ACTIVE_IMAGE="$2"; shift 2;;
+    --source-class) SOURCE_CLASS="$2"; shift 2;;
+    --attack-mode) ATTACK_MODE="$2"; shift 2;;
+    --attack-target-class) ATTACK_TARGET_CLASS="$2"; shift 2;;
+    --allowed-alternative-classes) ALLOWED_ALTERNATIVE_CLASSES="$2"; shift 2;;
+    --target-conf) TARGET_CONF="$2"; shift 2;;
+    --min-attack-success-rate) MIN_ATTACK_SUCCESS_RATE="$2"; shift 2;;
+    --min-clean-detection-rate) MIN_CLEAN_DETECTION_RATE="$2"; shift 2;;
+    --localization-iou) LOCALIZATION_IOU="$2"; shift 2;;
+    --require-source-suppression) REQUIRE_SOURCE_SUPPRESSION="$2"; shift 2;;
+    --require-day-preservation) REQUIRE_DAY_PRESERVATION="$2"; shift 2;;
+    --seed) SEED="$2"; shift 2;;
     --cnn) CNN="$2"; shift 2;;
     --cell-cover-thresh) CELL_COVER_THRESH="$2"; shift 2;;
     --phase1-transform-strength) PHASE1_TRANSFORM_STRENGTH="$2"; shift 2;;
@@ -409,11 +466,20 @@ start_detector_server() {
     exit 1
   fi
   echo "[DET] Starting detector server on port ${DET_SERVER_PORT}"
+  SERVER_SOURCE_CLASS="${SOURCE_CLASS}"
+  if [[ -z "${SERVER_SOURCE_CLASS}" ]]; then
+    if [[ "${SIGN_PROFILE}" == "speed_limit" ]]; then
+      SERVER_SOURCE_CLASS="speed limit sign"
+    else
+      SERVER_SOURCE_CLASS="stop sign"
+    fi
+  fi
   python tools/detector_server.py \
     --detector "${DETECTOR}" \
     --detector-model "${DET_SERVER_MODEL}" \
     --model "${DET_SERVER_MODEL}" \
     --device "${DET_SERVER_DEVICE}" \
+    --target-class "${SERVER_SOURCE_CLASS}" \
     --port "${DET_SERVER_PORT}" \
     > ./_runs/detector_server.log 2>&1 &
   DET_PID=$!
@@ -423,6 +489,37 @@ start_detector_server() {
 }
 
 EXTRA_ARGS=()
+EXTRA_ARGS+=(
+  --data "${DATA_DIR}"
+  --bgdir "${BG_DIR}"
+  --bg-mode "${BG_MODE}"
+  --sign-profile "${SIGN_PROFILE}"
+  --attack-mode "${ATTACK_MODE}"
+  --allowed-alternative-classes "${ALLOWED_ALTERNATIVE_CLASSES}"
+  --target-conf "${TARGET_CONF}"
+  --min-attack-success-rate "${MIN_ATTACK_SUCCESS_RATE}"
+  --min-clean-detection-rate "${MIN_CLEAN_DETECTION_RATE}"
+  --localization-iou "${LOCALIZATION_IOU}"
+  --require-source-suppression "${REQUIRE_SOURCE_SUPPRESSION}"
+  --require-day-preservation "${REQUIRE_DAY_PRESERVATION}"
+  --day-tolerance "${DAY_TOLERANCE}"
+  --seed "${SEED}"
+)
+if [[ "${NO_POLE}" == "1" ]]; then
+  EXTRA_ARGS+=(--no-pole)
+fi
+if [[ -n "${SIGN_IMAGE}" ]]; then
+  EXTRA_ARGS+=(--sign-image "${SIGN_IMAGE}")
+fi
+if [[ -n "${SIGN_ACTIVE_IMAGE}" ]]; then
+  EXTRA_ARGS+=(--sign-active-image "${SIGN_ACTIVE_IMAGE}")
+fi
+if [[ -n "${SOURCE_CLASS}" ]]; then
+  EXTRA_ARGS+=(--source-class "${SOURCE_CLASS}")
+fi
+if [[ -n "${ATTACK_TARGET_CLASS}" ]]; then
+  EXTRA_ARGS+=(--attack-target-class "${ATTACK_TARGET_CLASS}")
+fi
 if [[ -n "${YOLO_WEIGHTS}" ]]; then
   EXTRA_ARGS+=(--yolo-weights "${YOLO_WEIGHTS}")
 fi
@@ -533,7 +630,8 @@ echo "[TRAIN] Launching GPU training:"
 echo "        YOLO_DEVICE=${YOLO_DEVICE}"
 echo "        yolo-version=${YOLO_VERSION} yolo-weights=${YOLO_WEIGHTS:-<default>}"
 echo "        num-envs=${NUM_ENVS} vec=${VEC} eval_K=${EVAL_K} grid=${GRID_CELL}"
-echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} step-cost=${STEP_COST} step-cost-after-target=${STEP_COST_AFTER_TARGET} area-target=${AREA_TARGET:-<cap>} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} cnn=${CNN} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
+echo "        sign=${SIGN_PROFILE} source=${SOURCE_CLASS:-<profile-default>} attack=${ATTACK_MODE} target=${ATTACK_TARGET_CLASS:-<none>} seed=${SEED}"
+echo "        lambda-area=${LAMBDA_AREA} lambda-eff=${LAMBDA_EFFICIENCY} lambda-perc=${LAMBDA_PERCEPTUAL} lambda-day=${LAMBDA_DAY} day-tolerance=${DAY_TOLERANCE} step-cost=${STEP_COST} step-cost-after-target=${STEP_COST_AFTER_TARGET} area-target=${AREA_TARGET:-<cap>} success-conf=${SUCCESS_CONF} tf=${TRANSFORM_STRENGTH} paint=${PAINT} cnn=${CNN} area-cap-frac=${AREA_CAP_FRAC} area-cap-penalty=${AREA_CAP_PENALTY} mode=${AREA_CAP_MODE}"
 echo "        cap-ramp=${AREA_CAP_START}->${AREA_CAP_END} over ${AREA_CAP_STEPS} steps"
 if [[ -n "${LAMBDA_AREA_START}" || -n "${LAMBDA_AREA_END}" || ( -n "${LAMBDA_AREA_STEPS}" && "${LAMBDA_AREA_STEPS}" -gt 0 ) ]]; then
   echo "        lambda-ramp=${LAMBDA_AREA_START:-<unset>}->${LAMBDA_AREA_END:-<unset>} over ${LAMBDA_AREA_STEPS} steps"

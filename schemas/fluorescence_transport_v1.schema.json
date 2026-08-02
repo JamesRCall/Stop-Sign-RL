@@ -1,0 +1,305 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:stop-sign-model:schema:fluorescence-transport:1.0.0",
+  "title": "Fluorescence camera transport calibration",
+  "description": "Version 1 calibration contract. Physical values and uncertainty bounds are required; consumers must not infer missing calibration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "calibration_type",
+    "provenance",
+    "units",
+    "wavelength_grid",
+    "ambient_illuminant",
+    "uv_trigger",
+    "substrate",
+    "material",
+    "camera",
+    "uncertainty"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "calibration_type": {
+      "enum": ["measured", "synthetic_non_empirical"]
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "calibration_id",
+        "description",
+        "source",
+        "is_empirical",
+        "non_empirical_notice"
+      ],
+      "properties": {
+        "calibration_id": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "is_empirical": {"type": "boolean"},
+        "non_empirical_notice": {"type": "string"}
+      }
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wavelength",
+        "spectral_irradiance",
+        "spectral_radiance",
+        "camera_sensitivity",
+        "linear_rgb"
+      ],
+      "properties": {
+        "wavelength": {"const": "nm"},
+        "spectral_irradiance": {"const": "W m^-2 nm^-1"},
+        "spectral_radiance": {"const": "W m^-2 sr^-1 nm^-1"},
+        "camera_sensitivity": {"const": "relative"},
+        "linear_rgb": {"const": "relative"}
+      }
+    },
+    "wavelength_grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["values_nm", "integration"],
+      "properties": {
+        "values_nm": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"type": "number", "minimum": 0}
+        },
+        "integration": {"const": "trapezoidal"}
+      }
+    },
+    "ambient_illuminant": {"$ref": "#/$defs/illuminant"},
+    "uv_trigger": {"$ref": "#/$defs/illuminant"},
+    "substrate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "spectral_reflectance"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "spectral_reflectance": {
+          "type": "array",
+          "items": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "material": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "day_spectral_transmittance", "fluorescence_model"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "day_spectral_transmittance": {
+          "type": "array",
+          "items": {"type": "number", "minimum": 0, "maximum": 1}
+        },
+        "fluorescence_model": {
+          "oneOf": [
+            {"$ref": "#/$defs/excitationEmissionModel"},
+            {"$ref": "#/$defs/measuredEmissionResponseModel"}
+          ]
+        }
+      }
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "rgb_sensitivity",
+        "exposure_scale_m2_sr_per_w",
+        "isp_matrix_raw_to_linear_rgb",
+        "linear_rgb_offset"
+      ],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "rgb_sensitivity": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "array",
+            "items": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "exposure_scale_m2_sr_per_w": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "isp_matrix_raw_to_linear_rgb": {
+          "$ref": "#/$defs/matrix3x3"
+        },
+        "linear_rgb_offset": {
+          "$ref": "#/$defs/vector3"
+        }
+      }
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sampling", "material_batch", "camera", "irradiance"],
+      "properties": {
+        "sampling": {"const": "independent_uniform"},
+        "material_batch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "substrate_reflectance_scale",
+            "day_transmittance_scale",
+            "excitation_efficiency_scale",
+            "fluorescence_output_scale"
+          ],
+          "properties": {
+            "substrate_reflectance_scale": {"$ref": "#/$defs/nonnegativeBounds"},
+            "day_transmittance_scale": {"$ref": "#/$defs/nonnegativeBounds"},
+            "excitation_efficiency_scale": {"$ref": "#/$defs/nonnegativeBounds"},
+            "fluorescence_output_scale": {"$ref": "#/$defs/nonnegativeBounds"}
+          }
+        },
+        "camera": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rgb_sensitivity_channel_scale",
+            "exposure_scale",
+            "isp_output_channel_scale"
+          ],
+          "properties": {
+            "rgb_sensitivity_channel_scale": {
+              "$ref": "#/$defs/boundsVector3"
+            },
+            "exposure_scale": {"$ref": "#/$defs/nonnegativeBounds"},
+            "isp_output_channel_scale": {"$ref": "#/$defs/boundsVector3"}
+          }
+        },
+        "irradiance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ambient_scale", "uv_scale"],
+          "properties": {
+            "ambient_scale": {"$ref": "#/$defs/nonnegativeBounds"},
+            "uv_scale": {"$ref": "#/$defs/nonnegativeBounds"}
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"calibration_type": {"const": "measured"}},
+        "required": ["calibration_type"]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {"is_empirical": {"const": true}}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"calibration_type": {"const": "synthetic_non_empirical"}},
+        "required": ["calibration_type"]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "is_empirical": {"const": false},
+              "non_empirical_notice": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "illuminant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "spectral_irradiance_w_m2_nm"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "spectral_irradiance_w_m2_nm": {
+          "type": "array",
+          "items": {"type": "number", "minimum": 0}
+        }
+      }
+    },
+    "excitationEmissionModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "excitation_efficiency",
+        "emission_relative_spectrum",
+        "radiant_efficiency"
+      ],
+      "properties": {
+        "type": {"const": "excitation_emission"},
+        "excitation_efficiency": {
+          "type": "array",
+          "items": {"type": "number", "minimum": 0, "maximum": 1}
+        },
+        "emission_relative_spectrum": {
+          "type": "array",
+          "items": {"type": "number", "minimum": 0}
+        },
+        "radiant_efficiency": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "measuredEmissionResponseModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "emission_radiance_response_per_uv_irradiance_sr_inv_nm_inv"
+      ],
+      "properties": {
+        "type": {"const": "measured_emission_response"},
+        "emission_radiance_response_per_uv_irradiance_sr_inv_nm_inv": {
+          "type": "array",
+          "items": {"type": "number", "minimum": 0}
+        }
+      }
+    },
+    "nonnegativeBounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["low", "high"],
+      "properties": {
+        "low": {"type": "number", "minimum": 0},
+        "high": {"type": "number", "minimum": 0}
+      }
+    },
+    "boundsVector3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/nonnegativeBounds"}
+    },
+    "vector3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    },
+    "matrix3x3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/vector3"}
+    }
+  }
+}

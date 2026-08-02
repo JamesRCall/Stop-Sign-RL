@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -41,7 +40,7 @@ def main() -> int:
                     help="Detector backend: yolo, torchvision, rtdetr")
     ap.add_argument("--detector-model", default="",
                     help="Torchvision/transformers model id (if applicable)")
-    ap.add_argument("--yolo-weights", default="./weights/yolo8n.pt",
+    ap.add_argument("--yolo-weights", default="./weights/yolov8n.pt",
                     help="YOLO weights path")
     ap.add_argument("--device", default="auto", help="cpu, cuda, or auto")
     ap.add_argument("--conf", type=float, default=0.10, help="Confidence threshold")

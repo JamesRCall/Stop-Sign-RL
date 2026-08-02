@@ -1,11 +1,11 @@
-"""Train MaskablePPO on the stop-sign grid environment with optional curricula.
+"""Train MaskablePPO on an alpha-masked traffic-sign grid environment.
 
 Notes:
   - Action masking is enabled (duplicate grid cells are masked out).
   - Observations are VecNormalize'd; stats are saved alongside checkpoints.
 """
 
-import os, glob, time, argparse, re
+import os, glob, time, argparse, re, random
 from typing import List, Optional, Tuple
 from PIL import Image
 import torch
@@ -19,7 +19,10 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, BaseCallback
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
-from envs.stop_sign_grid_env import StopSignGridEnv
+from envs.traffic_sign_grid_env import TrafficSignGridEnv
+from envs.attack_objective import ATTACK_MODES
+from utils.sign_assets import resolve_sign_assets
+from utils.experiment_manifest import build_experiment_manifest, write_manifest
 from utils.uv_paint import (
     WHITE_GLOW,
     RED_GLOW,
@@ -37,7 +40,7 @@ from utils.tb_callbacks import TensorboardOverlayCallback, EpisodeMetricsCallbac
 
 
 # ----------------- custom CNN extractor -----------------
-class StopSignFeatureExtractor(BaseFeaturesExtractor):
+class TrafficSignFeatureExtractor(BaseFeaturesExtractor):
     """
     Lightweight CNN for sign-focused crops with optional mask channel.
     """
@@ -85,11 +88,15 @@ def build_policy_kwargs(cnn_arch: str) -> dict:
     if arch == "nature":
         return kwargs
     kwargs.update({
-        "features_extractor_class": StopSignFeatureExtractor,
+        "features_extractor_class": TrafficSignFeatureExtractor,
         "features_extractor_kwargs": {"features_dim": 512},
         "net_arch": {"pi": [256, 256], "vf": [256, 256]},
     })
     return kwargs
+
+
+# Keep old checkpoint deserialization/import paths working.
+StopSignFeatureExtractor = TrafficSignFeatureExtractor
 
 
 def resolve_paint_list(paint_name: str, paint_list: Optional[str]) -> List[UVPaint]:
@@ -235,8 +242,13 @@ class SaveVecNormalizeCallback(BaseCallback):
             os.makedirs(self.save_dir, exist_ok=True)
             vec_path = os.path.join(self.save_dir, "vecnormalize.pkl")
             venv.save(vec_path)
+            step_vec_path = os.path.join(
+                self.save_dir,
+                f"vecnormalize_{int(self.num_timesteps)}_steps.pkl",
+            )
+            venv.save(step_vec_path)
             if self.verbose:
-                print(f"[VECNORM] Saved stats to {vec_path}")
+                print(f"[VECNORM] Saved stats to {step_vec_path}")
         return True
 
 def load_backgrounds(folder: str) -> List[Image.Image]:
@@ -249,16 +261,23 @@ def load_backgrounds(folder: str) -> List[Image.Image]:
     Returns:
         List of PIL images.
     """
-    paths = sorted(glob.glob(os.path.join(folder, "*.*")))
+    supported = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+    paths = [
+        p for p in sorted(glob.glob(os.path.join(folder, "*.*")))
+        if os.path.splitext(p)[1].lower() in supported
+    ]
     imgs = []
+    failures = []
     for p in paths:
         try:
             imgs.append(Image.open(p).convert("RGB"))
-        except Exception:
-            pass
+        except Exception as exc:
+            failures.append(f"{p}: {exc}")
+    if failures:
+        raise RuntimeError("Unreadable background assets:\n" + "\n".join(failures))
     if not imgs:
         raise FileNotFoundError(f"No backgrounds found in: {folder}")
-    return imgs[:20]
+    return imgs
 
 
 def build_solid_backgrounds(img_size: Tuple[int, int]) -> List[Image.Image]:
@@ -313,9 +332,29 @@ def find_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
     return cands[-1]
 
 
+def find_vecnormalize_for_checkpoint(checkpoint_path: str) -> str:
+    """Resolve checkpoint-matched observation statistics, failing if absent."""
+    folder = os.path.dirname(os.path.abspath(checkpoint_path))
+    stem = os.path.splitext(os.path.basename(checkpoint_path))[0]
+    match = re.search(r"_(\d+)_steps$", stem)
+    candidates = []
+    if match:
+        candidates.append(
+            os.path.join(folder, f"vecnormalize_{match.group(1)}_steps.pkl")
+        )
+    candidates.append(os.path.join(folder, "vecnormalize.pkl"))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    raise FileNotFoundError(
+        "Resume requires the VecNormalize statistics saved with the checkpoint; "
+        f"checked: {', '.join(candidates)}"
+    )
+
+
 def make_env_factory(
-    stop_plain: Image.Image,
-    stop_uv: Image.Image,
+    sign_plain: Image.Image,
+    sign_active: Image.Image,
     pole_rgba: Optional[Image.Image],
     backgrounds: List[Image.Image],
     steps_per_episode: int,
@@ -330,6 +369,8 @@ def make_env_factory(
     area_target_frac: Optional[float],
     step_cost: float,
     step_cost_after_target: float,
+    day_tolerance: float,
+    lambda_day: float,
     lambda_iou: float,
     lambda_misclass: float,
     area_cap_frac: Optional[float],
@@ -339,19 +380,30 @@ def make_env_factory(
     yolo_device: str,
     detector_type: str,
     detector_model: Optional[str],
+    source_class,
+    attack_mode: str,
+    attack_target_class,
+    allowed_alternative_classes,
+    target_conf_threshold: float,
+    min_attack_success_rate: float,
+    min_clean_detection_rate: float,
+    localization_iou_threshold: float,
+    require_source_suppression: bool,
+    require_day_preservation: bool,
     obs_size: Tuple[int, int],
     obs_margin: float,
     obs_include_mask: bool,
     uv_paints: List[UVPaint],
     cell_cover_thresh: float,
     lambda_perceptual: float,
+    seed: int,
 ):
     """
     Create a factory function for VecEnv construction.
 
     Args:
-        stop_plain: Base stop-sign image.
-        stop_uv: UV variant of the stop sign.
+        sign_plain: Base traffic-sign image.
+        sign_active: Active/UV variant of the traffic sign.
         pole_rgba: Pole image with alpha (or None to disable).
         backgrounds: Background image list.
         steps_per_episode: Max steps per episode.
@@ -388,9 +440,9 @@ def make_env_factory(
     """
     def _init():
         paint_list = list(uv_paints) if uv_paints else [YELLOW_GLOW]
-        env = StopSignGridEnv(
-            stop_sign_image=stop_plain,
-            stop_sign_uv_image=stop_uv,
+        env = TrafficSignGridEnv(
+            stop_sign_image=sign_plain,
+            stop_sign_uv_image=sign_active,
             background_images=backgrounds,
             pole_image=pole_rgba,
             yolo_weights=yolo_wts,
@@ -407,10 +459,9 @@ def make_env_factory(
             detector_debug=False,
 
             grid_cell_px=grid_cell_px,
-            # Optional cap: if area_cap_frac is set and max_cells is None, the env derives
-            # max_cells = ceil(area_cap_frac * valid_total) and terminates with
-            # info["note"]="max_cells_reached" once selected_cells hits that cap.
-            max_cells=None,  # leave None because we terminate by threshold
+            # Keep the optional legacy count cap disabled. Area constraints are
+            # enforced with exact painted sign pixels inside the environment.
+            max_cells=None,
             uv_paint=paint_list[0],
             uv_paint_list=paint_list if len(paint_list) > 1 else None,
             use_single_color=True,
@@ -421,8 +472,8 @@ def make_env_factory(
             lambda_efficiency=lambda_efficiency,
             efficiency_eps=efficiency_eps,
             transform_strength=transform_strength,
-            day_tolerance=0.05,
-            lambda_day=float(args.lambda_day),
+            day_tolerance=float(day_tolerance),
+            lambda_day=float(lambda_day),
             lambda_area=float(lambda_area),
             area_target_frac=area_target_frac,
             step_cost=float(step_cost),
@@ -433,6 +484,17 @@ def make_env_factory(
             area_cap_frac=area_cap_frac,
             area_cap_penalty=area_cap_penalty,
             area_cap_mode=area_cap_mode,
+            source_class=source_class,
+            attack_mode=attack_mode,
+            attack_target_class=attack_target_class,
+            allowed_alternative_classes=allowed_alternative_classes,
+            target_conf_threshold=float(target_conf_threshold),
+            min_attack_success_rate=float(min_attack_success_rate),
+            min_clean_detection_rate=float(min_clean_detection_rate),
+            localization_iou_threshold=float(localization_iou_threshold),
+            require_source_suppression=bool(require_source_suppression),
+            require_day_preservation=bool(require_day_preservation),
+            seed=int(seed),
         )
         env = Monitor(env)
         env = ActionMasker(env, lambda e: e.unwrapped.action_masks())
@@ -447,9 +509,37 @@ def parse_args():
     Returns:
         Parsed argparse namespace.
     """
-    ap = argparse.ArgumentParser("Train PPO on grid-square UV attack over stop sign")
+    ap = argparse.ArgumentParser("Train PPO on a grid-square traffic-sign attack")
     ap.add_argument("--data", default="./data")
     ap.add_argument("--bgdir", default="./data/backgrounds")
+    ap.add_argument("--sign-profile", choices=["stop", "speed_limit", "custom"], default="stop")
+    ap.add_argument("--sign-image", default="",
+                    help="Explicit RGBA day-state sign asset.")
+    ap.add_argument("--sign-active-image", default="",
+                    help="Optional RGBA active/UV-state sign asset; defaults to day asset.")
+    ap.add_argument("--source-class", default="",
+                    help="Detector label (or integer id) for the clean sign.")
+    ap.add_argument("--attack-mode", choices=ATTACK_MODES, default="disappearance")
+    ap.add_argument("--attack-target-class", default="",
+                    help="Required detector label/id for targeted misclassification.")
+    ap.add_argument(
+        "--allowed-alternative-classes",
+        default="",
+        help=(
+            "Comma-separated preregistered labels/ids that may count for "
+            "untargeted misclassification. Empty uses every non-source label."
+        ),
+    )
+    ap.add_argument("--target-conf", type=float, default=0.40,
+                    help="Wrong/target-class confidence required for misclassification.")
+    ap.add_argument("--min-attack-success-rate", type=float, default=0.80,
+                    help="Required fraction of eligible EOT samples satisfying the attack.")
+    ap.add_argument("--min-clean-detection-rate", type=float, default=0.80,
+                    help="Required fraction of EOT samples correctly classified before attack.")
+    ap.add_argument("--localization-iou", type=float, default=0.30,
+                    help="Minimum detection/sign-box IoU used for attack attribution.")
+    ap.add_argument("--require-source-suppression", type=int, choices=[0, 1], default=1)
+    ap.add_argument("--require-day-preservation", type=int, choices=[0, 1], default=1)
     ap.add_argument("--yolo", "--yolo-weights", dest="yolo_weights", default=None)
     ap.add_argument("--yolo-version", choices=["8", "11"], default="8")
     ap.add_argument("--detector-device", default=os.getenv("YOLO_DEVICE", "auto"))
@@ -474,19 +564,23 @@ def parse_args():
     ap.add_argument("--total-steps", type=int, default=800_000)
     ap.add_argument("--ent-coef", type=float, default=0.001,
                     help="Entropy coefficient for PPO.")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="Root seed for Python, NumPy, Torch, SB3, and environments.")
 
     ap.add_argument("--episode-steps", type=int, default=300)
-    ap.add_argument("--eval-K", type=int, default=10)
-    ap.add_argument("--grid-cell", type=int, default=2, choices=[2, 4, 8, 16, 32])
+    ap.add_argument("--eval-K", type=int, default=3)
+    ap.add_argument("--grid-cell", type=int, default=16)
     ap.add_argument("--uv-threshold", type=float, default=0.75)
     ap.add_argument("--success-conf", type=float, default=0.20,
-                    help="Success threshold for after-conf (stop sign).")
+                    help="Maximum localized source confidence for source suppression.")
     ap.add_argument("--lambda-area", type=float, default=0.70)
     ap.add_argument("--lambda-iou", type=float, default=0.40)
     ap.add_argument("--lambda-misclass", type=float, default=0.60)
     ap.add_argument("--lambda-perceptual", type=float, default=0.0,
                     help="Penalty for daylight visibility (lower is better).")
-    ap.add_argument("--lambda-day", type=float, default=0.0,
+    ap.add_argument("--day-tolerance", type=float, default=0.05,
+                    help="Maximum clean-day confidence drop allowed for joint success.")
+    ap.add_argument("--lambda-day", type=float, default=1.0,
                     help="Penalty weight for daylight drop.")
     ap.add_argument("--lambda-efficiency", type=float, default=0.40,
                     help="Efficiency bonus weight (drop per area).")
@@ -570,7 +664,8 @@ def parse_args():
     ap.add_argument("--phase3-step-cost", type=float, default=None,
                     help="Phase 3 per-step penalty override.")
 
-    ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint in --ckpt")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue from latest checkpoint for --total-steps additional timesteps (single-phase only)")
     ap.add_argument("--check-env", action="store_true",
                     help="Run SB3 env checker on a single env instance, then exit.")
 
@@ -599,7 +694,7 @@ def resolve_yolo_weights(yolo_version: str, yolo_weights: Optional[str]) -> str:
     if yolo_weights:
         return yolo_weights
     defaults = {
-        "8": "./weights/yolo8n.pt",
+        "8": "./weights/yolov8n.pt",
         "11": "./weights/yolo11n.pt",
     }
     return defaults[str(yolo_version)]
@@ -612,10 +707,25 @@ if __name__ == "__main__":
     os.environ.setdefault("MKL_NUM_THREADS", "1")
 
     args = parse_args()
+    if args.resume and args.multiphase:
+        raise ValueError(
+            "multiphase resume requires persisted phase progress and is intentionally "
+            "disabled; resume a single-phase run or start a new curriculum"
+        )
+    random.seed(int(args.seed))
+    np.random.seed(int(args.seed))
+    torch.manual_seed(int(args.seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(args.seed))
+    if str(args.detector_device).strip().lower() == "auto":
+        args.detector_device = "cuda:0" if torch.cuda.is_available() else "cpu"
     dev_lower = str(args.detector_device).lower()
     if "cuda" in dev_lower and args.vec == "subproc":
         print("WARN: CUDA detector + SubprocVecEnv is risky. Switching vec to dummy.")
         args.vec = "dummy"
+    if "cuda" in dev_lower and int(args.num_envs) > 1:
+        print("WARN: in-process CUDA detector uses one model per env; forcing num_envs=1.")
+        args.num_envs = 1
     print("torch.cuda.is_available():", torch.cuda.is_available())
     if torch.cuda.is_available():
         print("Using cuda device")
@@ -627,14 +737,22 @@ if __name__ == "__main__":
         det_model = str(args.detector_model) if args.detector_model else "default"
         print(f"Detector={args.detector} model={det_model}")
 
-    # paths
-    STOP_PLAIN = os.path.join(args.data, "stop_sign.png")
-    STOP_UV    = os.path.join(args.data, "stop_sign_uv.png")
+    # Sign/profile paths. Speed-limit profiles require a fine-grained custom
+    # detector label map; class resolution fails closed if the label is absent.
+    sign_assets = resolve_sign_assets(
+        data_dir=args.data,
+        profile=args.sign_profile,
+        sign_image=(args.sign_image or None),
+        sign_active_image=(args.sign_active_image or None),
+        source_class=(args.source_class or None),
+    )
+    source_class = sign_assets.source_class
+    attack_target_class = args.attack_target_class or None
     POLE_PNG   = os.path.join(args.data, "pole.png")
     BG_DIR     = args.bgdir
 
-    stop_plain = Image.open(STOP_PLAIN).convert("RGBA")
-    stop_uv    = Image.open(STOP_UV).convert("RGBA") if os.path.exists(STOP_UV) else stop_plain.copy()
+    sign_plain = Image.open(sign_assets.day_image).convert("RGBA")
+    sign_active = Image.open(sign_assets.active_image).convert("RGBA")
     pole_rgba  = Image.open(POLE_PNG).convert("RGBA") if os.path.exists(POLE_PNG) else None
 
     img_size = (640, 640)
@@ -657,9 +775,9 @@ if __name__ == "__main__":
             lambda_area = float(args.lambda_area)
 
         paint_list = resolve_paint_list(args.paint, args.paint_list)
-        return StopSignGridEnv(
-            stop_sign_image=stop_plain,
-            stop_sign_uv_image=stop_uv,
+        return TrafficSignGridEnv(
+            stop_sign_image=sign_plain,
+            stop_sign_uv_image=sign_active,
             background_images=backgrounds,
             pole_image=pole_use,
             yolo_weights=yolo_weights,
@@ -687,7 +805,7 @@ if __name__ == "__main__":
             lambda_efficiency=float(args.lambda_efficiency),
             efficiency_eps=float(args.efficiency_eps),
             transform_strength=float(args.transform_strength if transform_strength is None else transform_strength),
-            day_tolerance=0.05,
+            day_tolerance=float(args.day_tolerance),
             lambda_day=float(args.lambda_day),
             lambda_area=float(lambda_area),
             area_target_frac=(float(args.area_target) if args.area_target is not None else None),
@@ -699,9 +817,26 @@ if __name__ == "__main__":
             area_cap_frac=area_cap_frac,
             area_cap_penalty=float(args.area_cap_penalty),
             area_cap_mode=str(args.area_cap_mode),
+            source_class=source_class,
+            attack_mode=str(args.attack_mode),
+            attack_target_class=attack_target_class,
+            allowed_alternative_classes=args.allowed_alternative_classes,
+            target_conf_threshold=float(args.target_conf),
+            min_attack_success_rate=float(args.min_attack_success_rate),
+            min_clean_detection_rate=float(args.min_clean_detection_rate),
+            localization_iou_threshold=float(args.localization_iou),
+            require_source_suppression=bool(int(args.require_source_suppression)),
+            require_day_preservation=bool(int(args.require_day_preservation)),
+            seed=int(args.seed),
         )
 
-    def build_env(eval_K: int, bg_mode: str, use_pole: bool, transform_strength: Optional[float] = None):
+    def build_env(
+        eval_K: int,
+        bg_mode: str,
+        use_pole: bool,
+        transform_strength: Optional[float] = None,
+        vecnorm_path: Optional[str] = None,
+    ):
         backgrounds = build_backgrounds(bg_mode, BG_DIR, img_size)
         pole_use = pole_rgba if use_pole else None
 
@@ -721,7 +856,7 @@ if __name__ == "__main__":
         paint_list = resolve_paint_list(args.paint, args.paint_list)
         fns = [
             make_env_factory(
-                stop_plain, stop_uv, pole_use, backgrounds,
+                sign_plain, sign_active, pole_use, backgrounds,
                 steps_per_episode=args.episode_steps,
                 eval_K=eval_K,
                 grid_cell_px=args.grid_cell,
@@ -731,6 +866,8 @@ if __name__ == "__main__":
                 area_target_frac=(float(args.area_target) if args.area_target is not None else None),
                 step_cost=float(args.step_cost),
                 step_cost_after_target=float(args.step_cost_after_target),
+                day_tolerance=float(args.day_tolerance),
+                lambda_day=float(args.lambda_day),
                 lambda_iou=float(args.lambda_iou),
                 lambda_misclass=float(args.lambda_misclass),
                 lambda_efficiency=float(args.lambda_efficiency),
@@ -743,17 +880,37 @@ if __name__ == "__main__":
                 yolo_device=args.detector_device,
                 detector_type=str(args.detector),
                 detector_model=str(args.detector_model) if args.detector_model else None,
+                source_class=source_class,
+                attack_mode=str(args.attack_mode),
+                attack_target_class=attack_target_class,
+                allowed_alternative_classes=args.allowed_alternative_classes,
+                target_conf_threshold=float(args.target_conf),
+                min_attack_success_rate=float(args.min_attack_success_rate),
+                min_clean_detection_rate=float(args.min_clean_detection_rate),
+                localization_iou_threshold=float(args.localization_iou),
+                require_source_suppression=bool(int(args.require_source_suppression)),
+                require_day_preservation=bool(int(args.require_day_preservation)),
                 obs_size=(int(args.obs_size), int(args.obs_size)),
                 obs_margin=float(args.obs_margin),
                 obs_include_mask=bool(int(args.obs_include_mask)),
                 uv_paints=paint_list,
                 cell_cover_thresh=float(args.cell_cover_thresh),
                 lambda_perceptual=float(args.lambda_perceptual),
-            ) for _ in range(args.num_envs)
+                seed=int(args.seed) + rank,
+            ) for rank in range(args.num_envs)
         ]
         v = SubprocVecEnv(fns) if args.vec == "subproc" else DummyVecEnv(fns)
         v = VecTransposeImage(v)
-        v = VecNormalize(v, norm_obs=True, norm_reward=False, clip_obs=5.0)
+        if vecnorm_path:
+            if not os.path.isfile(vecnorm_path):
+                raise FileNotFoundError(
+                    f"VecNormalize statistics required for resume: {vecnorm_path}"
+                )
+            v = VecNormalize.load(vecnorm_path, v)
+            v.training = True
+            v.norm_reward = False
+        else:
+            v = VecNormalize(v, norm_obs=True, norm_reward=False, clip_obs=5.0)
         return v
 
     def resolve_phase_steps(total: int) -> Tuple[int, int, int]:
@@ -780,7 +937,14 @@ if __name__ == "__main__":
         det_tag = det
         if args.detector_model:
             det_tag = f"{det_tag}_{_sanitize_tag(args.detector_model)}"
-    run_tag = f"grid_uv_{det_tag}"
+    objective_tag = _sanitize_tag(str(args.attack_mode))
+    sign_tag = _sanitize_tag(str(args.sign_profile))
+    target_tag = (
+        f"_to_{_sanitize_tag(str(attack_target_class))}"
+        if attack_target_class is not None
+        else ""
+    )
+    run_tag = f"grid_uv_{sign_tag}_{objective_tag}{target_tag}_{det_tag}"
     tb_root = os.path.join(args.tb, run_tag)
 
     if args.check_env:
@@ -795,10 +959,25 @@ if __name__ == "__main__":
     os.makedirs(args.ckpt, exist_ok=True)
     os.makedirs(args.overlays, exist_ok=True)
 
+    background_paths = sorted(
+        path for path in glob.glob(os.path.join(BG_DIR, "*.*")) if os.path.isfile(path)
+    )
+    manifest = build_experiment_manifest(
+        config=vars(args),
+        sign_day_path=sign_assets.day_image,
+        sign_active_path=sign_assets.active_image,
+        pole_path=(POLE_PNG if os.path.isfile(POLE_PNG) else None),
+        background_paths=background_paths,
+        weights_path=(yolo_weights if str(args.detector).lower() == "yolo" else None),
+        source_class=source_class,
+        attack_target_class=attack_target_class,
+    )
+    write_manifest(os.path.join(args.ckpt, "experiment_manifest.json"), manifest)
+
     model = None
 
     # callbacks
-    # Save top minimal-area successes; disabled by default via max_saved=0.
+    # Save a bounded set of minimal-area joint successes for frozen certification.
     tb_cb = TensorboardOverlayCallback(tb_root, tag_prefix=run_tag, max_images=25, verbose=1)
     
     ep_cb = EpisodeMetricsCallback(tb_root, verbose=1)
@@ -812,14 +991,16 @@ if __name__ == "__main__":
     
     saver = SaveImprovingOverlaysCallback(
         save_dir=args.overlays, threshold=0.0, mode="minimal",
-        max_saved=0, verbose=0, tb_callback=tb_cb
+        max_saved=25, verbose=0, tb_callback=tb_cb
     )
 
     # checkpoint cadence
     if args.save_freq_steps and args.save_freq_steps > 0:
-        SAVE_FREQ = int(args.save_freq_steps)
+        desired_save_timesteps = int(args.save_freq_steps)
     else:
-        SAVE_FREQ = max(int(args.n_steps) * int(args.num_envs) * max(args.save_freq_updates, 1), 1)
+        desired_save_timesteps = int(args.n_steps) * int(args.num_envs) * max(args.save_freq_updates, 1)
+    # SB3 callbacks count vector steps, each of which advances num_envs timesteps.
+    SAVE_FREQ = max(desired_save_timesteps // max(int(args.num_envs), 1), 1)
     ckpt_cb = CheckpointCallback(save_freq=SAVE_FREQ, save_path=args.ckpt, name_prefix="grid")
     vec_cb = SaveVecNormalizeCallback(save_freq=SAVE_FREQ, save_dir=args.ckpt, verbose=0)
 
@@ -853,39 +1034,47 @@ if __name__ == "__main__":
         ep_cb.set_log_dir(phase_log_dir)
         step_cb.set_log_dir(phase_log_dir)
 
-        env = build_env(eval_K=int(args.eval_K), bg_mode=args.bg_mode, use_pole=not args.no_pole)
-        policy_kwargs = build_policy_kwargs(args.cnn)
-        model = MaskablePPO(
-            "CnnPolicy",
-            env,
-            verbose=2,
-            n_steps=int(args.n_steps),
-            batch_size=int(args.batch_size),
-            learning_rate=2.0e-4,
-            gamma=0.995,
-            gae_lambda=0.95,
-            ent_coef=float(args.ent_coef),
-            vf_coef=0.5,
-            clip_range=0.2,
-            tensorboard_log=tb_root,
-            device="auto",
-            policy_kwargs=policy_kwargs,
-        )
-
-        # resume if asked
+        ckpt = None
+        vecnorm_resume = None
         if args.resume:
             ckpt = find_latest_checkpoint(args.ckpt)
-            if ckpt:
-                print(f" Resuming from: {ckpt}")
-                model = MaskablePPO.load(ckpt, env=env, device="auto")
-                model.n_steps = int(args.n_steps)
-                model.batch_size = int(args.batch_size)
-                model.ent_coef = float(args.ent_coef)
+            if not ckpt:
+                raise FileNotFoundError(f"--resume requested but no checkpoint found in {args.ckpt}")
+            vecnorm_resume = find_vecnormalize_for_checkpoint(ckpt)
+        env = build_env(
+            eval_K=int(args.eval_K),
+            bg_mode=args.bg_mode,
+            use_pole=not args.no_pole,
+            vecnorm_path=vecnorm_resume,
+        )
+        if ckpt:
+            print(f" Resuming model={ckpt} vecnormalize={vecnorm_resume}")
+            model = MaskablePPO.load(ckpt, env=env, device="auto")
+        else:
+            policy_kwargs = build_policy_kwargs(args.cnn)
+            model = MaskablePPO(
+                "CnnPolicy",
+                env,
+                verbose=2,
+                n_steps=int(args.n_steps),
+                batch_size=int(args.batch_size),
+                learning_rate=2.0e-4,
+                gamma=0.995,
+                gae_lambda=0.95,
+                ent_coef=float(args.ent_coef),
+                vf_coef=0.5,
+                clip_range=0.2,
+                tensorboard_log=tb_root,
+                device="auto",
+                policy_kwargs=policy_kwargs,
+                seed=int(args.seed),
+            )
 
         model.learn(
             total_timesteps=int(total_steps),
             callback=callback_list,
             tb_log_name=f"{run_tag}_{phase_tag}",
+            reset_num_timesteps=not bool(args.resume),
         )
     else:
         p1, p2, p3 = resolve_phase_steps(int(args.total_steps))
@@ -895,17 +1084,21 @@ if __name__ == "__main__":
         phase1_tf = float(args.phase1_transform_strength) if args.phase1_transform_strength is not None else 0.4
         phase2_tf = float(args.phase2_transform_strength) if args.phase2_transform_strength is not None else 0.7
         phase3_tf = float(args.phase3_transform_strength) if args.phase3_transform_strength is not None else 1.0
-        phase1_ld = float(args.lambda_day)
-        phase2_ld = float(args.lambda_day)
-        phase3_ld = float(args.lambda_day)
-        phase1_sc = float(args.step_cost)
-        phase2_sc = float(args.step_cost)
-        phase3_sc = float(args.step_cost)
+        phase1_ld = float(args.phase1_lambda_day) if args.phase1_lambda_day is not None else float(args.lambda_day)
+        phase2_ld = float(args.phase2_lambda_day) if args.phase2_lambda_day is not None else float(args.lambda_day)
+        phase3_ld = float(args.phase3_lambda_day) if args.phase3_lambda_day is not None else float(args.lambda_day)
+        phase1_sc = float(args.phase1_step_cost) if args.phase1_step_cost is not None else float(args.step_cost)
+        phase2_sc = float(args.phase2_step_cost) if args.phase2_step_cost is not None else float(args.step_cost)
+        phase3_sc = float(args.phase3_step_cost) if args.phase3_step_cost is not None else float(args.step_cost)
         phases = [
             {"name": "phase1_easy", "steps": p1, "eval_K": phase1_eval, "bg_mode": "solid", "use_pole": False, "tf": phase1_tf, "lambda_day": phase1_ld, "step_cost": phase1_sc},
             {"name": "phase2_medium", "steps": p2, "eval_K": phase2_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase2_tf, "lambda_day": phase2_ld, "step_cost": phase2_sc},
             {"name": "phase3_full", "steps": p3, "eval_K": phase3_eval, "bg_mode": "dataset", "use_pole": True, "tf": phase3_tf, "lambda_day": phase3_ld, "step_cost": phase3_sc},
         ]
+
+        resume_ckpt = find_latest_checkpoint(args.ckpt) if args.resume else None
+        if args.resume and not resume_ckpt:
+            raise FileNotFoundError(f"--resume requested but no checkpoint found in {args.ckpt}")
 
         for i, ph in enumerate(phases):
             if int(ph["steps"]) <= 0:
@@ -918,40 +1111,46 @@ if __name__ == "__main__":
 
             args.lambda_day = float(ph["lambda_day"])
             args.step_cost = float(ph["step_cost"])
+            vecnorm_path = None
+            if model is None and resume_ckpt:
+                vecnorm_path = find_vecnormalize_for_checkpoint(resume_ckpt)
+            elif model is not None:
+                prior_env = model.get_env()
+                if not isinstance(prior_env, VecNormalize):
+                    raise RuntimeError("multiphase transition expected a VecNormalize environment")
+                vecnorm_path = os.path.join(args.ckpt, "vecnormalize_phase_transition.pkl")
+                prior_env.save(vecnorm_path)
             env = build_env(
                 eval_K=int(ph["eval_K"]),
                 bg_mode=ph["bg_mode"],
                 use_pole=bool(ph["use_pole"]),
                 transform_strength=float(ph["tf"]),
+                vecnorm_path=vecnorm_path,
             )
 
             if model is None:
-                policy_kwargs = build_policy_kwargs(args.cnn)
-                model = MaskablePPO(
-                    "CnnPolicy",
-                    env,
-                    verbose=2,
-                    n_steps=int(args.n_steps),
-                    batch_size=int(args.batch_size),
-                    learning_rate=2.0e-4,
-                    gamma=0.995,
-                    gae_lambda=0.95,
-                    ent_coef=float(args.ent_coef),
-                    vf_coef=0.5,
-                    clip_range=0.2,
-                    tensorboard_log=tb_root,
-                    device="auto",
-                    policy_kwargs=policy_kwargs,
-                )
-
-                if args.resume:
-                    ckpt = find_latest_checkpoint(args.ckpt)
-                    if ckpt:
-                        print(f" Resuming from: {ckpt}")
-                    model = MaskablePPO.load(ckpt, env=env, device="auto")
-                    model.n_steps = int(args.n_steps)
-                    model.batch_size = int(args.batch_size)
-                    model.ent_coef = float(args.ent_coef)
+                if resume_ckpt:
+                    print(f" Resuming model={resume_ckpt} vecnormalize={vecnorm_path}")
+                    model = MaskablePPO.load(resume_ckpt, env=env, device="auto")
+                else:
+                    policy_kwargs = build_policy_kwargs(args.cnn)
+                    model = MaskablePPO(
+                        "CnnPolicy",
+                        env,
+                        verbose=2,
+                        n_steps=int(args.n_steps),
+                        batch_size=int(args.batch_size),
+                        learning_rate=2.0e-4,
+                        gamma=0.995,
+                        gae_lambda=0.95,
+                        ent_coef=float(args.ent_coef),
+                        vf_coef=0.5,
+                        clip_range=0.2,
+                        tensorboard_log=tb_root,
+                        device="auto",
+                        policy_kwargs=policy_kwargs,
+                        seed=int(args.seed),
+                    )
             else:
                 model.set_env(env)
 

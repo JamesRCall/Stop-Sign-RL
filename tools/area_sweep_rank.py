@@ -274,7 +274,6 @@ def main() -> None:
         return best
 
     # Build per-percent summaries from summary_overall (averaged across detectors)
-    overall_pct_rows = []
     # derive per-combo per-pct aggregated across detectors
     combo_pct = defaultdict(lambda: defaultdict(list))
     for (det, combo), pct_map in stats.items():

@@ -7,7 +7,7 @@ and selects the action that maximizes a chosen score (default: reward).
 
 ```bash
 python baselines/greedy_grid/greedy_search.py \
-  --yolo-weights ./weights/yolo8n.pt \
+  --yolo-weights ./weights/yolov8n.pt \
   --eval-K 3 \
   --grid-cell 16 \
   --area-target 0.25

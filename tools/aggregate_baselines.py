@@ -62,7 +62,7 @@ def _extract_episode_row_from_summary(run: Dict[str, Any], idx: int) -> Dict[str
         "episode_index": int(idx),
         "seed": int(paired_seed) if paired_seed is not None else None,
         "episode_seed": int(detail.get("seed")) if detail.get("seed") is not None else None,
-        "success": bool(detail.get("success", metrics.get("uv_success", False))),
+        "success": bool(detail.get("success", metrics.get("attack_success", False))),
         "steps": int(detail.get("steps", run.get("steps", 0))),
         "base_conf": _as_float(detail.get("base_conf", metrics.get("base_conf", metrics.get("c0_day", np.nan)))),
         "after_conf": _as_float(detail.get("after_conf", metrics.get("after_conf", metrics.get("c_on", np.nan)))),
@@ -72,6 +72,11 @@ def _extract_episode_row_from_summary(run: Dict[str, Any], idx: int) -> Dict[str
         "mean_iou": _as_float(detail.get("mean_iou", metrics.get("mean_iou", np.nan))),
         "misclass_rate": _as_float(detail.get("misclass_rate", metrics.get("misclass_rate", np.nan))),
         "selected_cells": _as_float(detail.get("selected_cells", metrics.get("selected_cells", np.nan))),
+        # For search baselines, charge every candidate/trial query used to select
+        # the reported pattern, not only the replayed winning episode.
+        "detector_queries": _as_float(run.get("detector_queries", detail.get("detector_queries", metrics.get("detector_queries", np.nan)))),
+        "clean_detection_rate": _as_float(detail.get("clean_detection_rate", metrics.get("clean_detection_rate", np.nan))),
+        "targeted_success_rate": _as_float(detail.get("targeted_success_rate", metrics.get("targeted_success_rate", np.nan))),
         "runtime_sec": _as_float(detail.get("runtime_sec", run.get("runtime_total_sec", np.nan))),
         "runtime_per_step_sec": _as_float(detail.get("runtime_per_step_sec", run.get("runtime_per_step_sec", np.nan))),
         "run_id": str(run.get("run_id", "")),
@@ -94,6 +99,9 @@ def _summary_from_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     cells = [_as_float(r.get("selected_cells", np.nan)) for r in rows]
     runtime = [_as_float(r.get("runtime_sec", np.nan)) for r in rows]
     runtime_step = [_as_float(r.get("runtime_per_step_sec", np.nan)) for r in rows]
+    queries = [_as_float(r.get("detector_queries", np.nan)) for r in rows]
+    clean = [_as_float(r.get("clean_detection_rate", np.nan)) for r in rows]
+    targeted = [_as_float(r.get("targeted_success_rate", np.nan)) for r in rows]
     success = [1.0 if bool(r.get("success", False)) else 0.0 for r in rows]
     return {
         "n": len(rows),
@@ -121,6 +129,11 @@ def _summary_from_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "std_runtime_sec": _std(runtime),
         "mean_runtime_per_step_sec": _mean(runtime_step),
         "std_runtime_per_step_sec": _std(runtime_step),
+        "mean_detector_queries": _mean(queries),
+        "std_detector_queries": _std(queries),
+        "total_detector_queries": float(np.nansum(queries)) if queries else 0.0,
+        "mean_clean_detection_rate": _mean(clean),
+        "mean_targeted_success_rate": _mean(targeted),
     }
 
 
@@ -139,6 +152,7 @@ def _paired_delta(ref_rows: List[Dict[str, Any]], other_rows: List[Dict[str, Any
         "misclass_rate",
         "runtime_sec",
         "runtime_per_step_sec",
+        "detector_queries",
     ]
     deltas: Dict[str, List[float]] = {k: [] for k in metrics}
     for seed in common:
@@ -230,6 +244,9 @@ def main() -> None:
                     "mean_iou": _as_float(row.get("mean_iou", np.nan)),
                     "misclass_rate": _as_float(row.get("misclass_rate", np.nan)),
                     "selected_cells": _as_float(row.get("selected_cells", np.nan)),
+                    "detector_queries": _as_float(row.get("detector_queries", np.nan)),
+                    "clean_detection_rate": _as_float(row.get("clean_detection_rate", np.nan)),
+                    "targeted_success_rate": _as_float(row.get("targeted_success_rate", np.nan)),
                     "runtime_sec": _as_float(row.get("runtime_sec", np.nan)),
                     "runtime_per_step_sec": _as_float(row.get("runtime_per_step_sec", np.nan)),
                     "run_id": str(ppo_obj.get("model", "")),

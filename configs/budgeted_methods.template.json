@@ -1,0 +1,21 @@
+{
+  "genetic_algorithm": {
+    "population_size": 32,
+    "elite_fraction": 0.25
+  },
+  "gaussian_es": {
+    "population_size": 32,
+    "elite_fraction": 0.25,
+    "sigma": 1.0
+  },
+  "fipatch_style_pso_proxy": {
+    "swarm_size": 32,
+    "inertia": 0.72,
+    "cognitive": 1.49,
+    "social": 1.49
+  },
+  "cma_es": {
+    "population_size": 32,
+    "sigma": 1.0
+  }
+}

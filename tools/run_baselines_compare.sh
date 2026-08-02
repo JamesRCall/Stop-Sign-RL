@@ -4,13 +4,16 @@ set -euo pipefail
 # Simple runner to compare PPO vs greedy/random baselines over multiple seeds.
 # Configure via env vars or CLI flags below.
 
-N="${N:-5}"
-SEED_BASE="${SEED_BASE:-1000}"
+N="${N:-30}"
+SEED_BASE="${SEED_BASE:-100000}"
+DATA_DIR="${DATA_DIR:-./data}"
+BG_DIR="${BG_DIR:-./data/backgrounds}"
+NO_POLE="${NO_POLE:-0}"
 EVAL_K="${EVAL_K:-3}"
 GRID_CELL="${GRID_CELL:-16}"
 PAINT="${PAINT:-yellow}"
 YOLO_VERSION="${YOLO_VERSION:-8}"
-YOLO_WEIGHTS="${YOLO_WEIGHTS:-./weights/yolo8n.pt}"
+YOLO_WEIGHTS="${YOLO_WEIGHTS:-./weights/yolov8n.pt}"
 DETECTOR="${DETECTOR:-yolo}"
 DETECTOR_MODEL="${DETECTOR_MODEL:-}"
 PPO_MODEL="${PPO_MODEL:-}"
@@ -18,11 +21,25 @@ PPO_CKPT_DIR="${PPO_CKPT_DIR:-./_runs/checkpoints}"
 PPO_VECNORM="${PPO_VECNORM:-}"
 BG_MODE="${BG_MODE:-dataset}"
 TRANSFORM_STRENGTH="${TRANSFORM_STRENGTH:-1.0}"
-FIXED_ANGLE_DEG="${FIXED_ANGLE_DEG:-0}"
+FIXED_ANGLE_DEG="${FIXED_ANGLE_DEG:-}"
 AREA_TARGET="${AREA_TARGET:-0.25}"
 LAMBDA_AREA="${LAMBDA_AREA:-0.70}"
-LAMBDA_DAY="${LAMBDA_DAY:-0.0}"
-RANDOM_TRIALS="${RANDOM_TRIALS:-50}"
+LAMBDA_DAY="${LAMBDA_DAY:-1.0}"
+DAY_TOLERANCE="${DAY_TOLERANCE:-0.05}"
+RANDOM_TRIALS="${RANDOM_TRIALS:-1}"
+SIGN_PROFILE="${SIGN_PROFILE:-stop}"
+SIGN_IMAGE="${SIGN_IMAGE:-}"
+SIGN_ACTIVE_IMAGE="${SIGN_ACTIVE_IMAGE:-}"
+SOURCE_CLASS="${SOURCE_CLASS:-}"
+ATTACK_MODE="${ATTACK_MODE:-disappearance}"
+ATTACK_TARGET_CLASS="${ATTACK_TARGET_CLASS:-}"
+ALLOWED_ALTERNATIVE_CLASSES="${ALLOWED_ALTERNATIVE_CLASSES:-}"
+TARGET_CONF="${TARGET_CONF:-0.40}"
+MIN_ATTACK_SUCCESS_RATE="${MIN_ATTACK_SUCCESS_RATE:-0.80}"
+MIN_CLEAN_DETECTION_RATE="${MIN_CLEAN_DETECTION_RATE:-0.80}"
+LOCALIZATION_IOU="${LOCALIZATION_IOU:-0.30}"
+REQUIRE_SOURCE_SUPPRESSION="${REQUIRE_SOURCE_SUPPRESSION:-1}"
+REQUIRE_DAY_PRESERVATION="${REQUIRE_DAY_PRESERVATION:-1}"
 ANGLE_LIST="${ANGLE_LIST:--24,-18,-12,-6,0,6,12,18,24}"
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
 OUT_ROOT="${OUT_ROOT:-./_runs/baseline_compare_${RUN_TAG}}"
@@ -50,7 +67,38 @@ if [[ -n "${DETECTOR_MODEL}" ]]; then
   DETECTOR_ARGS+=(--detector-model "${DETECTOR_MODEL}")
 fi
 
+OBJECTIVE_ARGS=(
+  --data "${DATA_DIR}"
+  --bgdir "${BG_DIR}"
+  --sign-profile "${SIGN_PROFILE}"
+  --attack-mode "${ATTACK_MODE}"
+  --allowed-alternative-classes "${ALLOWED_ALTERNATIVE_CLASSES}"
+  --target-conf "${TARGET_CONF}"
+  --min-attack-success-rate "${MIN_ATTACK_SUCCESS_RATE}"
+  --min-clean-detection-rate "${MIN_CLEAN_DETECTION_RATE}"
+  --localization-iou "${LOCALIZATION_IOU}"
+  --require-source-suppression "${REQUIRE_SOURCE_SUPPRESSION}"
+  --require-day-preservation "${REQUIRE_DAY_PRESERVATION}"
+  --day-tolerance "${DAY_TOLERANCE}"
+)
+if [[ "${NO_POLE}" == "1" ]]; then
+  OBJECTIVE_ARGS+=(--no-pole)
+fi
+if [[ -n "${SIGN_IMAGE}" ]]; then
+  OBJECTIVE_ARGS+=(--sign-image "${SIGN_IMAGE}")
+fi
+if [[ -n "${SIGN_ACTIVE_IMAGE}" ]]; then
+  OBJECTIVE_ARGS+=(--sign-active-image "${SIGN_ACTIVE_IMAGE}")
+fi
+if [[ -n "${SOURCE_CLASS}" ]]; then
+  OBJECTIVE_ARGS+=(--source-class "${SOURCE_CLASS}")
+fi
+if [[ -n "${ATTACK_TARGET_CLASS}" ]]; then
+  OBJECTIVE_ARGS+=(--attack-target-class "${ATTACK_TARGET_CLASS}")
+fi
+
 echo "[RUN] N=${N} seed_base=${SEED_BASE} eval_K=${EVAL_K} grid=${GRID_CELL} paint=${PAINT} detector=${DETECTOR} model=${DETECTOR_MODEL:-<default>}"
+echo "[RUN] sign=${SIGN_PROFILE} source=${SOURCE_CLASS:-profile-default} attack=${ATTACK_MODE} target=${ATTACK_TARGET_CLASS:-none} random_trials=${RANDOM_TRIALS}"
 if [[ -n "${FIXED_ANGLE_DEG}" ]]; then
   echo "[RUN] fixed_angle_deg=${FIXED_ANGLE_DEG}"
 fi
@@ -90,6 +138,7 @@ if [[ -n "${PPO_MODEL}" ]]; then
     --paint "${PAINT}" \
     --yolo-weights "${YOLO_WEIGHTS}" \
     "${DETECTOR_ARGS[@]}" \
+    "${OBJECTIVE_ARGS[@]}" \
     --bg-mode "${BG_MODE}" \
     --transform-strength "${TRANSFORM_STRENGTH}" \
     "${ANGLE_ARGS[@]}" \
@@ -117,6 +166,7 @@ for ((i=0; i<${N}; i++)); do
     --paint "${PAINT}" \
     --yolo-weights "${YOLO_WEIGHTS}" \
     "${DETECTOR_ARGS[@]}" \
+    "${OBJECTIVE_ARGS[@]}" \
     --bg-mode "${BG_MODE}" \
     --transform-strength "${TRANSFORM_STRENGTH}" \
     "${ANGLE_ARGS[@]}" \
@@ -139,6 +189,7 @@ for ((i=0; i<${N}; i++)); do
     --paint "${PAINT}" \
     --yolo-weights "${YOLO_WEIGHTS}" \
     "${DETECTOR_ARGS[@]}" \
+    "${OBJECTIVE_ARGS[@]}" \
     --bg-mode "${BG_MODE}" \
     --transform-strength "${TRANSFORM_STRENGTH}" \
     "${ANGLE_ARGS[@]}" \

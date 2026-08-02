@@ -13,6 +13,9 @@ stable-baselines3>=2.3.0
 sb3-contrib>=2.3.0
 gymnasium>=0.29
 
+# Budget-matched black-box comparator
+cma>=4.4,<5
+
 # Logging / TB
 tensorboard>=2.14
 

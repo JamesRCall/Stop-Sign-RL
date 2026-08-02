@@ -1,0 +1,15 @@
+{
+  "status": "NON-RUNNABLE TEMPLATE",
+  "method_id": "patchattack",
+  "upstream_revision": "REPLACE_WITH_IMMUTABLE_COMMIT",
+  "native_search_space": "REPLACE_WITH_THE_ORIGINAL_METHOD_VARIABLES",
+  "common_search_space": "binary fluorescent-grid cell indices",
+  "mapping_algorithm": "REPLACE_WITH_A_COMPLETE_DETERMINISTIC_DESCRIPTION",
+  "material_accounting": "exact covered source-sign alpha pixels",
+  "detector_feedback_available_to_runner": "accounted candidate history only",
+  "semantic_differences_from_paper": [
+    "REPLACE_WITH_EVERY_SEARCH_SPACE_OR_TASK_ADAPTATION"
+  ],
+  "preregistration_reference": "REPLACE_WITH_IMMUTABLE_TIMESTAMP_OR_REGISTRATION",
+  "independent_auditor": "REPLACE_WITH_AUDITOR_AND_DATE"
+}

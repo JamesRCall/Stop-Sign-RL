@@ -163,7 +163,7 @@ def make_eval_table(eval_by_det: dict[str, dict[str, Any]]) -> str:
     lines.append(r"\setlength{\tabcolsep}{5pt}")
     lines.append(r"\begin{tabular}{lccccc}")
     lines.append(r"\hline")
-    lines.append(r"Detector & Success@20\% $\uparrow$ & After-conf $\downarrow$ & Drop-on $\uparrow$ & Misclass $\downarrow$ & Steps $\downarrow$ \\")
+    lines.append(r"Detector & Joint ASR $\uparrow$ & Source conf. $\downarrow$ & Active drop $\uparrow$ & Localized alt. rate & Steps $\downarrow$ \\")
     lines.append(r"\hline")
     for k in DETECTOR_ORDER:
         obj = eval_by_det.get(k)
@@ -180,7 +180,7 @@ def make_eval_table(eval_by_det: dict[str, dict[str, Any]]) -> str:
     lines.append(r"\hline")
     lines.append(r"\end{tabular}")
     lines.append(
-        r"\caption{PPO evaluation over 100 episodes per detector. Success@20\% corresponds to confidence-threshold success used in evaluation (typically $c_{\mathrm{on}} \le 0.20$).}"
+        r"\caption{Scene-conditioned PPO evaluation. Joint ASR requires clean paired-state eligibility, the configured ROI-localized attack objective over EOT samples, inactive-state preservation, and the material-area budget. Fixed-stencil certification is reported separately on held-out scenes.}"
     )
     lines.append(r"\label{tab:ppo_eval_100}")
     lines.append(r"\end{table}")

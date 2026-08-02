@@ -242,9 +242,9 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Sweep patch area coverage vs YOLO confidence.")
     p.add_argument("--data", default="./data")
     p.add_argument("--bgdir", default="./data/backgrounds")
-    p.add_argument("--yolo", default="./weights/yolo8n.pt",
+    p.add_argument("--yolo", default="./weights/yolov8n.pt",
                    help="YOLO weights path (used when --detector-suite single).")
-    p.add_argument("--yolo8", default="./weights/yolo8n.pt",
+    p.add_argument("--yolo8", default="./weights/yolov8n.pt",
                    help="YOLOv8 weights path (used in --detector-suite all).")
     p.add_argument("--yolo11", default="./weights/yolo11n.pt",
                    help="YOLOv11 weights path (used in --detector-suite all).")
@@ -428,7 +428,7 @@ def main() -> None:
                                         for r, c in coords:
                                             env._episode_cells[int(r), int(c)] = True
 
-                                area_frac = float(env._episode_cells.sum()) / float(total)
+                                area_frac = float(env._area_frac_selected())
                                 eval_seeds = env._transform_seeds[: int(eval_k)]
                                 over_day = apply_multi_color_overlay(env.sign_rgba_day, "day", env, list(combo), np.random.default_rng(mask_seed))
                                 over_on = apply_multi_color_overlay(env.sign_rgba_on, "on", env, list(combo), np.random.default_rng(mask_seed))
@@ -438,7 +438,8 @@ def main() -> None:
                                 mean_iou = float(metrics.get("mean_iou", 0.0))
                                 misclass_rate = float(metrics.get("misclass_rate", 0.0))
                                 c0_day = float(env._mean_over_K(env._baseline_c0_day_list, int(eval_k)))
-                                drop_on = float(c0_day - c_on)
+                                c0_on = float(env._mean_over_K(env._baseline_c0_on_list, int(eval_k)))
+                                drop_on = float(c0_on - c_on)
 
                                 rows.append((area_frac, c_on, c_day, drop_on, mean_iou, misclass_rate))
 
@@ -461,6 +462,7 @@ def main() -> None:
                                     "c_on": float(c_on),
                                     "c_day": float(c_day),
                                     "c0_day": float(c0_day),
+                                    "c0_on": float(c0_on),
                                     "drop_on": float(drop_on),
                                     "mean_iou": float(mean_iou),
                                     "misclass_rate": float(misclass_rate),

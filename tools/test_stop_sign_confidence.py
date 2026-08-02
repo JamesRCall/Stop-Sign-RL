@@ -6,20 +6,20 @@ Quick visual + numerical check for how your YOLO model scores a stop sign in a g
 
 - Prints all detected stop-sign boxes with confidence values.
 - Shows (and optionally saves) an annotated image with labeled confidence.
-Defaults to yolo8n.pt if no weights are provided.
+Defaults to yolov8n.pt if no weights are provided.
 """
 
 import argparse
 import os
 import sys
-from typing import List, Tuple
+from typing import List
 
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
 try:
     from ultralytics import YOLO
-except Exception as e:
+except Exception:
     print("ERROR: Could not import 'ultralytics'. Install it with:\n  pip install ultralytics", file=sys.stderr)
     raise
 

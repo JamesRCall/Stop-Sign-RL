@@ -49,6 +49,19 @@ def score_from(info, reward, mode: str) -> float:
 def parse_args():
     ap = argparse.ArgumentParser("Greedy grid baseline (StopSignGridEnv)")
     ap.add_argument("--data", default="./data")
+    ap.add_argument("--sign-profile", choices=["stop", "speed_limit", "custom"], default="stop")
+    ap.add_argument("--sign-image", default="")
+    ap.add_argument("--sign-active-image", default="")
+    ap.add_argument("--source-class", default="")
+    ap.add_argument("--attack-mode", choices=["disappearance", "untargeted_misclassification", "targeted_misclassification"], default="disappearance")
+    ap.add_argument("--attack-target-class", default="")
+    ap.add_argument("--allowed-alternative-classes", default="")
+    ap.add_argument("--target-conf", type=float, default=0.40)
+    ap.add_argument("--min-attack-success-rate", type=float, default=0.80)
+    ap.add_argument("--min-clean-detection-rate", type=float, default=0.80)
+    ap.add_argument("--localization-iou", type=float, default=0.30)
+    ap.add_argument("--require-source-suppression", type=int, choices=[0, 1], default=1)
+    ap.add_argument("--require-day-preservation", type=int, choices=[0, 1], default=1)
     ap.add_argument("--bgdir", default="./data/backgrounds")
     ap.add_argument("--bg-mode", choices=["dataset", "solid"], default="dataset")
     ap.add_argument("--no-pole", action="store_true")
@@ -61,7 +74,7 @@ def parse_args():
     ap.add_argument("--detector-debug", type=int, default=0)
 
     ap.add_argument("--eval-K", type=int, default=3)
-    ap.add_argument("--grid-cell", type=int, default=16, choices=[2, 4, 8, 16, 32])
+    ap.add_argument("--grid-cell", type=int, default=16)
     ap.add_argument("--episode-steps", type=int, default=300)
     ap.add_argument("--transform-strength", type=float, default=1.0)
     ap.add_argument("--fixed-angle-deg", type=float, default=None,
@@ -71,7 +84,7 @@ def parse_args():
     ap.add_argument("--lambda-area", type=float, default=0.70)
     ap.add_argument("--lambda-efficiency", type=float, default=0.40)
     ap.add_argument("--efficiency-eps", type=float, default=0.02)
-    ap.add_argument("--lambda-day", type=float, default=0.0)
+    ap.add_argument("--lambda-day", type=float, default=1.0)
     ap.add_argument("--lambda-iou", type=float, default=0.40)
     ap.add_argument("--lambda-misclass", type=float, default=0.60)
     ap.add_argument("--lambda-perceptual", type=float, default=0.0)
@@ -186,6 +199,7 @@ def main():
         writer.add_scalar("metrics/area_frac", float(info.get("total_area_mask_frac", 0.0)), step_idx)
         log_metrics_tb(writer, metrics, step_idx, prefix="env/")
 
+    search_detector_queries = int(env._detector_queries)
     save_final_images(env, out_dir)
     angle_list = parse_angle_list(args.angle_list)
     angle_results = []
@@ -197,9 +211,10 @@ def main():
             angles=angle_list,
             eval_k=int(args.eval_K),
         )
+    angle_detector_queries = int(env._detector_queries) - search_detector_queries
     final_step = step_logs[-1] if step_logs else {}
     final_metrics = final_step.get("metrics", {}) if isinstance(final_step, dict) else {}
-    final_success = bool(final_metrics.get("uv_success", False))
+    final_success = bool(final_metrics.get("attack_success", False))
     area_frac = float(final_metrics.get("total_area_mask_frac", final_step.get("area_frac", np.nan))) if final_step else float("nan")
     base_conf = float(final_metrics.get("base_conf", final_metrics.get("c0_day", np.nan))) if final_step else float("nan")
     after_conf = float(final_metrics.get("after_conf", final_metrics.get("c_on", np.nan))) if final_step else float("nan")
@@ -233,6 +248,8 @@ def main():
         "mean_iou": mean_iou,
         "mean_misclass_rate": misclass,
         "mean_selected_cells": selected_cells,
+        "detector_queries": int(search_detector_queries),
+        "angle_detector_queries": int(angle_detector_queries),
         "runtime_total_sec": runtime_total_sec,
         "runtime_per_step_sec": runtime_per_step_sec,
         "runtime_per_step_mean_sec": float(np.mean(step_runtime_sec_list)) if step_runtime_sec_list else float("nan"),
@@ -259,6 +276,7 @@ def main():
             "mean_iou": mean_iou,
             "misclass_rate": misclass,
             "selected_cells": selected_cells,
+            "detector_queries": int(search_detector_queries),
             "runtime_sec": runtime_total_sec,
             "runtime_per_step_sec": runtime_per_step_sec,
             "angle_results": angle_results,

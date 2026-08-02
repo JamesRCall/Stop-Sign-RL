@@ -1,476 +1,515 @@
-# Stop Sign Grid UV Adversarial Training (PPO + Multi-Detector)
+# Dual-State Traffic-Sign Patch Optimization
 
-This project trains a PPO agent to place small grid-cell overlays on a stop sign so that
-detector confidence drops under UV activation while staying high in daylight. The environment
-renders a sign-on-pole against randomized backgrounds with matched transforms, and uses
-UV paint pairs (day vs UV-on) to model activation.
+This repository studies sequential, black-box optimization of sparse patches whose
+inactive/day state should preserve traffic-sign perception while an activated
+state causes a configured detector error. It contains a legacy single-task path
+and an experimental v2 path for task-amortized, target-conditioned optimization.
+Both use action-masked PPO and the same localized paired-state objective boundary.
 
-Ethics notice: this repository is for research and robustness testing only. Do not use it
-to cause harm or unsafe behavior.
+> Research status: this is a refactored research prototype, not a completed
+> artifact and not evidence of guaranteed publication. No code change can
+> guarantee USENIX acceptance. Results produced before the localized,
+> mode-specific objective refactor are stale and must be regenerated. No
+> empirical v2, speed-sign, fluorescence-fidelity, or certification result is
+> included.
 
----
+The closest prior work is
+[FIPatch (*The Fluorescent Veil*, NeurIPS 2025)](https://papers.nips.cc/paper_files/paper/2025/hash/8e608f20d2bc14ffe312635285e0125c-Abstract-Conference.html),
+which already covers fluorescent/UV traffic-sign patches, EOT, black-box
+optimization, area reduction, stop and speed signs, hiding, and misrecognition.
+Do not claim novelty for that premise. See
+[the novelty and evaluation protocol](docs/NOVELTY_AND_EVALUATION.md) before
+writing the paper or running headline experiments.
 
-## Overview
+All physical work must use owned replicas or expressly authorized signs in a
+controlled area. Never modify deployed public traffic-control infrastructure.
 
-Core ideas:
-- Grid-cell action space on a stop sign octagon mask (discrete actions).
-- UV paint pair: daylight color/alpha vs UV-on color/alpha.
-- Matched transforms and backgrounds across daylight/UV variants for fair comparison.
-- Reward that targets UV confidence drop while penalizing daylight drop and patch area.
-- Efficiency bonus (drop per area) and fixed area penalties to favor minimal patches.
-- Early termination on success or area cap.
-- Detector backends: Ultralytics YOLO, torchvision detectors, and optional Transformers DETR.
+## Experimental v2 research claim
 
----
+The exact proposed claim sentence is deliberately a question, not a result:
 
-## Requirements
+> We study whether a target-conditioned optimizer trained across a
+> preregistered task distribution can reduce online query and material costs by
+> emitting inclusion-monotone fluorescent-stencil prefixes, with the smallest
+> qualifying prefix selected on calibration trials and evaluated on disjoint
+> certification trials under measured spectral/camera inputs and simultaneous
+> finite-sample risk bounds.
 
-- Python 3.10+ recommended.
-- PyTorch, stable-baselines3, and sb3-contrib (MaskablePPO).
-- YOLO weights in `weights/` (see below).
-- Optional: `transformers` if you use the RT-DETR backend.
-- `opencv-python` for video inputs in real-world detector comparison.
-- Optional: `pillow-heif` if you want direct HEIC/HEIF image loading.
+The repository implements the contracts needed to test that sentence. It does
+not yet establish an online-query reduction, a material reduction, physical
+fidelity, generalization, or novelty relative to all concurrent work. See the
+[method contract](docs/PREFIX_VALID_AMORTIZED_METHOD.md) and
+[novelty/evaluation protocol](docs/NOVELTY_AND_EVALUATION.md) before framing a
+paper claim.
 
----
+The intended v2 data flow is:
 
-## Setup
+~~~text
+strict task manifest + measured calibration
+                  |
+                  v
+train-only target-conditioned support-batch policy
+                  |
+                  v
+development-only hashed inclusion-monotone prefix family
+                  |
+                  | strict hash/task/area/query binding + trial inventory
+                  v
+preregistered calibration selection -> sealed task-indexed order -> disjoint certification
+~~~
 
-Create a virtual environment and install dependencies:
+The stages are intentionally separable and auditable; the repository does not
+yet ship a one-command detector/capture experiment or paper-ready result bundle.
+The risk plan still requires a researcher-supplied trial inventory that must be
+externally registered before outcomes are opened, and detector or physical-
+capture outcomes still require explicit result rows. Task-manifest
+`calibration`/`certification` entries are not silently converted into results.
 
-```bash
+## What is implemented
+
+- Alpha-mask geometry supports octagonal, circular, rectangular, and custom sign
+  assets without hard-coded stop-sign cell coordinates.
+- Explicit source and designated attack-target labels resolve against the
+  detector label map and fail closed when absent.
+- Three objectives share one implementation in **envs/attack_objective.py**:
+  source-class evasion (legacy CLI name “disappearance”), localized untargeted
+  misclassification, and localized targeted misclassification.
+- Wrong-label detections count only when their boxes overlap the known rendered
+  sign ROI. An unrelated object elsewhere in the image cannot produce success.
+- Untargeted experiments can preregister a traffic-sign label set with
+  **--allowed-alternative-classes**.
+- Day and activated views use matched backgrounds, placements, and transforms.
+  Active suppression is measured as c0_on − c_on, not against a mismatched
+  daylight asset.
+- Joint success enforces clean baseline eligibility, the selected EOT objective,
+  inactive/day preservation, and the exact painted-pixel area cap.
+- Detector failures raise errors rather than becoming false disappearance
+  successes.
+- Detector-image queries, seeds, asset/weight hashes, package versions, and
+  checkpoint-specific VecNormalize state are recorded.
+- **tools/eval_frozen_pattern.py** evaluates one immutable stencil on fresh
+  certification RNG seeds without policy inference or search.
+- A strict [task-manifest loader](utils/task_manifest.py) defines train,
+  development, calibration, and certification tasks; hashes source and canonical
+  content; resolves paths; and rejects configured leakage across sign instances,
+  background collections, cameras, material batches, physical-run groups, and
+  source-target pairs. The bundled
+  [manifest template](configs/amortized_tasks.template.json) is intentionally
+  non-runnable.
+- [train_amortized.py](train_amortized.py) samples only manifest tasks labeled
+  `train`, requires at least two training tasks and all held-out splits in its
+  paper-facing mode, conditions the policy on source/target, detector,
+  calibration, constraints, and declared task features. A completed run seals
+  offline detector-query totals plus final policy and VecNormalize hashes in
+  `amortized_run_manifest.json`.
+- [envs/amortized_traffic_sign_env.py](envs/amortized_traffic_sign_env.py)
+  applies each canonical cell action to every support scene, rejects repeated or
+  invalid actions, records the ordered prefix and its hash, aggregates a lower-
+  tail empirical CVaR objective, and exposes explicit constraint violations and
+  dual variables. That prefix hash covers grid shape and ordered cell indices,
+  not a complete physical artifact.
+- [tools/generate_amortized_prefixes.py](tools/generate_amortized_prefixes.py)
+  loads the frozen policy, normalization state, and completed run manifest;
+  generates a capped ordered sequence on development tasks only; records exact
+  painted image-pixel area and query counts; binds task, sign-asset,
+  material/calibration, policy, and normalizer hashes; and emits a
+  content-addressed candidate-family artifact. Generation stops at declared
+  prefix/query limits or environment termination, and the shared family ends at
+  the shortest task sequence. It does not read calibration/certification
+  outcomes or issue a certificate.
+- [tools/build_risk_protocol.py](tools/build_risk_protocol.py) verifies the
+  candidate-family self-hash, rejects debug artifacts, requires exact agreement
+  between candidate and researcher-supplied inventory task IDs, and binds
+  pattern hashes, exact area, task IDs, and pre-evaluation query totals into the
+  strict risk protocol. The resulting protocol carries the candidate-family
+  SHA-256. That self-hash establishes internal consistency, not timing or
+  authorship. Externally register the built protocol together with the family
+  artifact/digest and inventory before outcomes are observed.
+- The [spectral transport module](utils/fluorescence_transport.py) and
+  [v1 schema](schemas/fluorescence_transport_v1.schema.json) require wavelength,
+  illuminant/UV, substrate, material, camera/ISP, provenance, and bounded
+  uncertainty inputs. The included
+  [synthetic fixture](data/synthetic/fluorescence_transport_v1.synthetic.json)
+  is rejected by paper-facing training unless an explicit debug override is
+  used; it is not measurement evidence. Training currently converts each seeded
+  transport result to one opaque effective day/active sRGB cell color per
+  support replica rather than performing spectral transport inside the renderer.
+- [tools/certify_attack_results.py](tools/certify_attack_results.py) implements
+  separate calibration selection and final certification over supplied result
+  rows, with fixed sample lists, disjoint declared sample hashes, exact one-sided
+  binomial bounds, simultaneous error control, exact material-area checks, and
+  fail-closed query reconciliation. It validates records; it does not run the
+  detector or prove that declared samples are physically independent. See the
+  [certification protocol](docs/CERTIFICATION_PROTOCOL.md).
+- [baselines/budgeted](baselines/budgeted) provides one fail-closed query and
+  exact image-pixel material ledger for native random, forward-greedy, binary
+  GA, Gaussian ES, binary PSO-family, and reference-package CMA-ES runs. Named
+  FIPatch, PatchAttack, budget-adaptive, per-task RL, Meta-Attack, Simulator
+  Attack, Wei et al., and IMPACT slots remain unavailable until a pinned runner
+  and declared, preregistered candidate-space mapping are supplied; an
+  executable proxy is never relabeled as the paper method. See the
+  [budgeted-comparison protocol](docs/BUDGETED_COMPARISONS.md).
+- Unit tests cover objective boundaries, ROI attribution, target requirements,
+  speed-sign geometry, exact area, deterministic reset, detector failures,
+  strict class lookup, task leakage, prefix invariants, spectral transport,
+  risk bounds, and frozen evaluation.
+
+## Important scope limits
+
+Speed-sign support is infrastructure, not a completed speed-sign result. The
+repository does not ship a validated fine-grained traffic-sign detector or a
+licensed speed-sign asset suite. Standard COCO checkpoints expose “stop sign”
+but do not distinguish speed-limit values such as 25 and 55. A defensible 25→55
+study requires custom fine-grained weights, a complete class map, licensed
+assets, clean-accuracy validation, disjoint splits, and physical experiments.
+
+The legacy `train_traffic_sign.py` PPO path constructs a new stencil for each
+scene and remains a scene-conditioned optimizer. The v2 trainer instead learns
+one policy across manifest tasks and holds one stencil fixed across a task's
+support scenes. A frozen v2 policy may still emit a different sequence for each
+new task; that is an amortized optimizer, not a universal paint-once patch. A
+universal claim requires fixing one stencil before held-out evaluation.
+
+The v2 implementation has unit-tested software invariants, not trained-policy or
+physical evidence. Its task template references placeholder sign assets,
+detectors, and synthetic calibration. Replace all placeholders with licensed
+assets, validated fine-grained weights, and measured calibration before a
+paper-facing run. Debug overrides such as `--allow-uncalibrated-simulation`,
+`--allow-single-task-debug`, and `--allow-incomplete-splits` invalidate the
+corresponding physical, amortization, or held-out claims.
+
+V2 conditioning is not yet a demonstrated compositional task representation.
+Several identities enter as short deterministic hash fingerprints; declared
+condition-feature names and lengths are checked, but their semantics are not.
+Background and physical-run IDs are not direct policy-vector fields, and the
+image observation is the first support replica while the others affect aggregate
+feedback and reward. Treat cross-task generalization as an empirical question.
+
+Likewise, “prefix-valid” currently means digitally inclusion-monotone canonical
+cell indices with exact rendered-image-pixel area. The development pattern
+descriptor does not fully encode fabrication dimensions or volume, detector and
+camera identity, the applied paint descriptor, or the spectral transport
+draw/seed. Do not call a generated prefix physically fabricable until a complete
+physical artifact is exported, hashed, fabricated, and checked.
+
+The implemented “disappearance” predicate is source-class evasion: localized
+source confidence is below its threshold. It does not prove that all
+traffic-sign objectness disappeared. Use that precise term in the paper unless
+a detector-wide traffic-sign/objectness predicate is added.
+
+## Attack definitions
+
+For source class s, optional target t, known sign box B, localization threshold
+eta, source threshold tau_s, and target threshold tau_t:
+
+- A transform is clean-eligible only when both matched clean day and clean
+  activated views localize s at B above the baseline threshold.
+- Source-class evasion requires localized p(s) ≤ tau_s.
+- Untargeted misclassification requires a localized allowed alternative label
+  with confidence at least tau_t, winning over s, and—by default—source
+  suppression. If no allowlist is supplied, every non-source detector label is
+  eligible; only use that setting when the complete detector taxonomy consists
+  of traffic-sign classes.
+- Targeted misclassification requires t to be the highest-confidence localized
+  label, p(t) ≥ tau_t, and—by default—source suppression.
+- The objective must hold for **--min-attack-success-rate** of clean-eligible EOT
+  samples.
+- Joint success additionally requires the configured clean-eligibility rate,
+  day correctness and confidence-drop tolerance, and exact area budget.
+
+Report clean eligibility, objective-only rate, inactive preservation, joint
+ASR, exact painted area, source/target confidence and IoU, and detector queries
+separately. Do not relabel confidence suppression as misclassification.
+
+## Environment setup
+
+Python 3.10 is the reference version.
+
+~~~powershell
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-Alternate: `enviornment.yml` is included if you prefer conda.
-
-If you installed requirements before action masking was added, you may need:
-
-```bash
-python -m pip install sb3-contrib
-```
-
-Optional (DETR backend):
-```bash
-python -m pip install transformers
-```
-
-Optional (HEIC/HEIF camera images):
-```bash
-python -m pip install pillow-heif
-```
-
----
-
-## Data and Weights
-
-Required files in `data/`:
-- `stop_sign.png` (RGBA, transparent background).
-- `pole.png` (RGBA).
-- `backgrounds/` (folder with scene images; 640x640 recommended).
-
-Optional:
-- `stop_sign_uv.png` (RGBA UV-lit version of the sign; if missing, the base sign is reused).
-
-YOLO weights go in `weights/`:
-- `weights/yolo8n.pt` (default)
-- `weights/yolo11n.pt` (optional if you switch versions)
-
-Torchvision detectors download pretrained weights automatically on first use
-(cached under `~/.cache/torch/hub/checkpoints`).
-
-Transformers DETR models download from Hugging Face on first use
-(cached under `~/.cache/huggingface`).
-
----
-
-## Quick Start
-
-Minimal run (train.sh defaults):
-
-```bash
-bash train.sh
-```
-
-Recommended single-machine run (YOLOv8, GPU, dummy vec):
-
-```bash
-YOLO_DEVICE=cuda:0 VEC=dummy NUM_ENVS=1 bash train.sh
-```
-
-Resume from latest run folder:
-
-```bash
-YOLO_DEVICE=cuda:0 VEC=dummy NUM_ENVS=1 bash train.sh --resume
-```
-
-Use a specific YOLO version/weights:
-
-```bash
-YOLO_VERSION=8 YOLO_WEIGHTS=./weights/yolo8n.pt bash train.sh
-```
-
-Torchvision detector example:
-```bash
-python train_single_stop_sign.py --detector torchvision --detector-model retinanet_resnet50_fpn_v2
-```
-
-RT-DETR example:
-```bash
-python train_single_stop_sign.py --detector rtdetr --detector-model PekingU/rtdetr_r50vd
-```
-
-Evaluation (deterministic policy, logs to TensorBoard):
-
-```bash
-bash eval.sh
-```
-
-Dedicated-angle evaluation (fixed rotation only):
-```bash
-bash eval.sh --transform-strength 0 --fixed-angle-deg 12
-```
-
----
-
-## Key Training Flags
-
-From `train_single_stop_sign.py`:
-
-- `--num-envs` (default 1 in `train.sh`) and `--vec` (`dummy` or `subproc`)
-- `--n-steps`, `--batch-size`, `--total-steps` (PPO training control; `train.sh` defaults 1024/1024)
-- `--episode-steps` (max steps per episode; default 300)
-- `--grid-cell` (2, 4, 8, 16, 32) grid size in pixels (default 16)
-- `--uv-threshold` UV drop threshold for success
-- `--lambda-area` area penalty strength (encourages minimal patches)
-- `--lambda-efficiency` efficiency bonus (drop per area)
-- `--area-target` (default 0.25) target area fraction used for excess penalties
-- `--step-cost` (default 0.012) and `--step-cost-after-target` (default 0.14) per-step penalties
-- `--lambda-area-start`, `--lambda-area-end`, `--lambda-area-steps` (curriculum)
-- `--area-cap-frac` cap on total patch area (<= 0 disables)
-- `--area-cap-penalty` reward penalty when cap would be exceeded
-- `--area-cap-mode` (`soft` or `hard`)
-- `--area-cap-start`, `--area-cap-end`, `--area-cap-steps` (curriculum)
-- `--lambda-day` penalty for daylight confidence drop beyond tolerance
-- `--lambda-iou`, `--lambda-misclass` extra objectives for mislocalization/misclassification
-- `--paint`, `--paint-list` paint selection (single or per-episode sampling)
-- `--multiphase` enable 3-phase curriculum (solid/no pole -> dataset + pole)
-- `--phase1-steps`, `--phase2-steps`, `--phase3-steps` (phase lengths; 0 = auto split)
-- `--phase1-eval-K`, `--phase2-eval-K`, `--phase3-eval-K` (per-phase eval_K overrides)
-- Phase penalties are uniform across phases (background/pole/transform are the only curriculum changes).
-- `--bg-mode` (`dataset` or `solid`) and `--no-pole` for single-phase
-- `--obs-size`, `--obs-margin`, `--obs-include-mask` (cropped observation + mask channel)
-- `--fixed-angle-deg` fixed sign rotation angle in degrees for dedicated angle sweeps
-- `--ent-coef`, `--ent-coef-start`, `--ent-coef-end`, `--ent-coef-steps` (entropy coefficient schedule; default 0.001)
-- `--detector-device` (e.g., `cpu`, `cuda`, or `auto`)
-- `--detector` (`yolo`, `torchvision`, or `rtdetr`) and `--detector-model` (model name/id)
-- `--step-log-every`, `--step-log-keep`, `--step-log-500` (step logging control)
-- `--cnn` (`custom` or `nature`) choose feature extractor
-- `--ckpt`, `--overlays`, `--tb` output paths (TB logs grouped under `grid_uv_yolo<ver>`)
-- `--save-freq-steps` or `--save-freq-updates` checkpoint cadence
-- `--check-env` runs SB3 env checker before training (enabled by default in `train.sh`)
-
----
-
-## Environment Details
-
-The environment is implemented in `envs/stop_sign_grid_env.py`.
-
-Highlights:
-- Discrete action space over valid grid cells inside the sign octagon.
-- Action masking prevents duplicate cell selections (MaskablePPO).
-- UV-on reward uses raw UV drop (`drop_on`) computed as the day baseline
-  confidence minus UV-on overlay confidence.
-- Reward includes an efficiency bonus (drop per area) plus fixed area penalties
-  that push toward a target patch fraction.
-- Optional per-step penalties can apply globally or only after the area target.
-- Observations are cropped around the sign with an optional overlay-mask channel
-  (controlled by `--obs-*` flags).
-- Training uses a lightweight custom CNN extractor tuned for sign crops (or NatureCNN via `--cnn nature`).
-- Area cap supports soft (penalty) or hard (terminate) modes.
-- Minimum UV alpha (`uv_min_alpha`) ensures patches are visible under UV even with
-  very low paint alpha.
-- VecNormalize is applied to observations; evaluation should reuse the saved stats.
-
-### Reward Equation (current)
-
-Definitions:
-- `c0_day`: baseline day confidence (no overlay)
-- `c_day`: day confidence with overlay
-- `c_on`: UV-on confidence with overlay
-- `drop_day = c0_day - c_day`
-- `drop_on = c0_day - c_on`
-- `area = total_area_mask_frac`
-- `mean_iou`: mean IoU between target box and top detection
-- `misclass`: misclassification rate
-
-Efficiency bonus:
-```
-eff = log1p(max(0, drop_on) / max(area, efficiency_eps))
-```
-
-Core reward:
-```
-drop_cap = max(0, c0_day - success_conf)
-drop_on = min(drop_on, drop_cap)
-pen_day  = max(0, drop_day - day_tolerance)
-raw_core = drop_on
-         - lambda_day * pen_day
-         - lambda_area * area
-         - excess_penalty
-         - step_cost_penalty
-         + lambda_iou * (1 - mean_iou)
-         + lambda_misclass * misclass
-         + lambda_efficiency * eff
-         - lambda_perceptual * perceptual_delta
-```
-
-Shaping + success:
-```
-shaping       = 0.35 * tanh(3.0 * (success_conf - c_on))
-success_bonus = 0.2 * (1 - area)^2 if c_on <= success_conf else 0
-raw_total     = raw_core + shaping + success_bonus
-```
-
-Excess penalty (when `area > area_target`):
-```
-excess = area - area_target
-excess_penalty = lambda_area * (4.5 * excess + excess^2)
-```
-
-Step cost (global + target-scaled):
-```
-step_cost_penalty = step_cost
-if area > area_target:
-  step_cost_penalty += step_cost_after_target * (1 + (area - area_target)/area_target)
-```
-
-Soft cap override (if enabled and exceeded):
-```
-excess    = max(0, (area - area_cap) / area_cap)
-over_pen  = abs(area_cap_penalty) * (1 + 2 * excess)
-raw_total = -over_pen
-```
-
-Final reward:
-```
-reward = tanh(1.2 * raw_total)
-```
-
-If you need to change rendering or physics:
-- `_transform_sign()` controls camera jitter, blur, color, and noise.
-- `_compose_sign_and_pole()` controls pole ratio and placement.
-- `_place_group_on_background()` controls scale and background placement.
-
----
-
-## Logging and Metrics
-
-TensorBoard logs:
-
-```bash
-# train.sh (defaults)
-tensorboard --logdir _runs/tb --port 6006
-# eval.sh (defaults)
-tensorboard --logdir _runs/tb_eval --port 6006
-```
-
-Callbacks log:
-- `TensorboardOverlayCallback` (overlay images and metadata)
-- `EpisodeMetricsCallback` (episode-end scalars)
-- `StepMetricsCallback` (rolling step metrics)
-
-Episode metrics currently include:
-- `episode/area_frac_final`, `episode/length_steps`
-- `episode/drop_on_final`, `episode/drop_on_smooth_final`
-- `episode/base_conf_final`, `episode/after_conf_final`
-- `episode/reward_final`, `episode/selected_cells_final`
-- `episode/eval_K_used_final`
-- `episode/uv_success_final`, `episode/area_cap_exceeded_final`
-- `episode/reward_core_final`, `episode/reward_raw_total_final`
-- `episode/reward_efficiency_final`, `episode/reward_perceptual_final`
-- `episode/lambda_area_used_final`
-- `episode/area_target_frac_final`
-- `episode/area_reward_corr` (rolling correlation between area and reward)
-
-Step metrics:
-- Rolling window of per-step rows in
-  `_runs/tb/<run_id>/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics.ndjson`
-- 500-step snapshots in
-  `_runs/tb/<run_id>/grid_uv_yolo8/<phase>/tb_step_metrics/step_metrics_500.ndjson`
-- Step scalars include reward components and area weights.
-
----
-
-## Output Artifacts
-
-Generated files:
-- `_runs/checkpoints/<run_id>/` PPO checkpoints (run id like `yolo8_1`, `yolo11_2`, ...).
-- `_runs/overlays/<run_id>/` best overlays (PNG + JSON) and `traces.ndjson` if enabled.
-- `_runs/tb/<run_id>/` TensorBoard event files (grouped under `grid_uv_yolo<ver>/<phase>`).
-- `_runs/tb_eval/` evaluation logs (if you use `eval.sh`).
-
-Overlay saver:
-- `utils/save_callbacks.py` keeps the best N overlays and appends trace metadata.
-- Current training config disables overlay saving by default (`max_saved=0`).
-- Files are named by area fraction and step, for example:
-  - `area0p1234_step000000123_env00_full.png`
-  - `area0p1234_step000000123_env00_overlay.png`
-  - `area0p1234_step000000123_env00.json`
-
-Trace replay:
-- Removed (legacy blob traces no longer apply to the grid environment).
-
----
-
-## Debugging and Tools
-
-- `tools/debug_grid_env.py` runs the env step-by-step and saves UV-on previews.
-- `tools/area_sweep_debug.py` sweeps coverage levels and logs confidence/IoU/misclass stats.
-- `tools/area_sweep_analyze.py` summarizes sweep results and generates plots.
-- `tools/replay_area_sweep.py` replays logged sweep cases and saves images.
-- `tools/compare_real_images_detectors.py` compares detectors on real-world images and videos.
-- `tools/tabulate_real_world_results.py` converts real-world compare CSV into ECCV-style PDF tables.
-- `tools/replay_patterns_over_angles.py` replays saved PPO/greedy/random patterns over fixed angles.
-- `tools/tabulate_angle_compare.py` builds compact angle robustness tables from compare outputs.
-- `tools/test_stop_sign_confidence.py` checks detector confidence on a single image.
-- `tools/cleanup_runs.py` removes old run outputs (defaults to `_runs`).
-- `tools/detector_server.py` runs a shared detector (YOLO/torchvision/RT-DETR) for multi-process training.
-- `setup_env.sh` contains a helper for local setup.
-
-Cleanup usage:
-```bash
-# Dry-run
-python tools/cleanup_runs.py
-
-# Delete
-python tools/cleanup_runs.py --yes
-```
-
-Detector server usage:
-```bash
-python tools/detector_server.py --model ./weights/yolo8n.pt --device cuda:0 --port 5009
-
-# In training, point the detector device to the server:
-# --detector-device server://HOST:5009
-```
-
-For torchvision/RT-DETR, pass `--detector` and `--detector-model` (no `--model` needed):
-```bash
-python tools/detector_server.py --detector rtdetr --detector-model PekingU/rtdetr_r50vd --device cuda:0 --port 5009
-```
-
-Real-world compare (images + videos):
-```bash
-python tools/compare_real_images_detectors.py \
-  --input ./data/Real_World \
-  --recursive \
-  --include-videos \
-  --video-frame-step 15 \
-  --video-max-frames 200 \
-  --target-class "stop sign" \
-  --out-json ./_runs/paper_data/real_detector_compare/results.json \
-  --out-csv ./_runs/paper_data/real_detector_compare/results.csv
-```
-
-Single-command server + training (from `train.sh`):
-```bash
-bash train.sh --yolo-version 8 --yolo-weights ./weights/yolo8n.pt --start-detector-server
-```
-
-Common single-machine training (no server):
-```bash
-bash train.sh --yolo-version 8 --yolo-weights ./weights/yolo8n.pt
-```
-
-Important `train.sh` knobs:
-- `--num-envs`, `--vec`: number of envs and vectorization mode; use `--vec dummy` with GPU YOLO.
-- `--n-steps`, `--batch`, `--total-steps`: PPO rollout size, batch size, and total training steps.
-- `--grid-cell`: patch grid size in pixels (2, 4, 8, 16, 32).
-- `--uv-threshold`: UV drop threshold for success.
-- `--lambda-area`, `--lambda-area-start/end/steps`: area penalty and optional ramp.
-- `--area-cap-frac`, `--area-cap-mode`: patch area cap and soft/hard behavior.
-- `--area-cap-start/end/steps`: cap curriculum from larger to smaller.
-- `--obs-size`, `--obs-margin`, `--obs-include-mask`: observation crop and mask channel.
-- `--ent-coef`, `--ent-coef-start/end/steps`: entropy coefficient schedule.
-- `--step-log-every`, `--step-log-keep`, `--step-log-500`: step metrics logging controls.
-
----
-
-## Commenting Guidelines
-
-- Keep comments sparse and focused on *why* a block exists or what it protects against.
-- Avoid restating obvious code; prefer naming and structure to make intent clear.
-- When behavior is non-obvious (curriculum logic, reward shaping), add a short note.
-
----
-
-## Directory Structure
-
-```
-.
-|-- baselines/
-|-- data/
-|   |-- stop_sign.png
-|   |-- stop_sign_uv.png
-|   |-- pole.png
-|   |-- backgrounds/
-|
-|-- detectors/
-|   |-- factory.py
-|   |-- remote_detector.py
-|   |-- torchvision_wrapper.py
-|   |-- transformers_detr_wrapper.py
-|   |-- yolo_wrapper.py
-|
-|-- envs/
-|   |-- stop_sign_grid_env.py
-|
-|-- tools/
-|   |-- aggregate_baselines.py
-|   |-- compare_real_images_detectors.py
-|   |-- debug_grid_env.py
-|   |-- area_sweep_debug.py
-|   |-- area_sweep_analyze.py
-|   |-- eval_policy.py
-|   |-- replay_area_sweep.py
-|   |-- replay_patterns_over_angles.py
-|   |-- tabulate_angle_compare.py
-|   |-- tabulate_real_world_results.py
-|   |-- test_stop_sign_confidence.py
-|   |-- cleanup_runs.py
-|   |-- detector_server.py
-|   |-- parse_tb_events.py
-|   |-- run_baselines_compare.sh
-|
-|-- utils/
-|   |-- save_callbacks.py
-|   |-- tb_callbacks.py
-|   |-- uv_paint.py
-|
-|-- weights/
-|   |-- yolo11n.pt
-|   |-- yolo8n.pt
-|
-|-- train_single_stop_sign.py
-|-- train.sh
-|-- eval.sh
-|-- requirements.txt
-|-- enviornment.yml
-```
-
----
-
-## Tips
-
-- If you run on CUDA, `--vec dummy` is safer with YOLO inference.
-- Lower `grid-cell` and higher `lambda-area` tend to produce smaller patches.
-- If you are not seeing UV drop, increase `eval-K` to reduce variance.
-
----
-
-## License
-
-MIT for research and educational use.
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+~~~
+
+A Conda specification is available in **environment.yml**. These dependency
+files use compatible ranges rather than an archival lock. The training manifest
+captures resolved versions, but a camera-ready artifact should also publish a
+tested lockfile/container and CUDA/cuDNN details.
+
+The bundled coarse defaults are:
+
+- weights/yolov8n.pt
+- weights/yolo11n.pt
+- data/stop_sign.png
+- data/stop_sign_uv.png
+- data/pole.png
+- data/backgrounds/
+
+Binary assets are managed through Git LFS. Complete provenance, redistribution
+rights, calibration, and physical metadata in
+[data/DATA_CARD.md](data/DATA_CARD.md) before an artifact release.
+
+## Training
+
+### Experimental v2 amortized path
+
+Copy the non-runnable template to a study-specific manifest, replace every
+placeholder, provide measured calibration whose canonical SHA-256 matches each
+task, and preregister all four splits. Then train one policy across the `train`
+tasks:
+
+~~~powershell
+python train_amortized.py --task-manifest ./configs/paper_tasks.json --support-scenes 4 --risk-alpha 0.25 --total-steps 800000 --seed 0 --output-dir ./runs/amortized/seed_0
+~~~
+
+The output directory receives `amortized_run_manifest.json`, policy checkpoints,
+and checkpoint-specific normalization state. On successful completion, the run
+manifest seals offline detector-image query totals and final policy/normalizer
+hashes. Run multiple independent training seeds for evidence. A non-empirical
+calibration, including the template's synthetic fixture, is accepted only with
+`--allow-uncalibrated-simulation`, which is a software-debug mode and cannot
+support physical or measured-model claims.
+
+Generate the finite candidate family from `development` tasks only:
+
+~~~powershell
+python tools/generate_amortized_prefixes.py --task-manifest ./configs/paper_tasks.json --run-manifest ./runs/amortized/seed_0/amortized_run_manifest.json --model ./runs/amortized/seed_0/amortized_prefix_policy_final.zip --vecnormalize ./runs/amortized/seed_0/vecnormalize_final.pkl --max-prefix-length 64 --max-development-detector-queries-per-task 10000 --out-json ./runs/amortized/seed_0/development_prefixes.json
+~~~
+
+The artifact is labeled `frozen_candidate_family_not_a_certificate`. It records
+zero calibration/certification queries and does not consume those outcomes. Its
+`candidate_prefixes` shape is converted by `build_risk_protocol.py`; do not edit
+the converted patterns by hand. The query cap defaults to unlimited (`0`); a
+paper run must choose and preregister a finite value instead of inheriting that
+default.
+
+Copy the non-runnable
+[trial-inventory template](configs/risk_trial_inventory.template.json), replace
+every placeholder, and build the content-bound protocol:
+
+~~~powershell
+python tools/build_risk_protocol.py --prefix-family ./runs/amortized/seed_0/development_prefixes.json --trial-inventory ./configs/paper_risk_trials.json --out ./runs/amortized/seed_0/protocol.json
+~~~
+
+Before opening outcomes, externally timestamp or register the immutable family
+artifact/digest, completed inventory, and resulting protocol as one study-plan
+bundle. Registering the inventory alone does not freeze the generated prefixes.
+
+The builder rejects candidate-family self-hash mismatches, debug artifacts,
+task-ID mismatches, malformed/duplicate-key JSON, and invalid protocol
+structure. It does not authenticate authorship, verify files or captures behind
+declared hashes, prove sample independence or prior registration, or generate
+result rows.
+
+### Legacy single-task path
+
+The generic entry point preserves the legacy implementation module so existing
+checkpoints remain loadable:
+
+~~~powershell
+python train_traffic_sign.py --data ./data --bgdir ./data/backgrounds_train --sign-profile stop --source-class "stop sign" --attack-mode disappearance --yolo-weights ./weights/yolov8n.pt --num-envs 1 --vec dummy --seed 0
+~~~
+
+The Bash launcher exposes the same objective fields:
+
+~~~bash
+bash train.sh \
+  --bgdir ./data/backgrounds_train \
+  --attack-mode disappearance \
+  --source-class "stop sign" \
+  --seed 0
+~~~
+
+The checkpoint directory receives **experiment_manifest.json**, checkpoint-
+specific **vecnormalize_*_steps.pkl** files, and bounded minimal-area successful
+stencils. The TensorBoard run directory receives cumulative training query
+accounting. When using an in-process CUDA detector, keep
+**--vec dummy --num-envs 1**; use the authenticated localhost detector server
+for shared multi-environment inference.
+
+### Targeted fine-grained speed example
+
+This command demonstrates the required interface; the asset and weights are not
+included.
+
+~~~powershell
+python train_traffic_sign.py --sign-profile custom --sign-image ./data/speed_25_day.png --sign-active-image ./data/speed_25_active.png --source-class "speed_limit_25" --attack-mode targeted_misclassification --attack-target-class "speed_limit_55" --yolo-weights ./weights/fine_grained_traffic_sign.pt --bgdir ./data/backgrounds_train --seed 0
+~~~
+
+For untargeted sign-to-sign alteration, preregister alternatives:
+
+~~~text
+--attack-mode untargeted_misclassification
+--allowed-alternative-classes "speed_limit_35,speed_limit_45,speed_limit_55"
+~~~
+
+Requested classes must exist in the checkpoint label map. Numeric IDs are also
+validated when a map exists.
+
+## Evaluation
+
+### Scene-conditioned policy evaluation
+
+~~~powershell
+python tools/eval_policy.py --model ./_runs/checkpoints/run/grid_800000_steps.zip --vecnorm ./_runs/checkpoints/run/vecnormalize_800000_steps.pkl --episodes 100 --seed 100000 --bgdir ./data/backgrounds_validation --attack-mode targeted_misclassification --source-class "speed_limit_25" --attack-target-class "speed_limit_55" --yolo-weights ./weights/fine_grained_traffic_sign.pt --out-json ./_runs/eval/summary.json --out-episodes-json ./_runs/eval/episodes.json
+~~~
+
+This evaluates an adaptive, per-scene optimizer and labels the JSON accordingly.
+It does not certify a fixed physical stencil. Missing VecNormalize statistics
+are a hard error.
+
+### Frozen paint-once certification
+
+Select a stencil using training/validation data, freeze its JSON, and evaluate
+that exact cell set on a disjoint background directory and fresh RNG seeds:
+
+~~~powershell
+python tools/eval_frozen_pattern.py --pattern-json ./_runs/eval/summary.json --pattern-type selected_indices --episode-index 0 --episodes 100 --seed-base 1000000 --bgdir ./data/backgrounds_certification --allow-protocol-transfer --sign-profile custom --sign-image ./data/speed_25_day.png --sign-active-image ./data/speed_25_active.png --attack-mode targeted_misclassification --source-class "speed_limit_25" --attack-target-class "speed_limit_55" --yolo-weights ./weights/fine_grained_traffic_sign.pt --out-json ./_runs/certification/frozen_pattern.json
+~~~
+
+The output includes pattern/input hashes, every seed row, joint success, a
+Wilson 95% interval, mean localized metrics, certification-only detector-image
+queries, and runtime. A fresh integer seed over training backgrounds is not a
+held-out dataset; use a disjoint **--bgdir**, acknowledge that distribution
+change with **--allow-protocol-transfer**, and record its manifest. Geometry and
+material mismatches remain hard errors even in a transfer study.
+
+### Two-phase v2 prefix certification
+
+The frozen evaluator produces measurements for an immutable candidate. There is
+currently no automatic adapter from its summary to certification rows. Given
+explicit rows in the documented schema, the separate
+[risk-certification CLI](tools/certify_attack_results.py) checks a preregistered
+finite family of prefixes on calibration trials, seals the smallest passing
+order, and accepts only declared-disjoint final-certification trials for that
+selection:
+
+~~~powershell
+python tools/certify_attack_results.py hash-plan --plan protocol.json
+python tools/certify_attack_results.py calibrate --plan protocol.json --rows calibration_rows.json --out calibration_selection.json
+python tools/certify_attack_results.py certify --plan protocol.json --selection calibration_selection.json --rows certification_rows.json --out certificate.json
+~~~
+
+The calibration phase allocates familywise error across prefixes, tasks, and
+four outcomes; final certification allocates it across tasks and outcomes.
+Those finite-sample bounds apply only to the preregistered sampled population
+and sampling unit. They are not formal verification, an all-world robustness
+guarantee, or evidence that any current candidate passes. Result rows must follow
+the exact schema in [docs/CERTIFICATION_PROTOCOL.md](docs/CERTIFICATION_PROTOCOL.md);
+the CLI rejects duplicate JSON keys and does not infer missing trials or
+silently convert legacy summaries. A
+selected prefix ID can contain a different pattern for each task, so it is a
+sealed task-indexed family unless the plan deliberately binds one paint-once
+stencil. A self-declared hash checks internal consistency. Detecting later
+mutation requires comparison with a digest retained in a trusted external
+record; hashes are not signatures, trusted timestamps, or proof of physical
+provenance.
+
+### Budget-matched black-box comparisons
+
+The paper-facing native harness reconstructs a fresh, fixed-EOT oracle for each
+method, rejects contract drift, and applies identical detector-image and exact
+sign-alpha-pixel limits:
+
+~~~powershell
+python tools/run_budgeted_comparison.py --environment-json ./configs/paper_comparison.json --methods random_search,forward_greedy,genetic_algorithm,gaussian_es,fipatch_style_pso_proxy,cma_es --detector-query-limit 10000 --material-area-fraction 0.20 --scene-seed 1001 --optimizer-seed 7 --method-config-json ./configs/paper_budgeted_methods.json --output ./runs/comparisons/task_001_seed_7.json
+~~~
+
+Start from the deliberately non-runnable
+[environment](configs/budgeted_comparison.template.json) and
+[method](configs/budgeted_methods.template.json) templates. The output records
+the complete candidate trace, the scalar-score winner, the best candidate that
+actually has `joint_success=true`, registry fidelity labels, local detector
+weight and background hashes, and the common contract fingerprint. Existing
+reports are not overwritten.
+
+This command covers one task/scene and optimizer seed; a paper needs a
+preregistered task-by-seed matrix and uncertainty intervals. The binary PSO row
+is only a FIPatch-family proxy. Named-paper comparisons require reviewed
+external wrappers and candidate mappings; use the non-runnable
+[external manifest](configs/external_baseline_manifest.template.json) and
+[mapping](configs/external_candidate_mapping.template.json) templates. The
+[full comparison protocol](docs/BUDGETED_COMPARISONS.md) defines query scope,
+material accounting, offline-versus-online amortization cost, aggregation, and
+claim boundaries.
+
+The older **tools/run_baselines_compare.sh** remains a legacy PPO/greedy/random
+convenience runner. It records queries but does not enforce the new matched
+contract and must not be used for headline comparisons.
+
+## Repository map
+
+~~~text
+train_amortized.py              experimental v2 training entry point
+envs/
+  attack_objective.py          pure ROI-localized objective definitions
+  amortized_traffic_sign_env.py target-conditioned support-batch wrapper
+  robust_objective.py          empirical tail-risk aggregation
+  traffic_sign_grid_env.py     generic public environment entry point
+  stop_sign_grid_env.py        implementation + compatibility import path
+detectors/
+  class_names.py               strict source/target label resolution
+  factory.py                   YOLO, torchvision, RT-DETR, remote backends
+utils/
+  task_manifest.py             strict split/task contract and leakage checks
+  fluorescence_transport.py    measured spectral-to-linear-RGB transport
+  risk_certification.py        two-phase certification schemas and decisions
+  certification_stats.py       exact binomial confidence calculations
+  sign_assets.py               stop, speed-limit, and custom asset profiles
+  experiment_manifest.py       hashes, versions, and resolved configuration
+baselines/
+  grid_utils.py                shared construction and joint evaluation
+  budgeted/                    matched-budget optimizers + external contracts
+tools/
+  build_risk_protocol.py       prefix-family + trial-inventory binding
+  certify_attack_results.py    calibration selection + final certification
+  run_budgeted_comparison.py   native matched query/material comparison
+  eval_policy.py               adaptive policy evaluation
+  eval_frozen_pattern.py       immutable held-out stencil measurement
+  generate_amortized_prefixes.py development-only v2 family generation
+  replay_patterns_over_angles.py
+configs/
+  amortized_tasks.template.json non-runnable four-split task template
+  risk_trial_inventory.template.json non-runnable risk-design template
+schemas/
+  fluorescence_transport_v1.schema.json
+tests/
+docs/
+  PREFIX_VALID_AMORTIZED_METHOD.md
+  fluorescence_transport.md
+  CERTIFICATION_PROTOCOL.md
+  NOVELTY_AND_EVALUATION.md
+~~~
+
+## Submission protocol
+
+Before using any result in a paper:
+
+1. Freeze the threat model, objective, label set, thresholds, material model,
+   train/development/calibration/certification splits, and query budget in the
+   task and certification manifests.
+2. Train at least five independent policy/search seeds. Separate offline PPO
+   training queries from online synthesis queries and compute amortization
+   break-even points.
+3. Generate and hash the entire capped candidate family using development tasks
+   only; complete the trial inventory; build the risk protocol with
+   `build_risk_protocol.py`; then externally register the family artifact or
+   digest, inventory, and built protocol before opening outcomes.
+4. Regenerate all baselines with the centralized evaluator. Treat legacy files
+   and tables as invalid for the new claims.
+5. Evaluate every preregistered prefix on the calibration split, seal the
+   smallest passing order, and certify only that selection on disjoint trials.
+6. Report simultaneous confidence bounds and raw failures, not only best runs or
+   averages.
+7. Validate repeated approach videos, tracking/planning consequences, clean
+   utility, and adaptive defenses.
+8. Release complete manifests, class maps, weight/dataset licenses, calibration
+   metadata, stencils, raw detections, and table/figure scripts.
+
+The detailed related-work boundary and experimental checklist are in
+[docs/NOVELTY_AND_EVALUATION.md](docs/NOVELTY_AND_EVALUATION.md). The exact v2
+method contract is in
+[docs/PREFIX_VALID_AMORTIZED_METHOD.md](docs/PREFIX_VALID_AMORTIZED_METHOD.md).

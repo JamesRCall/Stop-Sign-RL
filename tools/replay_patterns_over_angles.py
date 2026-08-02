@@ -27,7 +27,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.append(ROOT)
 
-from baselines.grid_utils import build_env_from_args
+from baselines.grid_utils import build_env_from_args, _eval_pattern as _central_eval_pattern
 
 
 def _as_float(v: Any, default: float = float("nan")) -> float:
@@ -259,23 +259,8 @@ def _apply_pattern(env, pattern_type: str, pattern: List[int]) -> None:
 
 
 def _eval_pattern(env, eval_k: int) -> Dict[str, float]:
-    k = max(1, min(int(eval_k), len(env._transform_seeds)))
-    seeds = env._transform_seeds[:k]
-    overlay = env._eval_overlay_over_K(seeds)
-    c_day = _as_float(overlay.get("c_day", float("nan")))
-    c_on = _as_float(overlay.get("c_on", float("nan")))
-    c0_day = _as_float(env._mean_over_K(env._baseline_c0_day_list, k))
-    drop_on = _as_float(c0_day - c_on)
-    area_frac = _as_float(env._area_frac_selected())
-    success = 1.0 if (math.isfinite(c_on) and c_on <= float(env.success_conf_threshold)) else 0.0
-    return {
-        "c0_day": c0_day,
-        "c_day": c_day,
-        "c_on": c_on,
-        "drop_on": drop_on,
-        "area_frac": area_frac,
-        "success": success,
-    }
+    """Use the same matched-baseline, ROI-localized joint metric as all methods."""
+    return _central_eval_pattern(env, eval_k)
 
 
 def _summarize(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -380,7 +365,7 @@ def main() -> int:
         if not cfg:
             cfg = _first_run_config_from_list(d / "random_runs.txt") or {}
         if not cfg:
-            msg = f"missing usable config (ppo_summary or baseline summary config)"
+            msg = "missing usable config (ppo_summary or baseline summary config)"
             print(f"[WARN] {d.name}: {msg}")
             skipped.append({"detector": d.name, "reason": msg})
             continue

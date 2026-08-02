@@ -86,7 +86,7 @@ def main() -> None:
     p.add_argument("--grid-cell", type=int, default=16, choices=[2, 4, 8, 16, 32])
     p.add_argument("--data", default="./data")
     p.add_argument("--bgdir", default="./data/backgrounds")
-    p.add_argument("--yolo", default="./weights/yolo8n.pt")
+    p.add_argument("--yolo", default="./weights/yolov8n.pt")
     p.add_argument("--device", default="cuda")
     p.add_argument("--detector", default="yolo",
                    help="Detector backend: yolo, torchvision, or rtdetr.")
@@ -181,11 +181,11 @@ def main() -> None:
         overlay = apply_multi_color_overlay(env.sign_rgba_on, "on", env, paints, rng)
 
         stem = f"case_{i:03d}_c{float(r.get('c_on',0.0)):.3f}_a{float(r.get('area_frac',0.0)):.2f}"
-        preview.save(os.path.join(args.out, f\"{stem}_uv_on.png\"))
-        overlay.save(os.path.join(args.out, f\"{stem}_overlay.png\"))
+        preview.save(os.path.join(args.out, f"{stem}_uv_on.png"))
+        overlay.save(os.path.join(args.out, f"{stem}_overlay.png"))
 
-    print(f\"Saved {len(rows)} cases to {args.out}\")
+    print(f"Saved {len(rows)} cases to {args.out}")
 
 
-if __name__ == \"__main__\":
+if __name__ == "__main__":
     main()

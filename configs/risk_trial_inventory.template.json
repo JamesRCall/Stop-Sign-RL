@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "protocol_id": "replace-with-preregistered-protocol-id",
+  "estimand": {
+    "population_description": "REPLACE with the exact held-out physical capture population",
+    "sampling_unit": "independent_scene_cluster",
+    "task_aggregation": "all_tasks",
+    "fixed_sample_size": true
+  },
+  "familywise_alpha": {
+    "calibration": {"numerator": 1, "denominator": 20},
+    "certification": {"numerator": 1, "denominator": 20}
+  },
+  "claims": {
+    "joint_success": {"numerator": 4, "denominator": 5},
+    "attack_success": {"numerator": 4, "denominator": 5},
+    "day_preservation": {"numerator": 19, "denominator": 20},
+    "clean_eligibility": {"numerator": 9, "denominator": 10}
+  },
+  "area_cap": {"numerator": 1, "denominator": 5},
+  "tasks": [
+    {
+      "task_id": "replace-with-exact-prefix-artifact-task-id",
+      "detector_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "calibration_trials": [
+        {
+          "trial_id": "replace-cal-0001",
+          "sample_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "certification_trials": [
+        {
+          "trial_id": "replace-cert-0001",
+          "sample_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ]
+    }
+  ],
+  "excluded_sample_sha256": {
+    "training": [
+      "3333333333333333333333333333333333333333333333333333333333333333"
+    ],
+    "development": [
+      "4444444444444444444444444444444444444444444444444444444444444444"
+    ]
+  },
+  "query_accounting": {
+    "development_selection_detector_image_queries": 0,
+    "expected_calibration_detector_image_queries": 0,
+    "expected_certification_detector_image_queries": 0
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "method_id": "patchattack",
+  "paper_url": "https://www.ecva.net/papers/eccv_2020/papers_ECCV/html/5563_ECCV_2020_paper.php",
+  "upstream_repository": "https://github.com/Chenglin-Yang/PatchAttack",
+  "upstream_revision": "REPLACE_WITH_IMMUTABLE_COMMIT",
+  "artifact_path": "REPLACE_WITH_REVIEWED_WRAPPER.py",
+  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "candidate_mapping_path": "external_candidate_mapping.template.json",
+  "candidate_mapping_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "candidate_mapping_status": "REPLACE_ONLY_AFTER_PREREGISTRATION_AND_INDEPENDENT_AUDIT",
+  "offline_detector_queries": 0,
+  "runner_api": "budgeted-proposal-runner-v2"
+}

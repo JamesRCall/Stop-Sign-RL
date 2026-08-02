@@ -5,7 +5,11 @@ set -euo pipefail
 # Defaults (override via env or CLI)
 # ==============================
 YOLO_DEVICE="${YOLO_DEVICE:-cuda:0}"
-EPISODES="${EPISODES:-20}"
+DATA_DIR="${DATA_DIR:-./data}"
+BG_DIR="${BG_DIR:-./data/backgrounds}"
+BG_MODE="${BG_MODE:-dataset}"
+NO_POLE="${NO_POLE:-0}"
+EPISODES="${EPISODES:-100}"
 DETERMINISTIC="${DETERMINISTIC:-1}"
 TB_DIR="${TB_DIR:-./_runs/tb_eval}"
 TB_TAG="${TB_TAG:-eval}"
@@ -16,7 +20,7 @@ OUT_JSON="${OUT_JSON:-}"
 OUT_EPISODES_JSON="${OUT_EPISODES_JSON:-}"
 SAVE_OVERLAY_DIR="${SAVE_OVERLAY_DIR:-}"
 SAVE_COMPOSITED_DIR="${SAVE_COMPOSITED_DIR:-}"
-SEED="${SEED:-}"
+SEED="${SEED:-100000}"
 
 # Env defaults (mirror train.sh)
 EVAL_K="${EVAL_K:-3}"
@@ -25,7 +29,8 @@ LAMBDA_AREA="${LAMBDA_AREA:-0.70}"
 LAMBDA_EFFICIENCY="${LAMBDA_EFFICIENCY:-0.40}"
 EFFICIENCY_EPS="${EFFICIENCY_EPS:-0.02}"
 LAMBDA_PERCEPTUAL="${LAMBDA_PERCEPTUAL:-0.0}"
-LAMBDA_DAY="${LAMBDA_DAY:-0.0}"
+LAMBDA_DAY="${LAMBDA_DAY:-1.0}"
+DAY_TOLERANCE="${DAY_TOLERANCE:-0.05}"
 AREA_TARGET="${AREA_TARGET:-0.25}"
 STEP_COST="${STEP_COST:-0.012}"
 STEP_COST_AFTER_TARGET="${STEP_COST_AFTER_TARGET:-0.14}"
@@ -45,6 +50,19 @@ TRANSFORM_STRENGTH="${TRANSFORM_STRENGTH:-1.0}"
 FIXED_ANGLE_DEG="${FIXED_ANGLE_DEG:-}"
 PAINT="${PAINT:-yellow}"
 PAINT_LIST="${PAINT_LIST:-}"
+SIGN_PROFILE="${SIGN_PROFILE:-stop}"
+SIGN_IMAGE="${SIGN_IMAGE:-}"
+SIGN_ACTIVE_IMAGE="${SIGN_ACTIVE_IMAGE:-}"
+SOURCE_CLASS="${SOURCE_CLASS:-}"
+ATTACK_MODE="${ATTACK_MODE:-disappearance}"
+ATTACK_TARGET_CLASS="${ATTACK_TARGET_CLASS:-}"
+ALLOWED_ALTERNATIVE_CLASSES="${ALLOWED_ALTERNATIVE_CLASSES:-}"
+TARGET_CONF="${TARGET_CONF:-0.40}"
+MIN_ATTACK_SUCCESS_RATE="${MIN_ATTACK_SUCCESS_RATE:-0.80}"
+MIN_CLEAN_DETECTION_RATE="${MIN_CLEAN_DETECTION_RATE:-0.80}"
+LOCALIZATION_IOU="${LOCALIZATION_IOU:-0.30}"
+REQUIRE_SOURCE_SUPPRESSION="${REQUIRE_SOURCE_SUPPRESSION:-1}"
+REQUIRE_DAY_PRESERVATION="${REQUIRE_DAY_PRESERVATION:-1}"
 EPISODE_STEPS="${EPISODE_STEPS:-300}"
 UV_THRESHOLD="${UV_THRESHOLD:-0.75}"
 YOLO_VERSION="${YOLO_VERSION:-8}"
@@ -60,6 +78,10 @@ Usage: $0 [options]
 
 Options:
   --episodes N         (default: $EPISODES)
+  --data DIR           (default: $DATA_DIR)
+  --bgdir DIR          (default: $BG_DIR; point final evaluation at a held-out split)
+  --bg-mode {dataset|solid} (default: $BG_MODE)
+  --no-pole
   --seed N             (default: $SEED)
   --deterministic {0|1} (default: $DETERMINISTIC)
   --tb DIR             (default: $TB_DIR)
@@ -80,6 +102,7 @@ Options:
   --efficiency-eps X   (default: $EFFICIENCY_EPS)
   --lambda-perceptual X (default: $LAMBDA_PERCEPTUAL)
   --lambda-day X       (default: $LAMBDA_DAY)
+  --day-tolerance X    (default: $DAY_TOLERANCE)
   --area-target F      (default: $AREA_TARGET)
   --step-cost X        (default: $STEP_COST)
   --step-cost-after-target X (default: $STEP_COST_AFTER_TARGET)
@@ -95,6 +118,19 @@ Options:
   --fixed-angle-deg X  (default: $FIXED_ANGLE_DEG)
   --paint NAME         (default: $PAINT)
   --paint-list LIST    (default: $PAINT_LIST)
+  --sign-profile {stop|speed_limit|custom} (default: $SIGN_PROFILE)
+  --sign-image PATH
+  --sign-active-image PATH
+  --source-class LABEL_OR_ID
+  --attack-mode {disappearance|untargeted_misclassification|targeted_misclassification}
+  --attack-target-class LABEL_OR_ID
+  --allowed-alternative-classes LIST
+  --target-conf X             (default: $TARGET_CONF)
+  --min-attack-success-rate X (default: $MIN_ATTACK_SUCCESS_RATE)
+  --min-clean-detection-rate X (default: $MIN_CLEAN_DETECTION_RATE)
+  --localization-iou X        (default: $LOCALIZATION_IOU)
+  --require-source-suppression {0|1}
+  --require-day-preservation {0|1}
   --episode-steps N    (default: $EPISODE_STEPS)
   --uv-threshold X     (default: $UV_THRESHOLD)
   --yolo-version {8|11} (default: $YOLO_VERSION)
@@ -118,6 +154,10 @@ trap cleanup EXIT
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --episodes) EPISODES="$2"; shift 2;;
+    --data) DATA_DIR="$2"; shift 2;;
+    --bgdir) BG_DIR="$2"; shift 2;;
+    --bg-mode) BG_MODE="$2"; shift 2;;
+    --no-pole) NO_POLE="1"; shift 1;;
     --seed) SEED="$2"; shift 2;;
     --deterministic) DETERMINISTIC="$2"; shift 2;;
     --tb) TB_DIR="$2"; shift 2;;
@@ -138,6 +178,7 @@ while [[ $# -gt 0 ]]; do
     --efficiency-eps) EFFICIENCY_EPS="$2"; shift 2;;
     --lambda-perceptual) LAMBDA_PERCEPTUAL="$2"; shift 2;;
     --lambda-day) LAMBDA_DAY="$2"; shift 2;;
+    --day-tolerance) DAY_TOLERANCE="$2"; shift 2;;
     --area-target) AREA_TARGET="$2"; shift 2;;
     --step-cost) STEP_COST="$2"; shift 2;;
     --step-cost-after-target) STEP_COST_AFTER_TARGET="$2"; shift 2;;
@@ -153,6 +194,19 @@ while [[ $# -gt 0 ]]; do
     --fixed-angle-deg) FIXED_ANGLE_DEG="$2"; shift 2;;
     --paint) PAINT="$2"; shift 2;;
     --paint-list) PAINT_LIST="$2"; shift 2;;
+    --sign-profile) SIGN_PROFILE="$2"; shift 2;;
+    --sign-image) SIGN_IMAGE="$2"; shift 2;;
+    --sign-active-image) SIGN_ACTIVE_IMAGE="$2"; shift 2;;
+    --source-class) SOURCE_CLASS="$2"; shift 2;;
+    --attack-mode) ATTACK_MODE="$2"; shift 2;;
+    --attack-target-class) ATTACK_TARGET_CLASS="$2"; shift 2;;
+    --allowed-alternative-classes) ALLOWED_ALTERNATIVE_CLASSES="$2"; shift 2;;
+    --target-conf) TARGET_CONF="$2"; shift 2;;
+    --min-attack-success-rate) MIN_ATTACK_SUCCESS_RATE="$2"; shift 2;;
+    --min-clean-detection-rate) MIN_CLEAN_DETECTION_RATE="$2"; shift 2;;
+    --localization-iou) LOCALIZATION_IOU="$2"; shift 2;;
+    --require-source-suppression) REQUIRE_SOURCE_SUPPRESSION="$2"; shift 2;;
+    --require-day-preservation) REQUIRE_DAY_PRESERVATION="$2"; shift 2;;
     --episode-steps) EPISODE_STEPS="$2"; shift 2;;
     --uv-threshold) UV_THRESHOLD="$2"; shift 2;;
     --yolo-version) YOLO_VERSION="$2"; shift 2;;
@@ -182,6 +236,36 @@ if [[ -z "${VECNORM}" ]]; then
 fi
 
 EXTRA_ARGS=()
+EXTRA_ARGS+=(
+  --data "${DATA_DIR}"
+  --bgdir "${BG_DIR}"
+  --bg-mode "${BG_MODE}"
+  --sign-profile "${SIGN_PROFILE}"
+  --attack-mode "${ATTACK_MODE}"
+  --allowed-alternative-classes "${ALLOWED_ALTERNATIVE_CLASSES}"
+  --target-conf "${TARGET_CONF}"
+  --min-attack-success-rate "${MIN_ATTACK_SUCCESS_RATE}"
+  --min-clean-detection-rate "${MIN_CLEAN_DETECTION_RATE}"
+  --localization-iou "${LOCALIZATION_IOU}"
+  --require-source-suppression "${REQUIRE_SOURCE_SUPPRESSION}"
+  --require-day-preservation "${REQUIRE_DAY_PRESERVATION}"
+  --day-tolerance "${DAY_TOLERANCE}"
+)
+if [[ "${NO_POLE}" == "1" ]]; then
+  EXTRA_ARGS+=(--no-pole)
+fi
+if [[ -n "${SIGN_IMAGE}" ]]; then
+  EXTRA_ARGS+=(--sign-image "${SIGN_IMAGE}")
+fi
+if [[ -n "${SIGN_ACTIVE_IMAGE}" ]]; then
+  EXTRA_ARGS+=(--sign-active-image "${SIGN_ACTIVE_IMAGE}")
+fi
+if [[ -n "${SOURCE_CLASS}" ]]; then
+  EXTRA_ARGS+=(--source-class "${SOURCE_CLASS}")
+fi
+if [[ -n "${ATTACK_TARGET_CLASS}" ]]; then
+  EXTRA_ARGS+=(--attack-target-class "${ATTACK_TARGET_CLASS}")
+fi
 if [[ -n "${MODEL}" ]]; then
   EXTRA_ARGS+=(--model "${MODEL}")
 fi
@@ -243,6 +327,7 @@ echo "[EVAL] Running evaluation:"
 echo "       episodes=${EPISODES} deterministic=${DETERMINISTIC} tb=${TB_RUN_DIR} tag=${TB_TAG}"
 echo "       out_json=${OUT_JSON}"
 echo "       out_episodes_json=${OUT_EPISODES_JSON}"
+echo "       sign=${SIGN_PROFILE} source=${SOURCE_CLASS:-<profile-default>} attack=${ATTACK_MODE} target=${ATTACK_TARGET_CLASS:-<none>} seed=${SEED}"
 if [[ -n "${SAVE_OVERLAY_DIR}" ]]; then
   echo "       save_overlay_dir=${SAVE_OVERLAY_DIR}"
 fi

@@ -1,4 +1,4 @@
-"""Quick evaluation script for the stop-sign grid PPO policy.
+"""Evaluate a traffic-sign grid policy with joint, mode-specific success metrics.
 
 Loads the newest checkpoint (or a specified model), runs deterministic eval
 episodes, and logs scalars (and optional images) to TensorBoard.
@@ -26,12 +26,15 @@ from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage, VecNormalize
 
-from envs.stop_sign_grid_env import StopSignGridEnv
+from envs.traffic_sign_grid_env import TrafficSignGridEnv
+from envs.attack_objective import ATTACK_MODES
+from utils.sign_assets import resolve_sign_assets
 from train_single_stop_sign import (
     build_backgrounds,
     resolve_paint_list,
     resolve_yolo_weights,
     find_latest_checkpoint,
+    find_vecnormalize_for_checkpoint,
 )
 from baselines.grid_utils import parse_angle_list
 
@@ -46,7 +49,7 @@ def make_env(
 ):
     backgrounds = build_backgrounds(args.bg_mode, args.bgdir, img_size)
     paint_list = resolve_paint_list(args.paint, args.paint_list)
-    env = StopSignGridEnv(
+    env = TrafficSignGridEnv(
         stop_sign_image=stop_plain,
         stop_sign_uv_image=stop_uv,
         background_images=backgrounds,
@@ -73,7 +76,7 @@ def make_env(
         efficiency_eps=float(args.efficiency_eps),
         transform_strength=float(args.transform_strength),
         fixed_angle_deg=(float(args.fixed_angle_deg) if args.fixed_angle_deg is not None else None),
-        day_tolerance=0.05,
+        day_tolerance=float(args.day_tolerance),
         lambda_day=float(args.lambda_day),
         lambda_area=float(args.lambda_area),
         area_target_frac=float(args.area_target) if args.area_target is not None else None,
@@ -85,24 +88,49 @@ def make_env(
         area_cap_frac=float(args.area_cap_frac) if args.area_cap_frac and float(args.area_cap_frac) > 0 else None,
         area_cap_penalty=float(args.area_cap_penalty),
         area_cap_mode=str(args.area_cap_mode),
+        source_class=args.source_class_resolved,
+        attack_mode=str(args.attack_mode),
+        attack_target_class=(args.attack_target_class or None),
+        allowed_alternative_classes=args.allowed_alternative_classes,
+        target_conf_threshold=float(args.target_conf),
+        min_attack_success_rate=float(args.min_attack_success_rate),
+        min_clean_detection_rate=float(args.min_clean_detection_rate),
+        localization_iou_threshold=float(args.localization_iou),
+        require_source_suppression=bool(int(args.require_source_suppression)),
+        require_day_preservation=bool(int(args.require_day_preservation)),
+        seed=int(args.seed) if args.seed is not None else 0,
     )
     env = ActionMasker(env, lambda e: e.unwrapped.action_masks())
     v = DummyVecEnv([lambda: env])
     v = VecTransposeImage(v)
     if use_vecnorm:
-        if args.vecnorm:
-            v = VecNormalize.load(args.vecnorm, v)
-        else:
-            v = VecNormalize(v, norm_obs=True, norm_reward=False, clip_obs=5.0)
+        if not args.vecnorm:
+            raise FileNotFoundError(
+                "evaluation of a normalized policy requires its saved VecNormalize statistics"
+            )
+        v = VecNormalize.load(args.vecnorm, v)
         v.training = False
         v.norm_reward = False
     return v
 
 
 def parse_args():
-    ap = argparse.ArgumentParser("Evaluate stop-sign PPO policy")
+    ap = argparse.ArgumentParser("Evaluate a traffic-sign PPO policy")
     ap.add_argument("--data", default="./data")
     ap.add_argument("--bgdir", default="./data/backgrounds")
+    ap.add_argument("--sign-profile", choices=["stop", "speed_limit", "custom"], default="stop")
+    ap.add_argument("--sign-image", default="")
+    ap.add_argument("--sign-active-image", default="")
+    ap.add_argument("--source-class", default="")
+    ap.add_argument("--attack-mode", choices=ATTACK_MODES, default="disappearance")
+    ap.add_argument("--attack-target-class", default="")
+    ap.add_argument("--allowed-alternative-classes", default="")
+    ap.add_argument("--target-conf", type=float, default=0.40)
+    ap.add_argument("--min-attack-success-rate", type=float, default=0.80)
+    ap.add_argument("--min-clean-detection-rate", type=float, default=0.80)
+    ap.add_argument("--localization-iou", type=float, default=0.30)
+    ap.add_argument("--require-source-suppression", type=int, choices=[0, 1], default=1)
+    ap.add_argument("--require-day-preservation", type=int, choices=[0, 1], default=1)
     ap.add_argument("--bg-mode", choices=["dataset", "solid"], default="dataset")
     ap.add_argument("--no-pole", action="store_true")
     ap.add_argument("--yolo-version", choices=["8", "11"], default="8")
@@ -115,8 +143,8 @@ def parse_args():
     ap.add_argument("--ckpt", default="./_runs/checkpoints")
     ap.add_argument("--model", default=None, help="Path to model .zip (defaults to latest in --ckpt)")
     ap.add_argument("--vecnorm", default=None, help="Path to VecNormalize stats .pkl (optional)")
-    ap.add_argument("--episodes", type=int, default=20)
-    ap.add_argument("--seed", type=int, default=None,
+    ap.add_argument("--episodes", type=int, default=100)
+    ap.add_argument("--seed", type=int, default=0,
                     help="Base seed for eval episodes (episode i uses seed+ i).")
     ap.add_argument("--deterministic", type=int, default=1)
     ap.add_argument("--tb", default="./_runs/tb_eval", help="TensorBoard log dir (optional).")
@@ -134,14 +162,15 @@ def parse_args():
     # Env settings (match training defaults)
     ap.add_argument("--episode-steps", type=int, default=300)
     ap.add_argument("--eval-K", type=int, default=3)
-    ap.add_argument("--grid-cell", type=int, default=16, choices=[2, 4, 8, 16, 32])
+    ap.add_argument("--grid-cell", type=int, default=16)
     ap.add_argument("--uv-threshold", type=float, default=0.75)
     ap.add_argument("--success-conf", type=float, default=0.20)
     ap.add_argument("--lambda-area", type=float, default=0.70)
     ap.add_argument("--lambda-iou", type=float, default=0.40)
     ap.add_argument("--lambda-misclass", type=float, default=0.60)
     ap.add_argument("--lambda-perceptual", type=float, default=0.0)
-    ap.add_argument("--lambda-day", type=float, default=0.0)
+    ap.add_argument("--day-tolerance", type=float, default=0.05)
+    ap.add_argument("--lambda-day", type=float, default=1.0)
     ap.add_argument("--lambda-efficiency", type=float, default=0.40)
     ap.add_argument("--efficiency-eps", type=float, default=0.02)
     ap.add_argument("--area-target", type=float, default=0.25)
@@ -191,6 +220,18 @@ def _median(vals: List[float]) -> float:
     return float(np.median(vals)) if vals else float("nan")
 
 
+def _wilson_interval(successes: int, total: int, z: float = 1.959963984540054) -> Tuple[float, float]:
+    """Wilson score interval for a binomial proportion."""
+    if total <= 0:
+        return float("nan"), float("nan")
+    p = float(successes) / float(total)
+    z2 = z * z
+    denom = 1.0 + z2 / total
+    center = (p + z2 / (2.0 * total)) / denom
+    radius = z * np.sqrt((p * (1.0 - p) / total) + z2 / (4.0 * total * total)) / denom
+    return float(max(0.0, center - radius)), float(min(1.0, center + radius))
+
+
 def _safe_int_list(value: Any) -> List[int]:
     if not isinstance(value, (list, tuple)):
         return []
@@ -205,24 +246,34 @@ def _safe_int_list(value: Any) -> List[int]:
 
 def main():
     args = parse_args()
+    if int(args.episodes) < 1:
+        raise ValueError("--episodes must be >= 1")
     args.yolo_weights = resolve_yolo_weights(args.yolo_version, args.yolo_weights)
     if args.model is None:
         args.model = find_latest_checkpoint(args.ckpt)
     if not args.model:
         raise FileNotFoundError("No model checkpoint found; pass --model or place .zip in --ckpt.")
+    if not args.vecnorm:
+        args.vecnorm = find_vecnormalize_for_checkpoint(args.model)
+    if not os.path.isfile(args.vecnorm):
+        raise FileNotFoundError(f"VecNormalize statistics not found: {args.vecnorm}")
 
-    stop_plain = Image.open(os.path.join(args.data, "stop_sign.png")).convert("RGBA")
-    stop_uv_path = os.path.join(args.data, "stop_sign_uv.png")
-    stop_uv = Image.open(stop_uv_path).convert("RGBA") if os.path.exists(stop_uv_path) else stop_plain.copy()
+    sign_assets = resolve_sign_assets(
+        data_dir=args.data,
+        profile=args.sign_profile,
+        sign_image=(args.sign_image or None),
+        sign_active_image=(args.sign_active_image or None),
+        source_class=(args.source_class or None),
+    )
+    args.source_class_resolved = sign_assets.source_class
+    stop_plain = Image.open(sign_assets.day_image).convert("RGBA")
+    stop_uv = Image.open(sign_assets.active_image).convert("RGBA")
     pole_path = os.path.join(args.data, "pole.png")
     pole_rgba = Image.open(pole_path).convert("RGBA") if (not args.no_pole and os.path.exists(pole_path)) else None
     img_size = (640, 640)
 
     model = MaskablePPO.load(args.model, env=None, device="auto")
-    obs_space = model.observation_space
-    use_vecnorm = hasattr(obs_space, "low") and float(np.min(obs_space.low)) < 0.0
-    if use_vecnorm and not args.vecnorm:
-        print("[EVAL] WARN: model expects normalized obs but no vecnorm stats provided; using fresh VecNormalize.")
+    use_vecnorm = True
 
     angle_list = parse_angle_list(args.angle_list)
     env = make_env(args, stop_plain, stop_uv, pole_rgba, img_size, use_vecnorm=use_vecnorm)
@@ -233,6 +284,12 @@ def main():
     base_env = base_env.envs[0].unwrapped
     if angle_list:
         base_env.angle_eval_list = list(angle_list)
+
+    print(
+        "[EVAL] protocol=adaptive_policy_scene_conditioned; the policy constructs "
+        "a new pattern per scene. Use tools/eval_frozen_pattern.py to certify one "
+        "fixed stencil on fresh held-out seeds."
+    )
 
     writer = None
     tb_dir = ""
@@ -265,8 +322,12 @@ def main():
     drop_on_list: List[float] = []
     iou_list: List[float] = []
     misclass_list: List[float] = []
+    disappearance_rate_list: List[float] = []
+    targeted_rate_list: List[float] = []
+    clean_detection_rate_list: List[float] = []
     efficiency_list: List[float] = []
     selected_cells_list: List[float] = []
+    detector_queries_list: List[float] = []
     episode_runtime_sec_list: List[float] = []
     episode_rows: List[Dict[str, Any]] = []
     eval_t0 = time.perf_counter()
@@ -276,15 +337,10 @@ def main():
         seed_i = None
         if args.seed is not None:
             seed_i = int(args.seed) + int(ep_idx)
-            # SB3 VecNormalize may not accept seed in reset; try env_method fallback.
-            try:
-                obs = env.reset(seed=[seed_i])
-            except TypeError:
-                try:
-                    obs = env.reset(seed=seed_i)
-                except TypeError:
-                    env.env_method("reset", seed=seed_i)
-                    obs = env.reset()
+            # VecEnv.seed() applies the seed to exactly the next reset. Calling
+            # the underlying reset first would discard the paired episode.
+            env.seed(seed_i)
+            obs = env.reset()
         else:
             obs = env.reset()
         done = False
@@ -307,7 +363,7 @@ def main():
             trace_place_seed = int(trace_place_seed) if trace_place_seed is not None else None
         except (TypeError, ValueError):
             trace_place_seed = None
-        success = bool(info_d.get("uv_success", False))
+        success = bool(info_d.get("attack_success", False))
         base_conf = _finite_or_nan(info_d.get("base_conf", info_d.get("c0_day", np.nan)))
         after_conf = _finite_or_nan(info_d.get("after_conf", info_d.get("c_on", np.nan)))
         drop_on = _finite_or_nan(info_d.get("drop_on", np.nan))
@@ -315,7 +371,15 @@ def main():
         area_frac = _finite_or_nan(info_d.get("total_area_mask_frac", np.nan))
         mean_iou = _finite_or_nan(info_d.get("mean_iou", np.nan))
         misclass_rate = _finite_or_nan(info_d.get("misclass_rate", np.nan))
+        disappearance_rate = _finite_or_nan(
+            info_d.get("disappearance_success_rate", np.nan)
+        )
+        targeted_rate = _finite_or_nan(info_d.get("targeted_success_rate", np.nan))
+        clean_detection_rate = _finite_or_nan(
+            info_d.get("clean_detection_rate", np.nan)
+        )
         selected_cells = _finite_or_nan(info_d.get("selected_cells", np.nan))
+        detector_queries = _finite_or_nan(info_d.get("detector_queries", np.nan))
         reward_final = _finite_or_nan(info_d.get("reward", np.nan))
         eval_k_used = _finite_or_nan(info_d.get("eval_K_used", np.nan))
         ep_runtime_sec = float(time.perf_counter() - ep_t0)
@@ -331,8 +395,12 @@ def main():
         drop_on_list.append(drop_on)
         iou_list.append(mean_iou)
         misclass_list.append(misclass_rate)
+        disappearance_rate_list.append(disappearance_rate)
+        targeted_rate_list.append(targeted_rate)
+        clean_detection_rate_list.append(clean_detection_rate)
         efficiency_list.append(drop_per_area)
         selected_cells_list.append(selected_cells)
+        detector_queries_list.append(detector_queries)
         episode_runtime_sec_list.append(ep_runtime_sec)
 
         overlay_img_path = ""
@@ -362,7 +430,14 @@ def main():
             "drop_per_area": drop_per_area,
             "mean_iou": mean_iou,
             "misclass_rate": misclass_rate,
+            "disappearance_success_rate": disappearance_rate,
+            "targeted_success_rate": targeted_rate,
+            "clean_detection_rate": clean_detection_rate,
+            "day_preserved": bool(info_d.get("day_preserved", False)),
+            "within_area_budget": bool(info_d.get("within_area_budget", False)),
+            "objective_success": bool(info_d.get("objective_success", False)),
             "selected_cells": selected_cells,
+            "detector_queries": detector_queries,
             "reward_final": reward_final,
             "eval_K_used": eval_k_used,
             "runtime_sec": ep_runtime_sec,
@@ -400,6 +475,10 @@ def main():
                 writer.add_scalar(f"{tag}/episode_mean_iou", mean_iou, ep_idx)
             if not np.isnan(misclass_rate):
                 writer.add_scalar(f"{tag}/episode_misclass_rate", misclass_rate, ep_idx)
+            if not np.isnan(targeted_rate):
+                writer.add_scalar(f"{tag}/episode_targeted_success_rate", targeted_rate, ep_idx)
+            if not np.isnan(clean_detection_rate):
+                writer.add_scalar(f"{tag}/episode_clean_detection_rate", clean_detection_rate, ep_idx)
             if not np.isnan(drop_per_area):
                 writer.add_scalar(f"{tag}/episode_drop_per_area", drop_per_area, ep_idx)
             writer.add_scalar(f"{tag}/episode_runtime_sec", ep_runtime_sec, ep_idx)
@@ -414,6 +493,7 @@ def main():
             writer.flush()
 
     success_rate = successes / float(args.episodes)
+    success_ci_low, success_ci_high = _wilson_interval(successes, int(args.episodes))
     mean_steps = _mean(steps_list)
     mean_base = _mean(base_list)
     mean_area = _mean(area_list)
@@ -421,18 +501,30 @@ def main():
     mean_drop_on = _mean(drop_on_list)
     mean_iou = _mean(iou_list)
     mean_misclass = _mean(misclass_list)
+    mean_disappearance_rate = _mean(disappearance_rate_list)
+    mean_targeted_rate = _mean(targeted_rate_list)
+    mean_clean_detection_rate = _mean(clean_detection_rate_list)
     mean_drop_per_area = _mean(efficiency_list)
     mean_selected_cells = _mean(selected_cells_list)
+    mean_detector_queries = _mean(detector_queries_list)
+    total_detector_queries = float(np.nansum(detector_queries_list)) if detector_queries_list else 0.0
     mean_runtime_sec = _mean(episode_runtime_sec_list)
     total_runtime_sec = float(time.perf_counter() - eval_t0)
     total_steps = float(np.nansum(steps_list)) if steps_list else 0.0
     runtime_per_step_sec = float(total_runtime_sec / total_steps) if total_steps > 0 else float("nan")
 
     print(f"[EVAL] model={args.model}")
-    print(f"[EVAL] episodes={args.episodes} success_rate={success_rate:.3f}")
+    print(
+        f"[EVAL] episodes={args.episodes} success_rate={success_rate:.3f} "
+        f"wilson95=[{success_ci_low:.3f}, {success_ci_high:.3f}]"
+    )
     print(f"[EVAL] mean_steps={mean_steps:.2f} mean_area_frac={mean_area:.4f} mean_after_conf={mean_after:.4f}")
     print(f"[EVAL] mean_drop_on={mean_drop_on:.4f} mean_drop_per_area={mean_drop_per_area:.4f}")
     print(f"[EVAL] mean_iou={mean_iou:.4f} mean_misclass_rate={mean_misclass:.4f}")
+    print(
+        f"[EVAL] mode={args.attack_mode} clean_detection_rate="
+        f"{mean_clean_detection_rate:.4f} targeted_rate={mean_targeted_rate:.4f}"
+    )
     print(f"[EVAL] runtime_total_sec={total_runtime_sec:.2f} runtime_per_episode_sec={mean_runtime_sec:.3f}")
 
     if writer is not None:
@@ -453,6 +545,8 @@ def main():
 
     out = {
         "method": "ppo",
+        "evaluation_type": "adaptive_policy_scene_conditioned",
+        "certifies_fixed_physical_stencil": False,
         "generated_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "model": args.model,
         "model_abs": os.path.abspath(args.model),
@@ -464,6 +558,7 @@ def main():
         "episodes": int(args.episodes),
         "n_success": int(successes),
         "success_rate": success_rate,
+        "success_rate_wilson95": [success_ci_low, success_ci_high],
         "mean_steps": mean_steps,
         "std_steps": _std(steps_list),
         "median_steps": _median(steps_list),
@@ -481,8 +576,17 @@ def main():
         "std_iou": _std(iou_list),
         "mean_misclass_rate": mean_misclass,
         "std_misclass_rate": _std(misclass_list),
+        "mean_disappearance_success_rate": mean_disappearance_rate,
+        "std_disappearance_success_rate": _std(disappearance_rate_list),
+        "mean_targeted_success_rate": mean_targeted_rate,
+        "std_targeted_success_rate": _std(targeted_rate_list),
+        "mean_clean_detection_rate": mean_clean_detection_rate,
+        "std_clean_detection_rate": _std(clean_detection_rate_list),
         "mean_selected_cells": mean_selected_cells,
         "std_selected_cells": _std(selected_cells_list),
+        "mean_detector_queries": mean_detector_queries,
+        "std_detector_queries": _std(detector_queries_list),
+        "total_detector_queries": total_detector_queries,
         "runtime_total_sec": total_runtime_sec,
         "runtime_per_episode_mean_sec": mean_runtime_sec,
         "runtime_per_episode_std_sec": _std(episode_runtime_sec_list),

@@ -25,7 +25,7 @@ def score_from(info, reward, mode: str) -> float:
         return float(info.get("drop_on", -1e9))
     if mode == "success_area":
         metrics = info.get("metrics", {}) if isinstance(info, dict) else {}
-        uv_success = bool(metrics.get("uv_success", False))
+        uv_success = bool(metrics.get("attack_success", False))
         area = float(metrics.get("total_area_mask_frac", info.get("area_frac", 1.0)))
         if uv_success:
             return 1.0 - area  # higher is better -> lower area
@@ -41,6 +41,19 @@ def score_from(info, reward, mode: str) -> float:
 def parse_args():
     ap = argparse.ArgumentParser("Random grid baseline (StopSignGridEnv)")
     ap.add_argument("--data", default="./data")
+    ap.add_argument("--sign-profile", choices=["stop", "speed_limit", "custom"], default="stop")
+    ap.add_argument("--sign-image", default="")
+    ap.add_argument("--sign-active-image", default="")
+    ap.add_argument("--source-class", default="")
+    ap.add_argument("--attack-mode", choices=["disappearance", "untargeted_misclassification", "targeted_misclassification"], default="disappearance")
+    ap.add_argument("--attack-target-class", default="")
+    ap.add_argument("--allowed-alternative-classes", default="")
+    ap.add_argument("--target-conf", type=float, default=0.40)
+    ap.add_argument("--min-attack-success-rate", type=float, default=0.80)
+    ap.add_argument("--min-clean-detection-rate", type=float, default=0.80)
+    ap.add_argument("--localization-iou", type=float, default=0.30)
+    ap.add_argument("--require-source-suppression", type=int, choices=[0, 1], default=1)
+    ap.add_argument("--require-day-preservation", type=int, choices=[0, 1], default=1)
     ap.add_argument("--bgdir", default="./data/backgrounds")
     ap.add_argument("--bg-mode", choices=["dataset", "solid"], default="dataset")
     ap.add_argument("--no-pole", action="store_true")
@@ -53,7 +66,7 @@ def parse_args():
     ap.add_argument("--detector-debug", type=int, default=0)
 
     ap.add_argument("--eval-K", type=int, default=3)
-    ap.add_argument("--grid-cell", type=int, default=16, choices=[2, 4, 8, 16, 32])
+    ap.add_argument("--grid-cell", type=int, default=16)
     ap.add_argument("--episode-steps", type=int, default=300)
     ap.add_argument("--transform-strength", type=float, default=1.0)
     ap.add_argument("--fixed-angle-deg", type=float, default=None,
@@ -63,7 +76,7 @@ def parse_args():
     ap.add_argument("--lambda-area", type=float, default=0.70)
     ap.add_argument("--lambda-efficiency", type=float, default=0.40)
     ap.add_argument("--efficiency-eps", type=float, default=0.02)
-    ap.add_argument("--lambda-day", type=float, default=0.0)
+    ap.add_argument("--lambda-day", type=float, default=1.0)
     ap.add_argument("--lambda-iou", type=float, default=0.40)
     ap.add_argument("--lambda-misclass", type=float, default=0.60)
     ap.add_argument("--lambda-perceptual", type=float, default=0.0)
@@ -85,7 +98,8 @@ def parse_args():
     ap.add_argument("--obs-include-mask", type=int, default=1)
 
     ap.add_argument("--seed", type=int, default=123)
-    ap.add_argument("--trials", type=int, default=50)
+    ap.add_argument("--trials", type=int, default=1,
+                    help="Independent action sequences on the same paired scene; disclose this query multiplier.")
     ap.add_argument("--select-by", choices=["reward", "drop_on", "reward_raw_total", "drop_on_smooth", "success_area"], default="success_area")
     ap.add_argument("--out", default="./baselines/random_grid/_runs")
     ap.add_argument("--tb", default="", help="TensorBoard log dir (default: <run_dir>/tb).")
@@ -94,12 +108,12 @@ def parse_args():
     return ap.parse_args()
 
 
-def run_random_episode(env, seed: int):
-    random.seed(int(seed))
-    np.random.seed(int(seed))
-    env.reset(seed=int(seed))
+def run_random_episode(env, scene_seed: int, action_seed: int):
+    action_rng = random.Random(int(action_seed))
+    env.reset(seed=int(scene_seed))
     episode_meta = {
-        "reset_seed": int(seed),
+        "reset_seed": int(scene_seed),
+        "action_seed": int(action_seed),
         "place_seed": int(env._place_seed) if env._place_seed is not None else None,
         "transform_seeds": list(env._transform_seeds) if getattr(env, "_transform_seeds", None) else [],
     }
@@ -111,7 +125,7 @@ def run_random_episode(env, seed: int):
         candidates = np.where(masks)[0]
         if candidates.size == 0:
             break
-        a = int(random.choice(candidates.tolist()))
+        a = int(action_rng.choice(candidates.tolist()))
         _, reward, term, trunc, info = env.step(a)
         action_seq.append(a)
         metrics = info_metrics(info)
@@ -153,7 +167,11 @@ def main():
     for t in range(int(args.trials)):
         trial_t0 = time.perf_counter()
         trial_seed = int(args.seed) + t
-        actions, steps, final, meta = run_random_episode(env, trial_seed)
+        actions, steps, final, meta = run_random_episode(
+            env,
+            scene_seed=int(args.seed),
+            action_seed=trial_seed,
+        )
         trial_runtime_sec = float(time.perf_counter() - trial_t0)
         score = score_from(final, final.get("reward", 0.0), args.select_by)
         final_metrics = final.get("metrics", {}) if isinstance(final, dict) else {}
@@ -164,7 +182,8 @@ def main():
         mean_iou = final_metrics.get("mean_iou", np.nan)
         misclass = final_metrics.get("misclass_rate", np.nan)
         selected_cells = final_metrics.get("selected_cells", np.nan)
-        success = bool(final_metrics.get("uv_success", False))
+        detector_queries = final_metrics.get("detector_queries", np.nan)
+        success = bool(final_metrics.get("attack_success", False))
         steps_count = len(steps)
         drop_per_area = float("nan")
         if np.isfinite(float(drop_on)) and np.isfinite(float(area)) and float(area) > 0:
@@ -183,6 +202,7 @@ def main():
             "mean_iou": float(mean_iou),
             "misclass_rate": float(misclass),
             "selected_cells": float(selected_cells),
+            "detector_queries": float(detector_queries),
             "runtime_sec": trial_runtime_sec,
             "runtime_per_step_sec": float(trial_runtime_sec / steps_count) if steps_count > 0 else float("nan"),
         })
@@ -207,7 +227,8 @@ def main():
 
     # Replay best trial for images
     if best_trial is not None:
-        run_random_episode(env, best_trial)
+        run_random_episode(env, scene_seed=int(args.seed), action_seed=best_trial)
+    best_episode_detector_queries = int(env._detector_queries)
 
     save_final_images(env, out_dir)
     angle_list = parse_angle_list(args.angle_list)
@@ -220,9 +241,10 @@ def main():
             angles=angle_list,
             eval_k=int(args.eval_K),
         )
+    angle_detector_queries = int(env._detector_queries) - best_episode_detector_queries
     final_step = best_steps[-1] if best_steps else {}
     final_metrics = final_step.get("metrics", {}) if isinstance(final_step, dict) else {}
-    final_success = bool(final_metrics.get("uv_success", False))
+    final_success = bool(final_metrics.get("attack_success", False))
     area_frac = float(final_metrics.get("total_area_mask_frac", final_step.get("area_frac", np.nan))) if final_step else float("nan")
     base_conf = float(final_metrics.get("base_conf", final_metrics.get("c0_day", np.nan))) if final_step else float("nan")
     after_conf = float(final_metrics.get("after_conf", final_metrics.get("c_on", np.nan))) if final_step else float("nan")
@@ -235,6 +257,9 @@ def main():
         drop_per_area = float(drop_on / area_frac)
     runtime_total_sec = float(time.perf_counter() - run_start)
     trial_runtime_vals = [float(r.get("runtime_sec", np.nan)) for r in trial_rows]
+    selection_detector_queries = float(np.nansum([
+        float(r.get("detector_queries", np.nan)) for r in trial_rows
+    ]))
     best_trial_runtime_sec = float("nan")
     if best_trial is not None:
         for row in trial_rows:
@@ -252,6 +277,7 @@ def main():
         "trials": int(args.trials),
         "best_score": float(best) if best is not None else None,
         "best_seed": int(best_trial) if best_trial is not None else None,
+        "scene_seed": int(args.seed),
         "actions": best_actions or [],
         "final": final_step,
         "steps": len(best_steps) if best_steps else 0,
@@ -266,6 +292,9 @@ def main():
         "mean_iou": mean_iou,
         "mean_misclass_rate": misclass,
         "mean_selected_cells": selected_cells,
+        "detector_queries": selection_detector_queries,
+        "best_episode_detector_queries": int(best_episode_detector_queries),
+        "angle_detector_queries": int(angle_detector_queries),
         "runtime_total_sec": runtime_total_sec,
         "mean_trial_runtime_sec": float(np.mean(trial_runtime_vals)) if trial_runtime_vals else float("nan"),
         "std_trial_runtime_sec": float(np.std(trial_runtime_vals)) if trial_runtime_vals else float("nan"),
@@ -281,7 +310,8 @@ def main():
         ] if angle_results else [],
         "episodes_detail": [{
             "episode_index": 0,
-            "seed": int(best_trial) if best_trial is not None else None,
+            "seed": int(args.seed),
+            "action_seed": int(best_trial) if best_trial is not None else None,
             "success": bool(final_success),
             "steps": int(len(best_steps)) if best_steps else 0,
             "base_conf": base_conf,
@@ -292,6 +322,7 @@ def main():
             "mean_iou": mean_iou,
             "misclass_rate": misclass,
             "selected_cells": selected_cells,
+            "detector_queries": int(best_episode_detector_queries),
             "runtime_sec": best_trial_runtime_sec,
             "runtime_per_step_sec": float(best_trial_runtime_sec / len(best_steps)) if best_steps and np.isfinite(best_trial_runtime_sec) else float("nan"),
             "angle_results": angle_results,

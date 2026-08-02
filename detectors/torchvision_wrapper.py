@@ -1,14 +1,10 @@
-"""Thin wrapper around torchvision detection models for stop-sign confidence queries."""
+"""Thin wrapper around torchvision traffic-sign-capable detection models."""
 from __future__ import annotations
 
-from typing import Optional, Union
-import re
+from typing import Optional
 import torch
 
-
-def _norm(s: str) -> str:
-    """Normalize class names for comparison."""
-    return re.sub(r"[\s\-_]+", "", s.strip().lower())
+from detectors.class_names import ClassReference, resolve_class_id
 
 
 class TorchvisionDetectorWrapper:
@@ -21,7 +17,7 @@ class TorchvisionDetectorWrapper:
     def __init__(
         self,
         model_name: Optional[str] = None,
-        target_class: Union[str, int] = "stop sign",
+        target_class: ClassReference = "stop sign",
         device: str = "cpu",
         conf: float = 0.10,
         iou: float = 0.45,
@@ -48,7 +44,7 @@ class TorchvisionDetectorWrapper:
 
         self.model_name = self._resolve_model_name(model_name)
         self.model, self.id_to_name = self._load_model(self.model_name)
-        self.target_id = self._resolve_target_id(target_class)
+        self.target_id = self.resolve_class_id(target_class, role="source class")
 
         self.model.to(self.device)
         self.model.eval()
@@ -114,23 +110,9 @@ class TorchvisionDetectorWrapper:
 
         return model, id_to_name
 
-    def _resolve_target_id(self, target_class: Union[str, int]) -> int:
-        if isinstance(target_class, int):
-            return int(target_class)
-        tc = str(target_class).strip()
-        if tc.isdigit():
-            return int(tc)
-
-        tc_norm = _norm(tc)
-        if isinstance(self.id_to_name, dict):
-            for k, v in self.id_to_name.items():
-                if _norm(v) == tc_norm:
-                    return int(k)
-            for alias in ["stopsign", "stop-sign", "stop_sign", "stop"]:
-                for k, v in self.id_to_name.items():
-                    if _norm(v) == _norm(alias):
-                        return int(k)
-        return 11
+    def resolve_class_id(self, class_ref: ClassReference, *, role: str = "class") -> int:
+        """Resolve a class against this checkpoint's label map."""
+        return resolve_class_id(self.id_to_name, class_ref, role=role)
 
     def _preprocess(self, pil_image):
         from torchvision.transforms.functional import to_tensor

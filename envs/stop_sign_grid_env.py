@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Tuple, Dict, Any, List, Optional
+from typing import Tuple, Dict, Any, List, Optional, Sequence
 import math
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
@@ -8,15 +8,27 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from detectors.factory import build_detector
+from detectors.class_names import ClassReference, resolve_class_id
+from envs.attack_objective import (
+    ATTACK_MODES,
+    AggregateAttackMetrics,
+    AttackObjectiveConfig,
+    TransformAttackMetrics,
+    aggregate_metrics,
+    attack_success as objective_attack_success,
+    reward_terms,
+    success_progress,
+    summarize_detection,
+)
 from utils.uv_paint import UVPaint, YELLOW_GLOW
 
 
-class StopSignGridEnv(gym.Env):
+class TrafficSignGridEnv(gym.Env):
     """
-    Grid-square adversarial overlay over a stop sign (octagon mask only).
+    Grid-square adversarial overlay over an alpha-masked traffic sign.
 
     Action:
-      Discrete index into valid grid cells within the sign octagon.
+      Discrete index into valid grid cells within the sign alpha mask.
       (cell size = grid_cell_px; configurable)
 
     Per step:
@@ -32,10 +44,13 @@ class StopSignGridEnv(gym.Env):
         with identical placement and background.
       - Compute mean confidences over K runs:
           c0_day, c_day, c0_on, c_on
-        Primary objective is drop_on = c0_day - c_on (target threshold).
+        Active-state suppression is drop_on = c0_on - c_on, using the matched
+        clean active image rather than the daylight image.
         Secondary objective keeps day confidence high (penalize if drop exceeds tolerance).
-      - Additional objectives use mean IoU (target vs top detection) and misclassification rate.
-      - Episode terminates early when after-conf <= success threshold.
+      - Detections are localized against the known rendered sign box, so objects
+        elsewhere in the background cannot count as misclassification.
+      - Episode termination follows one explicit attack mode: disappearance,
+        untargeted misclassification, or targeted misclassification.
 
     Observation:
       Cropped RGB image around the sign (daylight composite) with optional
@@ -45,22 +60,22 @@ class StopSignGridEnv(gym.Env):
       action_masks() returns a boolean mask of valid (free) cells for MaskablePPO.
 
     Reward (per step, normalized):
-      Let raw_core = drop_on
-                     - lambda_day * max(0, drop_day - day_tolerance)
-                     - lambda_area * area_frac
-                     + lambda_iou * (1 - mean_iou)
-                     + lambda_misclass * misclass_rate
-                     + lambda_efficiency * log1p(drop_on / area_frac).
-
-      Add a smooth shaping bonus as after-conf approaches the success threshold,
-      plus a small success bonus once success criteria are met, then squash:
+      The centralized attack objective supplies mode-specific classification and
+      localization gains.  Disappearance emphasizes source suppression;
+      untargeted and targeted modes emphasize a localized alternative/target
+      label while optionally requiring source suppression.  The core also
+      penalizes inactive-state degradation, exact painted-pixel area, steps,
+      excess area, and optional perceptual change, and rewards query-efficient
+      progress.  A smooth objective-progress shaping term and a small
+      minimum-area joint-success bonus are then added and squashed:
 
           raw_total = raw_core + shaping + success_bonus
           reward    = tanh(1.2 * raw_total)    (-1, 1)
 
-      Efficiency bonus (optional):
-        efficiency = log1p(max(0, drop_on) / max(area_frac, efficiency_eps))
-        raw_core += lambda_efficiency * efficiency
+      A reported success is stricter than a positive reward: the clean matched
+      day/active baselines must be eligible, the configured EOT attack rate must
+      be met, the inactive/day state must be preserved when required, and the
+      exact painted-pixel area must be within the configured cap.
 
       so PPO always sees a bounded per-step reward.
     """
@@ -73,7 +88,7 @@ class StopSignGridEnv(gym.Env):
         stop_sign_uv_image: Optional[Image.Image],
         background_images: List[Image.Image],
         pole_image: Optional[Image.Image],
-        yolo_weights: str = "weights/yolo8n.pt",
+        yolo_weights: str = "weights/yolov8n.pt",
         img_size: Tuple[int, int] = (640, 640),
         detector_debug: bool = False,
 
@@ -89,6 +104,8 @@ class StopSignGridEnv(gym.Env):
         grid_cell_px: int = 16,
         max_cells: Optional[int] = None,
         area_cap_frac: Optional[float] = None,
+        action_indexing: str = "valid_cells",
+        terminate_on_success: bool = True,
 
         # Paint (single pair)
         uv_paint: UVPaint = YELLOW_GLOW,
@@ -106,6 +123,7 @@ class StopSignGridEnv(gym.Env):
         step_cost_after_target: float = 0.0,
         lambda_iou: float = 0.4,
         lambda_misclass: float = 0.6,
+        lambda_classification: Optional[float] = None,
         lambda_efficiency: float = 0.0,
         efficiency_eps: float = 0.02,
         lambda_perceptual: float = 0.0,
@@ -120,6 +138,17 @@ class StopSignGridEnv(gym.Env):
         # Detector backend
         detector_type: str = "yolo",
         detector_model: Optional[str] = None,
+        source_class: ClassReference = "stop sign",
+        attack_mode: str = "disappearance",
+        attack_target_class: Optional[ClassReference] = None,
+        allowed_alternative_classes: Optional[Sequence[ClassReference]] = None,
+        target_conf_threshold: float = 0.40,
+        min_attack_success_rate: float = 0.80,
+        min_clean_detection_rate: float = 0.80,
+        localization_iou_threshold: float = 0.30,
+        require_source_suppression: bool = True,
+        require_day_preservation: bool = True,
+        detector_instance: Optional[Any] = None,
 
         # Detector thresholds
         yolo_device: str = "cpu",
@@ -153,12 +182,29 @@ class StopSignGridEnv(gym.Env):
 
         self.sign_rgba_day = stop_sign_image.convert("RGBA")
         self.sign_rgba_on  = (stop_sign_uv_image or stop_sign_image).convert("RGBA")
+        if self.sign_rgba_day.size != self.sign_rgba_on.size:
+            raise ValueError(
+                "day and active sign assets must have identical pixel dimensions"
+            )
+        day_alpha = np.array(self.sign_rgba_day.split()[-1], dtype=np.uint8) > 0
+        on_alpha = np.array(self.sign_rgba_on.split()[-1], dtype=np.uint8) > 0
+        alpha_union = int(np.logical_or(day_alpha, on_alpha).sum())
+        alpha_overlap = (
+            float(np.logical_and(day_alpha, on_alpha).sum()) / float(alpha_union)
+            if alpha_union > 0
+            else 0.0
+        )
+        if alpha_overlap < 0.95:
+            raise ValueError(
+                "day and active sign alpha masks are not registered "
+                f"(mask IoU={alpha_overlap:.3f}, required >= 0.95)"
+            )
         self.bg_list = [im.convert("RGB") for im in (background_images or [])]
         self.pole_rgba = None if pole_image is None else pole_image.convert("RGBA")
 
         self.grid_cell_px = int(grid_cell_px)
-        if self.grid_cell_px not in (2, 4, 8, 16, 32):
-            raise ValueError("grid_cell_px must be one of: 2, 4, 8, 16, 32")
+        if self.grid_cell_px <= 0:
+            raise ValueError("grid_cell_px must be a positive integer")
 
         self.cell_cover_thresh = float(cell_cover_thresh)
 
@@ -166,25 +212,47 @@ class StopSignGridEnv(gym.Env):
         self._sign_alpha = self.sign_rgba_day.split()[-1]  # L mask of octagon
         self._build_grid_index()
 
+        # The historical policy indexes only alpha-valid cells.  That compact
+        # space changes size and meaning when the sign silhouette changes, so
+        # it cannot be shared by an amortized policy trained across sign types.
+        # ``canonical_full_grid`` is an opt-in, fixed semantic: action i always
+        # means row/column ``divmod(i, Gw)`` and invalid cells are masked out.
+        indexing = str(action_indexing).strip().lower().replace("-", "_")
+        indexing_aliases = {
+            "valid": "valid_cells",
+            "compact": "valid_cells",
+            "full": "canonical_full_grid",
+            "full_grid": "canonical_full_grid",
+            "canonical": "canonical_full_grid",
+        }
+        indexing = indexing_aliases.get(indexing, indexing)
+        if indexing not in ("valid_cells", "canonical_full_grid"):
+            raise ValueError(
+                "action_indexing must be 'valid_cells' or "
+                "'canonical_full_grid'"
+            )
+        self.action_indexing = indexing
+        self.terminate_on_success = bool(terminate_on_success)
+
         self.max_cells = int(max_cells) if max_cells is not None else None
         self.area_cap_frac = float(area_cap_frac) if area_cap_frac is not None else None
         self.area_cap_mode = str(area_cap_mode).lower().strip()
         if self.area_cap_mode not in ("soft", "hard"):
             raise ValueError("area_cap_mode must be 'soft' or 'hard'")
-        self._derived_max_cells = (
-            self.max_cells is None
-            and self.area_cap_frac is not None
-            and self.area_cap_mode == "hard"
-        )
+        # Pixel-exact cap checks happen before each action.  A cell-count proxy is
+        # inaccurate for circular signs and partially covered edge cells.
+        self._derived_max_cells = False
         if self.area_cap_frac is not None and not (0.0 < self.area_cap_frac <= 1.0):
             raise ValueError("area_cap_frac must be in (0, 1]")
-        if self._derived_max_cells:
-            valid_total = int(self._valid_cells.sum())
-            if valid_total > 0:
-                derived = int(math.ceil(self.area_cap_frac * valid_total))
-                self.max_cells = max(1, min(valid_total, derived))
-            else:
-                self.max_cells = 0
+        if self.area_cap_frac is not None and self.area_cap_mode == "hard":
+            feasible_from_empty = self._valid_cells & (
+                self._cell_pixel_areas
+                <= float(self.area_cap_frac) * float(self._sign_pixel_area) + 1e-12
+            )
+            if not np.any(feasible_from_empty):
+                raise ValueError(
+                    "hard area cap is smaller than every valid canonical cell"
+                )
 
         # UV paint pair (single or list)
         self.paint_list = list(uv_paint_list) if uv_paint_list else None
@@ -201,7 +269,11 @@ class StopSignGridEnv(gym.Env):
         self.step_cost = float(step_cost)
         self.step_cost_after_target = float(step_cost_after_target)
         self.lambda_iou = float(lambda_iou)
-        self.lambda_misclass = float(lambda_misclass)
+        self.lambda_classification = float(
+            lambda_misclass if lambda_classification is None else lambda_classification
+        )
+        # Backward-compatible metric/config key used by existing callbacks.
+        self.lambda_misclass = self.lambda_classification
         self.lambda_efficiency = float(lambda_efficiency)
         self.efficiency_eps = float(efficiency_eps)
         self.lambda_perceptual = float(lambda_perceptual)
@@ -225,21 +297,92 @@ class StopSignGridEnv(gym.Env):
                 raise ValueError("area_target_frac must be in (0, 1]")
 
 
-        # detector
-        self.det = build_detector(
+        # Detector and explicit attack semantics.
+        self.source_class = source_class
+        self.attack_mode = str(attack_mode).strip().lower()
+        if self.attack_mode not in ATTACK_MODES:
+            raise ValueError(f"attack_mode must be one of: {', '.join(ATTACK_MODES)}")
+        if self.attack_mode == "targeted_misclassification" and attack_target_class is None:
+            raise ValueError(
+                "attack_target_class is required for targeted_misclassification"
+            )
+
+        self.det = detector_instance or build_detector(
             detector_type=detector_type,
             detector_model=detector_model,
             yolo_weights=yolo_weights,
             device=yolo_device,
             conf=conf_thresh,
             iou=iou_thresh,
-            target_class="stop sign",
+            target_class=source_class,
             debug=detector_debug,
         )
+        self.source_class_id = int(getattr(self.det, "target_id"))
+        self.attack_target_class = attack_target_class
+        self.attack_target_id: Optional[int] = None
+        if attack_target_class is not None:
+            resolver = getattr(self.det, "resolve_class_id", None)
+            if callable(resolver):
+                self.attack_target_id = int(
+                    resolver(attack_target_class, role="attack target class")
+                )
+            else:
+                self.attack_target_id = resolve_class_id(
+                    getattr(self.det, "id_to_name", {}) or {},
+                    attack_target_class,
+                    role="attack target class",
+                )
+            if self.attack_target_id == self.source_class_id:
+                raise ValueError("attack target class must differ from source class")
+
+        if isinstance(allowed_alternative_classes, str):
+            alternative_refs = [
+                part.strip()
+                for part in allowed_alternative_classes.split(",")
+                if part.strip()
+            ]
+        else:
+            alternative_refs = list(allowed_alternative_classes or [])
+        alternative_ids: List[int] = []
+        for class_ref in alternative_refs:
+            resolver = getattr(self.det, "resolve_class_id", None)
+            if callable(resolver):
+                class_id = int(resolver(class_ref, role="allowed alternative class"))
+            else:
+                class_id = resolve_class_id(
+                    getattr(self.det, "id_to_name", {}) or {},
+                    class_ref,
+                    role="allowed alternative class",
+                )
+            if class_id == self.source_class_id:
+                raise ValueError("allowed alternative classes must exclude the source class")
+            if class_id not in alternative_ids:
+                alternative_ids.append(class_id)
+        self.allowed_alternative_class_ids = (
+            tuple(alternative_ids) if alternative_refs else None
+        )
+
+        self.attack_config = AttackObjectiveConfig(
+            mode=self.attack_mode,
+            source_conf_threshold=self.success_conf_threshold,
+            target_conf_threshold=float(target_conf_threshold),
+            min_success_rate=float(min_attack_success_rate),
+            localization_iou_threshold=float(localization_iou_threshold),
+            require_source_suppression=bool(require_source_suppression),
+            allowed_alternative_class_ids=self.allowed_alternative_class_ids,
+        )
+        self.min_clean_detection_rate = float(min_clean_detection_rate)
+        if not 0.0 <= self.min_clean_detection_rate <= 1.0:
+            raise ValueError("min_clean_detection_rate must be in [0, 1]")
+        self.require_day_preservation = bool(require_day_preservation)
 
 
         # action/obs spaces
-        self.action_space = spaces.Discrete(self._n_valid)
+        self.action_space = spaces.Discrete(
+            self._n_valid
+            if self.action_indexing == "valid_cells"
+            else self.Gh * self.Gw
+        )
         H, W = self.obs_size[1], self.obs_size[0]
         C = 4 if self.obs_include_mask else 3
         self.observation_space = spaces.Box(
@@ -250,24 +393,35 @@ class StopSignGridEnv(gym.Env):
         self.rng = np.random.default_rng(seed)
         self._step = 0
         self._bg_rgb = None
+        self._bg_index: Optional[int] = None
         self._episode_cells: np.ndarray = None  # bool mask [Gh, Gw] of selected cells
         self._place_seed = None
         self._transform_seeds: List[int] = []
         self._baseline_c0_day_list: List[float] = []
         self._baseline_c0_on_list: List[float] = []
+        self._baseline_day_metrics: List[TransformAttackMetrics] = []
+        self._baseline_on_metrics: List[TransformAttackMetrics] = []
+        self._last_plain_day_metrics: List[TransformAttackMetrics] = []
+        self._last_plain_on_metrics: List[TransformAttackMetrics] = []
         self._last_drop_on_s = 0.0
         self._diag_saved = False
+        self._detector_queries = 0
+        self._detector_requests = 0
 
     # ----------------------------- grid build --------------------------------
 
     def _build_grid_index(self):
-        """Precompute grid geometry restricted to the sign alpha (octagon)."""
+        """Precompute grid geometry and exact printable area inside the sign."""
         W, H = self.sign_rgba_day.size
         g = self.grid_cell_px
         Gw, Gh = math.ceil(W / g), math.ceil(H / g)
 
         signA = np.array(self._sign_alpha, dtype=np.uint8) > 0
+        sign_pixel_area = int(signA.sum())
+        if sign_pixel_area <= 0:
+            raise ValueError("sign image must contain a non-empty alpha mask")
         valid = np.zeros((Gh, Gw), dtype=bool)
+        pixel_areas = np.zeros((Gh, Gw), dtype=np.int64)
         rects: List[Tuple[int, int, int, int]] = []
 
         for r in range(Gh):
@@ -277,23 +431,35 @@ class StopSignGridEnv(gym.Env):
                 cell = signA[y0:y1, x0:x1]
                 cover = float(cell.mean()) if cell.size else 0.0
                 valid[r, c] = (cover >= self.cell_cover_thresh)
+                pixel_areas[r, c] = int(cell.sum())
 
                 rects.append((x0, y0, x1, y1))
 
         self.Gw, self.Gh = Gw, Gh
         self._cell_rects = rects
         self._valid_cells = valid
+        self._cell_pixel_areas = pixel_areas
+        self._sign_pixel_area = sign_pixel_area
         self._valid_coords = np.argwhere(self._valid_cells)  # shape (N,2)
         self._n_valid = int(self._valid_coords.shape[0])
+        if self._n_valid <= 0:
+            raise ValueError(
+                "grid/cell-cover settings produced no valid sign cells; reduce "
+                "grid_cell_px or cell_cover_thresh"
+            )
 
 
     # ----------------------------- lifecycle ---------------------------------
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
+        super().reset(seed=seed)
         if seed is not None:
             self.rng = np.random.default_rng(seed)
+            self.action_space.seed(seed)
 
         self._step = 0
+        self._detector_queries = 0
+        self._detector_requests = 0
         self._episode_cells = np.zeros((self.Gh, self.Gw), dtype=bool)
 
         if self.paint_list:
@@ -312,6 +478,8 @@ class StopSignGridEnv(gym.Env):
         self._baseline_c0_day_list, self._baseline_c0_on_list = self._eval_plain_over_K(
             self._transform_seeds
         )
+        self._baseline_day_metrics = list(self._last_plain_day_metrics)
+        self._baseline_on_metrics = list(self._last_plain_on_metrics)
 
         self._last_drop_on_s = 0.0
         self._diag_saved = False
@@ -325,7 +493,7 @@ class StopSignGridEnv(gym.Env):
 
         # 1) Action is an index into valid cells (octagon-aware)
         idx = int(action)
-        idx = max(0, min(idx, self._n_valid - 1))
+        idx = max(0, min(idx, int(self.action_space.n) - 1))
         free_mask = self._valid_cells & (~self._episode_cells)
         if not np.any(free_mask):
             # no free cells left
@@ -336,7 +504,7 @@ class StopSignGridEnv(gym.Env):
             area_frac = self._area_frac_selected()
             cap_exceeded = self.area_cap_frac is not None and area_frac > self.area_cap_frac
             info = {
-                "objective": "grid_uv",
+                "objective": self.attack_mode,
                 "note": "no_free_cells",
                 "lambda_area": float(self.lambda_area),
                 "total_area_mask_frac": area_frac,
@@ -344,38 +512,42 @@ class StopSignGridEnv(gym.Env):
                 "uv_success": False,
                 "attack_success": False,
                 "area_cap_exceeded": cap_exceeded,
+                "detector_queries": int(self._detector_queries),
             }
             return obs, -1.0, bool(terminated), bool(truncated), info
 
-        pick = self._valid_coords[idx]
-        r, c = int(pick[0]), int(pick[1])
+        if self.action_indexing == "valid_cells":
+            pick = self._valid_coords[idx]
+            r, c = int(pick[0]), int(pick[1])
+        else:
+            r, c = divmod(idx, self.Gw)
         if not free_mask[r, c]:
             # invalid action (duplicate or not free); should be prevented by action masking
             terminated = False
             truncated = (self._step >= self.steps_per_episode)
             obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
             info = {
-                "objective": "grid_uv",
+                "objective": self.attack_mode,
                 "note": "invalid_action",
                 "selected_cells": int(self._episode_cells.sum()),
                 "total_area_mask_frac": float(self._area_frac_selected()),
                 "uv_success": False,
                 "attack_success": False,
                 "area_cap_exceeded": False,
+                "detector_queries": int(self._detector_queries),
             }
             return obs, -0.05, bool(terminated), bool(truncated), info
 
         selected_cells = int(self._episode_cells.sum())
-        valid_total = int(self._valid_cells.sum())
-        if self.area_cap_frac is not None and valid_total > 0 and self.area_cap_mode == "hard":
-            next_area_frac = float(selected_cells + 1) / float(valid_total)
+        if self.area_cap_frac is not None and self.area_cap_mode == "hard":
+            next_area_frac = self._area_frac_selected() + self._cell_area_frac(r, c)
             if next_area_frac > self.area_cap_frac:
                 terminated = True
                 truncated = (self._step >= self.steps_per_episode)
                 obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
-                area_frac = float(selected_cells) / float(valid_total)
+                area_frac = self._area_frac_selected()
                 info = {
-                    "objective": "grid_uv",
+                    "objective": self.attack_mode,
                     "note": "area_cap_exceeded",
                     "selected_cells": int(selected_cells),
                     "total_area_mask_frac": float(area_frac),
@@ -383,6 +555,7 @@ class StopSignGridEnv(gym.Env):
                     "uv_success": False,
                     "attack_success": False,
                     "area_cap_exceeded": True,
+                    "detector_queries": int(self._detector_queries),
                 }
                 return obs, float(self.area_cap_penalty), bool(terminated), bool(truncated), info
 
@@ -403,20 +576,34 @@ class StopSignGridEnv(gym.Env):
         # 2) Evaluate overlay vs baseline
         eval_K = self._current_eval_K(self._last_drop_on_s)
         eval_seeds = self._transform_seeds[:eval_K]
-        overlay_metrics = self._eval_overlay_over_K(eval_seeds)
+        overlay_metrics = self._eval_overlay_over_K(
+            eval_seeds,
+            baseline_day_confidences=self._baseline_c0_day_list[:eval_K],
+            baseline_on_confidences=self._baseline_c0_on_list[:eval_K],
+            baseline_day_metrics=self._baseline_day_metrics[:eval_K],
+            baseline_on_metrics=self._baseline_on_metrics[:eval_K],
+        )
         c_day = overlay_metrics["c_day"]
         c_on = overlay_metrics["c_on"]
         mean_iou = overlay_metrics["mean_iou"]
         misclass_rate = overlay_metrics["misclass_rate"]
-        mean_target_conf = overlay_metrics.get("mean_target_conf", 0.0)
+        mean_source_conf = overlay_metrics.get("mean_source_conf", 0.0)
         mean_top_conf = overlay_metrics.get("mean_top_conf", 0.0)
         top_class_counts = overlay_metrics.get("top_class_counts", {})
+        attack_metrics: AggregateAttackMetrics = overlay_metrics["attack_metrics"]
 
-        c0_day = self._mean_over_K(self._baseline_c0_day_list, eval_K)
-        c0_on = self._mean_over_K(self._baseline_c0_on_list, eval_K)
+        eligible_indices = list(overlay_metrics.get("eligible_indices", []))
+        c0_day = float(np.mean([
+            self._baseline_c0_day_list[i] for i in eligible_indices
+        ])) if eligible_indices else 0.0
+        c0_on = float(np.mean([
+            self._baseline_c0_on_list[i] for i in eligible_indices
+        ])) if eligible_indices else 0.0
 
         drop_day = float(c0_day - c_day)
-        drop_on  = float(c0_day - c_on)
+        # Compare active-overlay confidence against the matched active baseline.
+        # Using the daylight baseline confounds the UV source image with the patch.
+        drop_on  = float(c0_on - c_on)
 
         drop_on_s = float(drop_on)
         self._last_drop_on_s = drop_on_s
@@ -425,14 +612,14 @@ class StopSignGridEnv(gym.Env):
         cap_exceeded = self.area_cap_frac is not None and area_frac > self.area_cap_frac
 
         # (Baseline gating)
-        if c0_day < self.min_base_conf:
+        if min(c0_day, c0_on) < self.min_base_conf:
             reward = -0.05
             # keep termination from max_cells if you want; I'm leaving it as-is:
             truncated = (self._step >= self.steps_per_episode)
 
             obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
             info = {
-                "objective": "grid_uv",
+                "objective": self.attack_mode,
                 "c0_day": c0_day, "c_day": c_day,
                 "c0_on": c0_on,   "c_on": c_on,
                 "drop_day": drop_day, "drop_on": drop_on, "drop_on_smooth": float(drop_on_s),
@@ -443,6 +630,7 @@ class StopSignGridEnv(gym.Env):
                 "uv_success": False,
                 "attack_success": False,
                 "area_cap_exceeded": bool(cap_exceeded),
+                "detector_queries": int(self._detector_queries),
             }
             return obs, float(reward), bool(terminated), bool(truncated), info
 
@@ -450,9 +638,19 @@ class StopSignGridEnv(gym.Env):
         pen_day = max(0.0, drop_day - self.day_tolerance)
         area_frac = self._area_frac_selected()
         conf_thr = self.success_conf_threshold
-        max_drop = max(0.0, float(c0_day - conf_thr))
-        drop_blend = min(float(drop_on), max_drop)
-        eff_drop = max(0.0, float(drop_on))
+        max_drop = max(0.0, float(c0_on - conf_thr))
+        drop_blend = max(0.0, min(float(drop_on), max_drop))
+        classification_gain, localization_gain = reward_terms(
+            attack_metrics, self.attack_config
+        )
+        suppression_weight = 1.0 if self.attack_mode == "disappearance" else 0.25
+        suppression_gain = suppression_weight * drop_blend
+        efficiency_signal = (
+            drop_blend
+            if self.attack_mode == "disappearance"
+            else classification_gain
+        )
+        eff_drop = max(0.0, float(efficiency_signal))
         eff_denom = max(float(area_frac), float(self.efficiency_eps))
         efficiency = math.log1p(eff_drop / eff_denom)
         area_target = self.area_target_frac if self.area_target_frac is not None else self.area_cap_frac
@@ -469,22 +667,40 @@ class StopSignGridEnv(gym.Env):
             excess_penalty = (lambda_area_used * 4.5 * excess) + (lambda_area_used * (excess ** 2))
 
         raw_core = (
-            drop_blend
+            suppression_gain
             - self.lambda_day * pen_day
             - lambda_area_used * area_frac
             - excess_penalty
             - step_cost_penalty
-            + self.lambda_iou * (1.0 - mean_iou)
-            + self.lambda_misclass * misclass_rate
+            + self.lambda_iou * localization_gain
+            + self.lambda_classification * classification_gain
             + self.lambda_efficiency * efficiency
         )
         perceptual = self._perceptual_delta()
         raw_core -= self.lambda_perceptual * perceptual
 
-        shaping = 0.35 * math.tanh(3.0 * (conf_thr - c_on))
-        conf_success = self._is_drop_success(c_on, area_frac, conf_thr)
-        attack_success = bool(conf_success)
-        success_bonus = (0.2 * ((1.0 - float(area_frac)) ** 2)) if conf_success else 0.0
+        shaping = 0.35 * math.tanh(
+            3.0 * success_progress(attack_metrics, self.attack_config)
+        )
+        clean_detection_rate = float(overlay_metrics.get("clean_detection_rate", 0.0))
+        day_correct_rate = float(overlay_metrics.get("day_correct_rate", 0.0))
+        joint = self.joint_success_components(
+            attack_metrics,
+            clean_detection_rate=clean_detection_rate,
+            day_correct_rate=day_correct_rate,
+            drop_day=drop_day,
+            area_frac=area_frac,
+        )
+        clean_eligible = joint["clean_eligible"]
+        objective_success = joint["objective_success"]
+        day_preserved = joint["day_preserved"]
+        within_budget = joint["within_area_budget"]
+        attack_success = joint["attack_success"]
+        success_bonus = (
+            0.2 * ((1.0 - float(area_frac)) ** 2)
+            if attack_success
+            else 0.0
+        )
 
         raw_total = raw_core + shaping + success_bonus
         if cap_exceeded and self.area_cap_mode == "soft":
@@ -496,9 +712,8 @@ class StopSignGridEnv(gym.Env):
             raw_total = -over_pen
         reward = math.tanh(1.2 * raw_total)
 
-        if conf_success:
+        if attack_success and self.terminate_on_success:
             terminated = True
-        # Success is purely confidence-based; cap only affects reward (soft mode)
 
         truncated = (self._step >= self.steps_per_episode)
 
@@ -506,19 +721,28 @@ class StopSignGridEnv(gym.Env):
         obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
         preview_on = self._render_variant(kind="on", use_overlay=True, transform_seed=self._transform_seeds[0])
 
-        target_id = getattr(self.det, "target_id", None)
-        target_name = None
+        source_id = self.source_class_id
+        source_name = None
+        attack_target_name = None
         id_to_name = getattr(self.det, "id_to_name", None)
-        if target_id is not None and isinstance(id_to_name, dict):
-            target_name = id_to_name.get(int(target_id))
+        if isinstance(id_to_name, dict):
+            source_name = id_to_name.get(int(source_id))
+            if self.attack_target_id is not None:
+                attack_target_name = id_to_name.get(int(self.attack_target_id))
 
         info = {
-            "objective": "grid_uv",
+            "objective": self.attack_mode,
+            "attack_mode": self.attack_mode,
             "c0_day": c0_day, "c_day": c_day,
             "c0_on": c0_on,   "c_on": c_on,
             "drop_day": drop_day, "drop_on": drop_on, "drop_on_smooth": float(drop_on_s),
             "reward_core": float(raw_core),
             "reward_efficiency": float(self.lambda_efficiency * efficiency),
+            "reward_suppression": float(suppression_gain),
+            "reward_classification": float(
+                self.lambda_classification * classification_gain
+            ),
+            "reward_localization": float(self.lambda_iou * localization_gain),
             "reward_perceptual": float(-self.lambda_perceptual * perceptual),
             "reward_step_cost": float(-step_cost_penalty),
             "reward_raw_total": float(raw_total),
@@ -529,12 +753,40 @@ class StopSignGridEnv(gym.Env):
             "step_cost_after_target": float(self.step_cost_after_target),
             "mean_iou": float(mean_iou),
             "misclass_rate": float(misclass_rate),
-            "mean_target_conf": float(mean_target_conf),
+            "disappearance_success_rate": float(attack_metrics.disappearance_rate),
+            "misclassification_success_rate": float(attack_metrics.untargeted_rate),
+            "targeted_success_rate": float(attack_metrics.targeted_rate),
+            "mean_source_iou": float(attack_metrics.mean_source_iou),
+            "mean_alternative_iou": float(attack_metrics.mean_alternative_iou),
+            "mean_attack_target_iou": float(attack_metrics.mean_attack_target_iou),
+            "mean_alternative_conf": float(attack_metrics.mean_alternative_conf),
+            "mean_attack_target_conf": float(attack_metrics.mean_attack_target_conf),
+            "mean_alternative_margin": float(attack_metrics.mean_alternative_margin),
+            "mean_target_margin": float(attack_metrics.mean_target_margin),
+            "mean_source_conf": float(mean_source_conf),
+            # Legacy detector-wrapper terminology: "target" here means the
+            # clean/source class, not the designated attack target.
+            "mean_target_conf": float(mean_source_conf),
             "mean_top_conf": float(mean_top_conf),
             "top_class_counts": dict(top_class_counts),
-            "target_id": int(target_id) if target_id is not None else None,
-            "target_name": str(target_name) if target_name is not None else None,
+            "source_class_id": int(source_id),
+            "source_class_name": str(source_name) if source_name is not None else str(self.source_class),
+            "attack_target_id": int(self.attack_target_id) if self.attack_target_id is not None else None,
+            "attack_target_name": (
+                str(attack_target_name)
+                if attack_target_name is not None
+                else (str(self.attack_target_class) if self.attack_target_class is not None else None)
+            ),
+            "allowed_alternative_class_ids": (
+                list(self.allowed_alternative_class_ids)
+                if self.allowed_alternative_class_ids is not None
+                else None
+            ),
+            # Legacy aliases retained for existing analysis scripts.
+            "target_id": int(source_id),
+            "target_name": str(source_name) if source_name is not None else str(self.source_class),
             "selected_cells": int(self._episode_cells.sum()),
+            "detector_queries": int(self._detector_queries),
             "grid_cell_px": int(self.grid_cell_px),
             "eval_K_used": int(eval_K),
             "eval_K_min": int(self.eval_K_min),
@@ -545,6 +797,7 @@ class StopSignGridEnv(gym.Env):
             "lambda_area": float(self.lambda_area),
             "lambda_iou": float(self.lambda_iou),
             "lambda_misclass": float(self.lambda_misclass),
+            "lambda_classification": float(self.lambda_classification),
             "lambda_efficiency": float(self.lambda_efficiency),
             "efficiency_eps": float(self.efficiency_eps),
             "lambda_perceptual": float(self.lambda_perceptual),
@@ -555,15 +808,24 @@ class StopSignGridEnv(gym.Env):
             "after_conf": float(c_on),
             "total_area_mask_frac": float(area_frac),
             "area_cap": float(self.area_cap_frac) if self.area_cap_frac is not None else None,
-            "uv_success": bool(conf_success),
+            "clean_detection_rate": float(clean_detection_rate),
+            "day_correct_rate": float(day_correct_rate),
+            "clean_eligible": bool(clean_eligible),
+            "day_preserved": bool(day_preserved),
+            "within_area_budget": bool(within_budget),
+            "objective_success": bool(objective_success),
+            "uv_success": bool(attack_success),
             "attack_success": bool(attack_success),
             "area_cap_exceeded": bool(cap_exceeded),
             "trace": {
-                "phase": "grid_uv",
+                "phase": f"grid_uv_{self.attack_mode}",
                 "grid_cell_px": int(self.grid_cell_px),
+                "action_indexing": self.action_indexing,
                 "selected_indices": self._selected_indices_list(),
                 "place_seed": int(self._place_seed),
                 "transform_seeds": [int(s) for s in self._transform_seeds],
+                "background_index": int(self._bg_index) if self._bg_index is not None else None,
+                "paint_name": getattr(self.paint, "name", "unknown"),
                 "fixed_angle_deg": float(self.fixed_angle_deg) if self.fixed_angle_deg is not None else None,
             },
         }
@@ -583,7 +845,7 @@ class StopSignGridEnv(gym.Env):
             info["diagnostic_conf_thresh"] = float(self.diag_conf_thresh)
 
         # Always attach the final image if we hit drop success, so it can be saved reliably.
-        if terminated and conf_success:
+        if terminated and attack_success:
             info["composited_pil"] = preview_on
             info["overlay_pil"] = self._render_overlay_pattern(mode="on")
         # Otherwise only attach occasionally to reduce overhead
@@ -598,26 +860,87 @@ class StopSignGridEnv(gym.Env):
 
     def action_masks(self) -> np.ndarray:
         """
-        Action mask for MaskablePPO: True where the action (cell) is still free.
+        Action mask for MaskablePPO: True where adding the cell is feasible.
+
+        In hard-cap mode this excludes a free cell whose exact sign-pixel area
+        would cross the material budget.  Masking that action is essential for
+        prefix-valid callers: a returned action must add exactly one cell.
         """
         if self._episode_cells is None or self._n_valid <= 0:
-            return np.ones(self._n_valid, dtype=bool)
+            return np.ones(int(self.action_space.n), dtype=bool)
+        feasible = self._valid_cells & (~self._episode_cells)
+        if self.max_cells is not None and int(self._episode_cells.sum()) >= self.max_cells:
+            feasible[:] = False
+        if self.area_cap_frac is not None and self.area_cap_mode == "hard":
+            selected_pixels = int(self._cell_pixel_areas[self._episode_cells].sum())
+            maximum_pixels = float(self.area_cap_frac) * float(self._sign_pixel_area)
+            feasible &= (selected_pixels + self._cell_pixel_areas) <= (
+                maximum_pixels + 1e-12
+            )
+        if self.action_indexing == "canonical_full_grid":
+            return feasible.reshape(-1).astype(bool)
         coords = self._valid_coords
-        return (~self._episode_cells[coords[:, 0], coords[:, 1]]).astype(bool)
+        return feasible[coords[:, 0], coords[:, 1]].astype(bool)
+
+    def next_step_detector_query_cost(self) -> int:
+        """Return the exact number of detector images a valid next step uses."""
+
+        eval_k = self._current_eval_K(self._last_drop_on_s)
+        # Each transform has one inactive/day overlay and one triggered overlay.
+        return 2 * int(eval_k)
 
 
     # ----------------------------- helpers -----------------------------------
 
     def _eval_plain_over_K(self, seeds: List[int]) -> Tuple[List[float], List[float]]:
         imgs_plain_day, imgs_plain_on = [], []
+        sign_boxes_day, sign_boxes_on = [], []
         for t_seed in seeds:
-            plain_day = self._compose_on_bg(self._transform_sign(self.sign_rgba_day, t_seed), self._place_seed)
-            plain_on  = self._compose_on_bg(self._transform_sign(self.sign_rgba_on,  t_seed), self._place_seed)
+            plain_day, meta_day = self._compose_on_bg(
+                self._transform_sign(self.sign_rgba_day, t_seed),
+                self._place_seed,
+                return_meta=True,
+            )
+            plain_on, meta_on = self._compose_on_bg(
+                self._transform_sign(self.sign_rgba_on, t_seed),
+                self._place_seed,
+                return_meta=True,
+            )
             imgs_plain_day.append(plain_day)
             imgs_plain_on.append(plain_on)
-        c0_day_list = self.det.infer_confidence_batch(imgs_plain_day)
-        c0_on_list  = self.det.infer_confidence_batch(imgs_plain_on)
-        return list(c0_day_list), list(c0_on_list)
+            sign_boxes_day.append(meta_day["sign_bbox_bg"])
+            sign_boxes_on.append(meta_on["sign_bbox_bg"])
+        day_rows = self._summarize_detection_batch(imgs_plain_day, sign_boxes_day)
+        on_rows = self._summarize_detection_batch(imgs_plain_on, sign_boxes_on)
+        self._last_plain_day_metrics = list(day_rows)
+        self._last_plain_on_metrics = list(on_rows)
+        return (
+            [float(row.source_conf) for row in day_rows],
+            [float(row.source_conf) for row in on_rows],
+        )
+
+    def _summarize_detection_batch(
+        self,
+        images: List[Image.Image],
+        sign_boxes: List[Tuple[float, float, float, float]],
+    ):
+        self._detector_queries += int(len(images))
+        self._detector_requests += 1
+        detections = self.det.infer_detections_batch(images)
+        if len(detections) != len(images):
+            raise RuntimeError(
+                "detector returned a different number of summaries than input images"
+            )
+        return [
+            summarize_detection(
+                detection,
+                sign_box,
+                self.source_class_id,
+                self.attack_target_id,
+                self.attack_config,
+            )
+            for detection, sign_box in zip(detections, sign_boxes)
+        ]
 
     def _mean_over_K(self, values: List[float], K: int) -> float:
         if K <= 0:
@@ -655,14 +978,32 @@ class StopSignGridEnv(gym.Env):
         for angle in angles:
             self.fixed_angle_deg = float(angle)
             c0_day_list, c0_on_list = self._eval_plain_over_K(seeds)
-            overlay = self._eval_overlay_over_K(seeds)
-            c0_day = float(np.mean(c0_day_list)) if c0_day_list else float("nan")
-            c0_on = float(np.mean(c0_on_list)) if c0_on_list else float("nan")
+            overlay = self._eval_overlay_over_K(
+                seeds,
+                baseline_day_confidences=c0_day_list,
+                baseline_on_confidences=c0_on_list,
+                baseline_day_metrics=self._last_plain_day_metrics,
+                baseline_on_metrics=self._last_plain_on_metrics,
+            )
+            eligible = list(overlay.get("eligible_indices", []))
+            c0_day = float(np.mean([c0_day_list[i] for i in eligible])) if eligible else float("nan")
+            c0_on = float(np.mean([c0_on_list[i] for i in eligible])) if eligible else float("nan")
             c_day = float(overlay.get("c_day", float("nan")))
             c_on = float(overlay.get("c_on", float("nan")))
-            drop_on = float(c0_day - c_on) if np.isfinite(c0_day) and np.isfinite(c_on) else float("nan")
+            drop_day = float(c0_day - c_day) if np.isfinite(c0_day) and np.isfinite(c_day) else float("nan")
+            drop_on = float(c0_on - c_on) if np.isfinite(c0_on) and np.isfinite(c_on) else float("nan")
             area_frac = float(self._area_frac_selected())
-            success = 1.0 if (np.isfinite(c_on) and c_on <= float(self.success_conf_threshold)) else 0.0
+            metrics = overlay.get("attack_metrics", AggregateAttackMetrics())
+            clean_rate = float(overlay.get("clean_detection_rate", 0.0))
+            day_correct_rate = float(overlay.get("day_correct_rate", 0.0))
+            joint = self.joint_success_components(
+                metrics,
+                clean_detection_rate=clean_rate,
+                day_correct_rate=day_correct_rate,
+                drop_day=drop_day,
+                area_frac=area_frac,
+            )
+            success = 1.0 if joint["attack_success"] else 0.0
             out.append(
                 {
                     "angle_deg": float(angle),
@@ -670,19 +1011,68 @@ class StopSignGridEnv(gym.Env):
                     "c0_on": c0_on,
                     "c_day": c_day,
                     "c_on": c_on,
+                    "drop_day": drop_day,
                     "drop_on": drop_on,
                     "area_frac": area_frac,
                     "success": success,
+                    "attack_mode": self.attack_mode,
+                    "clean_detection_rate": clean_rate,
+                    "day_correct_rate": day_correct_rate,
+                    "day_preserved": bool(joint["day_preserved"]),
+                    "within_area_budget": bool(joint["within_area_budget"]),
+                    "disappearance_success_rate": float(metrics.disappearance_rate),
+                    "misclassification_success_rate": float(metrics.untargeted_rate),
+                    "targeted_success_rate": float(metrics.targeted_rate),
                 }
             )
         self.fixed_angle_deg = orig_fixed
         return out
 
     def _area_frac_selected(self) -> float:
-        valid_total = int(self._valid_cells.sum())
-        if valid_total == 0:
+        if self._sign_pixel_area <= 0 or self._episode_cells is None:
             return 0.0
-        return float(int(self._episode_cells.sum())) / float(valid_total)
+        selected_pixels = int(self._cell_pixel_areas[self._episode_cells].sum())
+        return float(selected_pixels) / float(self._sign_pixel_area)
+
+    def joint_success_components(
+        self,
+        metrics: AggregateAttackMetrics,
+        *,
+        clean_detection_rate: float,
+        day_correct_rate: float,
+        drop_day: float,
+        area_frac: float,
+    ) -> Dict[str, bool]:
+        """Evaluate the same joint constraints for PPO and every baseline."""
+        clean_eligible = float(clean_detection_rate) >= self.min_clean_detection_rate
+        objective_ok = objective_attack_success(metrics, self.attack_config)
+        day_preserved = bool(
+            float(day_correct_rate) >= self.min_clean_detection_rate
+            and float(drop_day) <= self.day_tolerance
+        )
+        within_budget = bool(
+            self.area_cap_frac is None
+            or float(area_frac) <= float(self.area_cap_frac)
+        )
+        success = bool(
+            clean_eligible
+            and objective_ok
+            and within_budget
+            and (day_preserved or not self.require_day_preservation)
+        )
+        return {
+            "attack_success": success,
+            "clean_eligible": clean_eligible,
+            "objective_success": objective_ok,
+            "day_preserved": day_preserved,
+            "within_area_budget": within_budget,
+        }
+
+    def _cell_area_frac(self, row: int, col: int) -> float:
+        """Return the exact fraction of sign pixels covered by one grid cell."""
+        if self._sign_pixel_area <= 0:
+            return 0.0
+        return float(self._cell_pixel_areas[row, col]) / float(self._sign_pixel_area)
 
 
     def _map_to_cell(self, a: np.ndarray) -> Tuple[int, int]:
@@ -812,112 +1202,120 @@ class StopSignGridEnv(gym.Env):
         """
         self.lambda_area = float(value)
 
-    def _eval_over_K(self) -> Tuple[float, float, float, float]:
-        imgs_plain_day = []
-        imgs_plain_on  = []
-        imgs_over_day  = []
-        imgs_over_on   = []
-
-        # Precompute overlays once per step (huge win)
-        over_sign_day = self._apply_grid_overlay(self.sign_rgba_day, mode="day")
-        over_sign_on  = self._apply_grid_overlay(self.sign_rgba_on,  mode="on")
-
-        for t_seed in self._transform_seeds:
-            plain_day = self._compose_on_bg(self._transform_sign(self.sign_rgba_day, t_seed), self._place_seed)
-            plain_on  = self._compose_on_bg(self._transform_sign(self.sign_rgba_on,  t_seed), self._place_seed)
-
-            over_day  = self._compose_on_bg(self._transform_sign(over_sign_day, t_seed), self._place_seed)
-            over_on   = self._compose_on_bg(self._transform_sign(over_sign_on,  t_seed), self._place_seed)
-
-            imgs_plain_day.append(plain_day)
-            imgs_plain_on.append(plain_on)
-            imgs_over_day.append(over_day)
-            imgs_over_on.append(over_on)
-
-        # Batch inference: 4 calls total instead of 4*K
-        c0_day_list = self.det.infer_confidence_batch(imgs_plain_day)
-        c0_on_list  = self.det.infer_confidence_batch(imgs_plain_on)
-        c_day_list  = self.det.infer_confidence_batch(imgs_over_day)
-        c_on_list   = self.det.infer_confidence_batch(imgs_over_on)
-
-        mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
-        return mean(c0_day_list), mean(c_day_list), mean(c0_on_list), mean(c_on_list)
-
-    def _eval_overlay_over_K(self, seeds: List[int]) -> Dict[str, Any]:
+    def _eval_overlay_over_K(
+        self,
+        seeds: List[int],
+        baseline_day_confidences: Optional[List[float]] = None,
+        baseline_on_confidences: Optional[List[float]] = None,
+        baseline_day_metrics: Optional[List[TransformAttackMetrics]] = None,
+        baseline_on_metrics: Optional[List[TransformAttackMetrics]] = None,
+    ) -> Dict[str, Any]:
         imgs_over_day, imgs_over_on = [], []
+        sign_boxes_day, sign_boxes_on = [], []
 
         # Precompute overlays once per step
         over_sign_day = self._apply_grid_overlay(self.sign_rgba_day, mode="day")
         over_sign_on  = self._apply_grid_overlay(self.sign_rgba_on,  mode="on")
 
         for t_seed in seeds:
-            over_day = self._compose_on_bg(self._transform_sign(over_sign_day, t_seed), self._place_seed)
-            over_on  = self._compose_on_bg(self._transform_sign(over_sign_on,  t_seed), self._place_seed)
+            over_day, meta_day = self._compose_on_bg(
+                self._transform_sign(over_sign_day, t_seed),
+                self._place_seed,
+                return_meta=True,
+            )
+            over_on, meta_on = self._compose_on_bg(
+                self._transform_sign(over_sign_on, t_seed),
+                self._place_seed,
+                return_meta=True,
+            )
             imgs_over_day.append(over_day)
             imgs_over_on.append(over_on)
+            sign_boxes_day.append(meta_day["sign_bbox_bg"])
+            sign_boxes_on.append(meta_on["sign_bbox_bg"])
 
-        c_day_list = self.det.infer_confidence_batch(imgs_over_day)
-        c_on_list  = self.det.infer_confidence_batch(imgs_over_on)
-
-        det_on = self.det.infer_detections_batch(imgs_over_on)
-        iou_vals = []
-        misclass_vals = []
-        target_conf_vals = []
-        top_conf_vals = []
-        top_class_counts: Dict[int, int] = {}
-        for det in det_on:
-            target_conf = float(det.get("target_conf", 0.0))
-            top_conf = float(det.get("top_conf", 0.0))
-            top_class = det.get("top_class", None)
-            target_box = det.get("target_box", None)
-            top_box = det.get("top_box", None)
-            misclass = (top_class is not None and top_class != self.det.target_id and top_conf > 0.0)
-            misclass_vals.append(1.0 if misclass else 0.0)
-            target_conf_vals.append(target_conf)
-            top_conf_vals.append(top_conf)
-            if top_class is not None:
-                cls = int(top_class)
-                top_class_counts[cls] = top_class_counts.get(cls, 0) + 1
-
-            iou = 0.0
-            if target_box is not None and top_box is not None:
-                iou = _iou_xyxy(target_box, top_box)
-            iou_vals.append(float(iou))
-
-        mean = lambda xs: float(np.mean(xs)) if len(xs) else 0.0
+        day_rows_all = self._summarize_detection_batch(imgs_over_day, sign_boxes_day)
+        on_rows_all = self._summarize_detection_batch(imgs_over_on, sign_boxes_on)
+        if baseline_on_confidences is None and baseline_day_confidences is None:
+            eligible_indices = list(range(len(on_rows_all)))
+        else:
+            eligible_indices = [
+                idx
+                for idx in range(len(on_rows_all))
+                if (
+                    baseline_on_confidences is not None
+                    and idx < len(baseline_on_confidences)
+                    and float(baseline_on_confidences[idx]) >= self.min_base_conf
+                    and baseline_day_confidences is not None
+                    and idx < len(baseline_day_confidences)
+                    and float(baseline_day_confidences[idx]) >= self.min_base_conf
+                    and (
+                        baseline_day_metrics is None
+                        or (
+                            idx < len(baseline_day_metrics)
+                            and baseline_day_metrics[idx].top_class == self.source_class_id
+                        )
+                    )
+                    and (
+                        baseline_on_metrics is None
+                        or (
+                            idx < len(baseline_on_metrics)
+                            and baseline_on_metrics[idx].top_class == self.source_class_id
+                        )
+                    )
+                )
+            ]
+        day_rows = [day_rows_all[idx] for idx in eligible_indices]
+        on_rows = [on_rows_all[idx] for idx in eligible_indices]
+        metrics = aggregate_metrics(on_rows)
+        mode_iou = {
+            "disappearance": metrics.mean_source_iou,
+            "untargeted_misclassification": metrics.mean_alternative_iou,
+            "targeted_misclassification": metrics.mean_attack_target_iou,
+        }[self.attack_mode]
         return {
-            "c_day": mean(c_day_list),
-            "c_on": mean(c_on_list),
-            "mean_iou": mean(iou_vals),
-            "misclass_rate": mean(misclass_vals),
-            "mean_target_conf": mean(target_conf_vals),
-            "mean_top_conf": mean(top_conf_vals),
-            "top_class_counts": top_class_counts,
+            "c_day": float(np.mean([row.source_conf for row in day_rows])) if day_rows else 0.0,
+            "c_on": float(metrics.mean_source_conf),
+            "mean_iou": float(mode_iou),
+            "mean_source_iou": float(metrics.mean_source_iou),
+            "mean_alternative_iou": float(metrics.mean_alternative_iou),
+            "mean_attack_target_iou": float(metrics.mean_attack_target_iou),
+            "misclass_rate": float(metrics.untargeted_rate),
+            "disappearance_success_rate": float(metrics.disappearance_rate),
+            "targeted_success_rate": float(metrics.targeted_rate),
+            # Backward-compatible alias.  New consumers should use the explicit
+            # source/alternative/attack-target fields below.
+            "mean_target_conf": float(metrics.mean_source_conf),
+            "mean_source_conf": float(metrics.mean_source_conf),
+            "mean_alternative_conf": float(metrics.mean_alternative_conf),
+            "mean_attack_target_conf": float(metrics.mean_attack_target_conf),
+            "mean_alternative_margin": float(metrics.mean_alternative_margin),
+            "mean_target_margin": float(metrics.mean_target_margin),
+            "mean_top_conf": float(metrics.mean_top_conf),
+            "top_class_counts": dict(metrics.top_class_counts or {}),
+            "attack_metrics": metrics,
+            "eligible_indices": eligible_indices,
+            "eligible_transform_count": int(len(eligible_indices)),
+            "total_transform_count": int(len(on_rows_all)),
+            "clean_detection_rate": (
+                float(len(eligible_indices)) / float(len(on_rows_all))
+                if on_rows_all
+                else 0.0
+            ),
+            "day_correct_rate": (
+                float(np.mean([
+                    row.top_class == self.source_class_id
+                    and row.source_conf >= self.min_base_conf
+                    for row in day_rows
+                ]))
+                if day_rows
+                else 0.0
+            ),
         }
-
-    def _is_attack_success(
-        self,
-        drop_on_s: float,
-        mean_iou: float,
-        misclass_rate: float,
-        area_frac: float,
-        threshold: float,
-    ) -> bool:
-        base_drop = float(drop_on_s) >= float(threshold)
-        attack_signal = (float(misclass_rate) > 0.0) or (float(mean_iou) < 0.25)
-        within_cap = (self.area_cap_frac is None) or (float(area_frac) <= float(self.area_cap_frac))
-        return base_drop and attack_signal and within_cap
-
-    def _is_drop_success(self, after_conf: float, area_frac: float, threshold: float) -> bool:
-        conf_ok = float(after_conf) <= float(threshold)
-        return conf_ok
-
 
     def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
         rgb = sign_rgba.convert("RGB")
         a   = sign_rgba.split()[-1]
 
-        draw = ImageDraw.Draw(rgb)
         if mode == "day":
             color = self.paint.day_rgb
             alpha = self.paint.day_alpha if self.paint.translucent else 1.0
@@ -1132,11 +1530,16 @@ class StopSignGridEnv(gym.Env):
         W, H = self.img_size
         if self.bg_list:
             idx = int(self.rng.integers(0, len(self.bg_list)))
+            self._bg_index = idx
             return self.bg_list[idx].resize((W, H), Image.BILINEAR).convert("RGB")
-        return Image.new("RGB", (200, 200, 200))
+        self._bg_index = None
+        return Image.new("RGB", (W, H), (200, 200, 200))
 
 
 # ---------------------------- helpers (module level) ----------------------------
+
+# Backward-compatible import name used by existing checkpoints and scripts.
+StopSignGridEnv = TrafficSignGridEnv
 
 def _affine_matrix(angle_deg, shear_deg, scale, tx, ty, W, H):
     angle = math.radians(angle_deg)
@@ -1167,27 +1570,45 @@ def _random_perspective_coeffs(W, H, rng, max_shift=0.06):
     for (x, y), (u, v) in zip(src, dst):
         A.extend([[x, y, 1, 0, 0, 0, -u * x, -u * y],
                   [0, 0, 0, x, y, 1, -v * x, -v * y]])
-    A = np.array(A, dtype=np.float32)
-    B = np.array([p for uv in dst for p in uv], dtype=np.float32)
-    coeffs = np.linalg.lstsq(A, B, rcond=None)[0]
-    return coeffs
+    B = [float(p) for uv in dst for p in uv]
+    return _solve_small_linear_system(A, B)
 
 
-def _iou_xyxy(box_a, box_b) -> float:
-    ax1, ay1, ax2, ay2 = [float(v) for v in box_a]
-    bx1, by1, bx2, by2 = [float(v) for v in box_b]
-    ix1 = max(ax1, bx1)
-    iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2)
-    iy2 = min(ay2, by2)
-    iw = max(0.0, ix2 - ix1)
-    ih = max(0.0, iy2 - iy1)
-    inter = iw * ih
-    if inter <= 0.0:
-        return 0.0
-    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-    union = area_a + area_b - inter
-    if union <= 0.0:
-        return 0.0
-    return float(inter / union)
+def _solve_small_linear_system(A, B):
+    """Solve the fixed 8x8 perspective system with partial pivoting.
+
+    Avoiding a BLAS/LAPACK call here makes worker startup more robust on systems
+    with incompatible MKL/OpenMP runtimes; the system is tiny and solved only
+    while sampling a transform.
+    """
+    n = len(B)
+    augmented = [
+        [float(value) for value in A[row]] + [float(B[row])]
+        for row in range(n)
+    ]
+    for column in range(n):
+        pivot_row = max(
+            range(column, n),
+            key=lambda row: abs(augmented[row][column]),
+        )
+        pivot = augmented[pivot_row][column]
+        if abs(pivot) < 1e-12:
+            raise ValueError("degenerate perspective transform")
+        if pivot_row != column:
+            augmented[column], augmented[pivot_row] = (
+                augmented[pivot_row],
+                augmented[column],
+            )
+        pivot = augmented[column][column]
+        augmented[column] = [value / pivot for value in augmented[column]]
+        for row in range(n):
+            if row == column:
+                continue
+            factor = augmented[row][column]
+            if factor == 0.0:
+                continue
+            augmented[row] = [
+                augmented[row][idx] - factor * augmented[column][idx]
+                for idx in range(n + 1)
+            ]
+    return np.asarray([augmented[row][-1] for row in range(n)], dtype=np.float32)

@@ -1,17 +1,13 @@
-"""Thin wrapper around Ultralytics YOLO for stop-sign confidence queries."""
-from typing import Union
-import re
+"""Thin wrapper around Ultralytics YOLO for traffic-sign confidence queries."""
 import torch
 
-def _norm(s: str) -> str:
-    """Normalize class names for comparison."""
-    return re.sub(r"[\s\-_]+", "", s.strip().lower())
+from detectors.class_names import ClassReference, resolve_class_id
 
 class DetectorWrapper:
     def __init__(
         self,
         model_path: str,
-        target_class: Union[str, int] = "stop sign",
+        target_class: ClassReference = "stop sign",
         device: str = "cpu",    # default cpu; you can pass "cuda:0" to use GPU
         conf: float = 0.10,
         iou: float = 0.45,
@@ -55,22 +51,11 @@ class DetectorWrapper:
         else:
             id_to_name = {i: str(n) for i, n in enumerate(names_raw)}
         self.id_to_name = id_to_name
-        name_to_id_norm = {_norm(v): k for k, v in id_to_name.items()}
+        self.target_id = self.resolve_class_id(target_class, role="source class")
 
-        if isinstance(target_class, str):
-            tc_norm = _norm(target_class)
-            if tc_norm in name_to_id_norm:
-                self.target_id = int(name_to_id_norm[tc_norm])
-            else:
-                for alias in ["stopsign", "stop-sign", "stop_sign", "stop"]:
-                    if alias in name_to_id_norm:
-                        self.target_id = int(name_to_id_norm[alias])
-                        break
-                else:
-                    # fallback (COCO often 11, but don't rely on it without names)
-                    self.target_id = 11
-        else:
-            self.target_id = int(target_class)
+    def resolve_class_id(self, class_ref: ClassReference, *, role: str = "class") -> int:
+        """Resolve a class against this checkpoint's label map."""
+        return resolve_class_id(self.id_to_name, class_ref, role=role)
 
     def infer_confidence(self, pil_image) -> float:
         """Return max confidence for the target class in a single image."""
@@ -86,10 +71,10 @@ class DetectorWrapper:
         except Exception as e:
             if self.debug:
                 print(f"[DetectorWrapper] predict() error on device={self.device}: {e}")
-            return 0.0
+            raise RuntimeError("YOLO inference failed; sample is invalid") from e
 
         if not res:
-            return 0.0
+            raise RuntimeError("YOLO returned no result object for one input image")
 
         r0 = res[0]
         boxes = getattr(r0, "boxes", None)
@@ -135,7 +120,12 @@ class DetectorWrapper:
         except Exception as e:
             if self.debug:
                 print(f"[DetectorWrapper] batch predict() error on device={self.device}: {e}")
-            return [0.0 for _ in pil_images]
+            raise RuntimeError("YOLO batch inference failed; samples are invalid") from e
+
+        if len(results) != len(pil_images):
+            raise RuntimeError(
+                f"YOLO returned {len(results)} results for {len(pil_images)} images"
+            )
 
         out = []
         import numpy as np
@@ -180,19 +170,12 @@ class DetectorWrapper:
         except Exception as e:
             if self.debug:
                 print(f"[DetectorWrapper] batch predict() error on device={self.device}: {e}")
-            return [
-                {
-                    "target_conf": 0.0,
-                    "target_box": None,
-                    "top_conf": 0.0,
-                    "top_class": None,
-                    "top_box": None,
-                    "boxes": [],
-                    "confs": [],
-                    "clss": [],
-                }
-                for _ in pil_images
-            ]
+            raise RuntimeError("YOLO detection inference failed; samples are invalid") from e
+
+        if len(results) != len(pil_images):
+            raise RuntimeError(
+                f"YOLO returned {len(results)} results for {len(pil_images)} images"
+            )
 
         out = []
         import numpy as np

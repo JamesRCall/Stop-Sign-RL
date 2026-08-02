@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from detectors.class_names import ClassReference
+
 
 def build_detector(
     *,
@@ -12,7 +14,7 @@ def build_detector(
     device: str = "cpu",
     conf: float = 0.10,
     iou: float = 0.45,
-    target_class: str = "stop sign",
+    target_class: ClassReference = "stop sign",
     debug: bool = False,
 ):
     """
@@ -35,6 +37,7 @@ def build_detector(
             server_addr=dev_str,
             conf=conf,
             iou=iou,
+            target_class=target_class,
             debug=debug,
         )
 

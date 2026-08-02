@@ -58,6 +58,19 @@ class TensorboardOverlayCallback(BaseCallback):
     def _on_training_start(self) -> None:
         if self.writer is None:
             self.writer = SummaryWriter(log_dir=self.tb_dir)
+
+        query_path = os.path.join(self.log_dir, "training_query_count.json")
+        if os.path.isfile(query_path):
+            try:
+                import json
+
+                with open(query_path, "r", encoding="utf-8") as handle:
+                    previous = json.load(handle)
+                self._detector_queries_total = int(
+                    previous.get("detector_image_queries", 0)
+                )
+            except (OSError, ValueError, TypeError):
+                self._detector_queries_total = 0
             if self.verbose:
                 print(f"[TB] writing overlay logs to: {self.tb_dir}")
 
@@ -154,8 +167,6 @@ class TensorboardOverlayCallback(BaseCallback):
 from typing import List
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
-from torch.utils.tensorboard import SummaryWriter
-import os
 
 
 class EpisodeMetricsCallback(BaseCallback):
@@ -172,6 +183,7 @@ class EpisodeMetricsCallback(BaseCallback):
       - episode/reward_efficiency_final, episode/reward_perceptual_final, episode/reward_step_cost_final
       - episode/lambda_area_used_final
       - episode/area_target_frac_final
+      - episode/detector_image_queries_final and cumulative training queries
       - episode/area_reward_corr (rolling correlation between area and reward)
 
     X-axis is episode index (so you can see improvement run-to-run).
@@ -196,6 +208,7 @@ class EpisodeMetricsCallback(BaseCallback):
         self._area_hist: List[float] = []
         self._reward_hist: List[float] = []
         self._corr_window = 50
+        self._detector_queries_total = 0
 
     def _on_training_start(self) -> None:
         if self.writer is None:
@@ -226,6 +239,7 @@ class EpisodeMetricsCallback(BaseCallback):
                 "misclass_rate": None,
                 "lambda_area_used": None,
                 "area_target_frac": None,
+                "detector_queries": None,
             }
             for _ in range(int(n_envs))
         ]
@@ -289,6 +303,7 @@ class EpisodeMetricsCallback(BaseCallback):
                     ("misclass_rate", "misclass_rate"),
                     ("lambda_area_used", "lambda_area_used"),
                     ("area_target_frac", "area_target_frac"),
+                    ("detector_queries", "detector_queries"),
                 ):
                     val = info.get(alt_key, None)
                     if isinstance(val, (int, float)) and not np.isnan(val):
@@ -322,6 +337,7 @@ class EpisodeMetricsCallback(BaseCallback):
             misclass_rate = None
             lambda_area_used = None
             area_target_frac = None
+            detector_queries = None
             if isinstance(info, dict):
                 area = info.get("total_area_mask_frac", None)
                 drop_on = info.get("drop_on", None)
@@ -343,6 +359,7 @@ class EpisodeMetricsCallback(BaseCallback):
                 misclass_rate = info.get("misclass_rate", None)
                 lambda_area_used = info.get("lambda_area_used", None)
                 area_target_frac = info.get("area_target_frac", None)
+                detector_queries = info.get("detector_queries", None)
 
             # Fallback: use last valid per-env values, then NaN if still missing.
             last = self._last_valid[env_idx] if env_idx < len(self._last_valid) else {}
@@ -386,6 +403,8 @@ class EpisodeMetricsCallback(BaseCallback):
                 lambda_area_used = last.get("lambda_area_used", None)
             if area_target_frac is None:
                 area_target_frac = last.get("area_target_frac", None)
+            if detector_queries is None:
+                detector_queries = last.get("detector_queries", None)
 
             # Final fallback: NaN so TB shows gaps instead of crashing.
             area_val = float(area) if area is not None else float("nan")
@@ -408,6 +427,9 @@ class EpisodeMetricsCallback(BaseCallback):
             misclass_rate_val = float(misclass_rate) if misclass_rate is not None else float("nan")
             lambda_area_used_val = float(lambda_area_used) if lambda_area_used is not None else float("nan")
             area_target_frac_val = float(area_target_frac) if area_target_frac is not None else float("nan")
+            detector_queries_val = float(detector_queries) if detector_queries is not None else float("nan")
+            if not np.isnan(detector_queries_val):
+                self._detector_queries_total += int(detector_queries_val)
 
             # log vs EPISODE INDEX (best for tracking improvement)
             if self.writer is not None:
@@ -432,6 +454,12 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/misclass_rate_final", misclass_rate_val, self._ep_count)
                 self.writer.add_scalar("episode/lambda_area_used_final", lambda_area_used_val, self._ep_count)
                 self.writer.add_scalar("episode/area_target_frac_final", area_target_frac_val, self._ep_count)
+                self.writer.add_scalar("episode/detector_image_queries_final", detector_queries_val, self._ep_count)
+                self.writer.add_scalar(
+                    "training/detector_image_queries_cumulative",
+                    self._detector_queries_total,
+                    self.num_timesteps,
+                )
 
                 # rolling correlation between area and reward (last N episodes)
                 if not np.isnan(area_val) and not np.isnan(reward_val):
@@ -470,6 +498,7 @@ class EpisodeMetricsCallback(BaseCallback):
                 self.writer.add_scalar("episode/misclass_rate_final_vs_timesteps", misclass_rate_val, self.num_timesteps)
                 self.writer.add_scalar("episode/lambda_area_used_final_vs_timesteps", lambda_area_used_val, self.num_timesteps)
                 self.writer.add_scalar("episode/area_target_frac_final_vs_timesteps", area_target_frac_val, self.num_timesteps)
+                self.writer.add_scalar("episode/detector_image_queries_final_vs_timesteps", detector_queries_val, self.num_timesteps)
                 if self._area_hist and self._reward_hist and len(self._area_hist) >= 3:
                     try:
                         corr = float(np.corrcoef(self._area_hist, self._reward_hist)[0, 1])
@@ -487,6 +516,26 @@ class EpisodeMetricsCallback(BaseCallback):
             self.writer.flush()
             self.writer.close()
             self.writer = None
+        try:
+            import json
+
+            with open(
+                os.path.join(self.log_dir, "training_query_count.json"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(
+                    {
+                        "detector_image_queries": int(self._detector_queries_total),
+                        "num_timesteps": int(self.num_timesteps),
+                        "counting_rule": "one detector evaluation of one image is one query",
+                    },
+                    handle,
+                    indent=2,
+                )
+        except OSError as exc:
+            if self.verbose:
+                print(f"[TB] could not write training query count: {exc}")
 
 
 class StepMetricsCallback(BaseCallback):
@@ -582,7 +631,9 @@ class StepMetricsCallback(BaseCallback):
         mean_iou = info.get("mean_iou", None)
         misclass_rate = info.get("misclass_rate", None)
         mean_top_conf = info.get("mean_top_conf", None)
-        mean_target_conf = info.get("mean_target_conf", None)
+        mean_source_conf = info.get("mean_source_conf", info.get("mean_target_conf", None))
+        mean_alternative_conf = info.get("mean_alternative_conf", None)
+        mean_attack_target_conf = info.get("mean_attack_target_conf", None)
         eval_k = info.get("eval_K_used", None)
         top_class_counts = info.get("top_class_counts", None)
         reward_core = info.get("reward_core", None)
@@ -604,7 +655,13 @@ class StepMetricsCallback(BaseCallback):
             "mean_iou": float(mean_iou) if mean_iou is not None else None,
             "misclass_rate": float(misclass_rate) if misclass_rate is not None else None,
             "mean_top_conf": float(mean_top_conf) if mean_top_conf is not None else None,
-            "mean_target_conf": float(mean_target_conf) if mean_target_conf is not None else None,
+            "mean_source_conf": float(mean_source_conf) if mean_source_conf is not None else None,
+            "mean_alternative_conf": (
+                float(mean_alternative_conf) if mean_alternative_conf is not None else None
+            ),
+            "mean_attack_target_conf": (
+                float(mean_attack_target_conf) if mean_attack_target_conf is not None else None
+            ),
             "eval_K_used": int(eval_k) if eval_k is not None else None,
             "top_class_counts": top_class_counts if isinstance(top_class_counts, dict) else None,
             "reward_core": float(reward_core) if reward_core is not None else None,
@@ -633,8 +690,20 @@ class StepMetricsCallback(BaseCallback):
                 self.writer.add_scalar("step_range/misclass_rate", row["misclass_rate"], self.num_timesteps)
             if row["mean_top_conf"] is not None:
                 self.writer.add_scalar("step_range/mean_top_conf", row["mean_top_conf"], self.num_timesteps)
-            if row["mean_target_conf"] is not None:
-                self.writer.add_scalar("step_range/mean_target_conf", row["mean_target_conf"], self.num_timesteps)
+            if row["mean_source_conf"] is not None:
+                self.writer.add_scalar("step_range/mean_source_conf", row["mean_source_conf"], self.num_timesteps)
+            if row["mean_alternative_conf"] is not None:
+                self.writer.add_scalar(
+                    "step_range/mean_alternative_conf",
+                    row["mean_alternative_conf"],
+                    self.num_timesteps,
+                )
+            if row["mean_attack_target_conf"] is not None:
+                self.writer.add_scalar(
+                    "step_range/mean_attack_target_conf",
+                    row["mean_attack_target_conf"],
+                    self.num_timesteps,
+                )
             if row["reward_core"] is not None:
                 self.writer.add_scalar("step_range/reward_core", row["reward_core"], self.num_timesteps)
             if row["reward_raw_total"] is not None:
