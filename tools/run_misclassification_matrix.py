@@ -54,6 +54,11 @@ MODEL_KEYS = {
     "enabled",
     "requires_network",
 }
+# These files can be created by the documented ``nohup`` launch command before
+# this process gets a chance to initialize the output directory.  They are
+# operational metadata, not experiment artifacts, so they must not make a new
+# output directory look like an incomplete run.
+EXTERNAL_LAUNCHER_ARTIFACTS = frozenset({"launcher.log", "launcher.pid"})
 
 
 def _utc_now() -> str:
@@ -388,6 +393,18 @@ def _write_checksums(output: Path, *, excluded: set[Path]) -> None:
     destination.write_text("\n".join(records) + "\n", encoding="utf-8")
 
 
+def _output_has_experiment_content(output: Path) -> bool:
+    """Return whether *output* contains anything owned by the matrix runner."""
+    if not output.exists():
+        return False
+    if not output.is_dir():
+        return True
+    return any(
+        entry.name not in EXTERNAL_LAUNCHER_ARTIFACTS
+        for entry in output.iterdir()
+    )
+
+
 def _check_resume_compatibility(
     *,
     output: Path,
@@ -662,9 +679,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     config_bytes = config_path.read_bytes()
     config_sha256 = hashlib.sha256(config_bytes).hexdigest()
-    output_has_content = output.exists() and (
-        not output.is_dir() or any(output.iterdir())
-    )
+    output_has_content = _output_has_experiment_content(output)
     if output_has_content:
         if not args.resume:
             raise FileExistsError(

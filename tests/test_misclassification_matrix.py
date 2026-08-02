@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from tools.run_misclassification_matrix import validate_matrix
+import tools.run_misclassification_matrix as matrix_runner
+from tools.run_misclassification_matrix import (
+    _output_has_experiment_content,
+    validate_matrix,
+)
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -71,3 +75,79 @@ def test_matrix_rejects_ambiguous_joint_palette(tmp_path):
     payload["patch"]["paint_palette"] = "red,red"
     with pytest.raises(ValueError, match="must be unique"):
         validate_matrix(_write_resolved_copy(tmp_path, payload))
+
+
+def test_launcher_files_do_not_turn_new_output_into_resume(tmp_path):
+    output = tmp_path / "matrix"
+    output.mkdir()
+    (output / "launcher.log").write_text("nohup: ignoring input\n", encoding="utf-8")
+    (output / "launcher.pid").write_text("20570\n", encoding="utf-8")
+
+    assert not _output_has_experiment_content(output)
+
+
+def test_resume_bootstraps_new_output_containing_launcher_files(tmp_path, monkeypatch):
+    output = tmp_path / "matrix"
+    output.mkdir()
+    (output / "launcher.log").write_text("nohup: ignoring input\n", encoding="utf-8")
+    (output / "launcher.pid").write_text("20570\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        matrix_runner,
+        "_run_child",
+        lambda **kwargs: {
+            "model_id": kwargs["model"]["id"],
+            "status": "completed",
+            "returncode": 0,
+        },
+    )
+    monkeypatch.setattr(matrix_runner, "_aggregate", lambda output, models: 0)
+
+    result = matrix_runner.main(
+        [
+            "--config",
+            str(DEFAULT_CONFIG),
+            "--output",
+            str(output),
+            "--model-ids",
+            "yolov8n",
+            "--seeds",
+            "0",
+            "--max-steps",
+            "1",
+            "--minimum-steps",
+            "0",
+            "--save-freq",
+            "1",
+            "--episodes",
+            "1",
+            "--query-budget",
+            "1",
+            "--eval-k",
+            "1",
+            "--train-eval-k",
+            "1",
+            "--support-scenes",
+            "1",
+            "--episode-steps",
+            "1",
+            "--max-prefix",
+            "1",
+            "--resume",
+            "--skip-tests",
+            "--no-archive",
+        ]
+    )
+
+    assert result == 0
+    assert (output / "matrix_provenance.json").is_file()
+    assert (output / "STATUS.txt").read_text(encoding="utf-8").startswith("COMPLETED\n")
+
+
+def test_unknown_file_still_requires_resume_provenance(tmp_path):
+    output = tmp_path / "matrix"
+    output.mkdir()
+    (output / "launcher.log").write_text("", encoding="utf-8")
+    (output / "partial-result.json").write_text("{}\n", encoding="utf-8")
+
+    assert _output_has_experiment_content(output)
