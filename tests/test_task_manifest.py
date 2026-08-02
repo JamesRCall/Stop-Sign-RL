@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -63,7 +64,7 @@ def test_manifest_is_strict_hashed_and_resolves_relative_paths(tmp_path):
     resolved = task.resolved_environment(first.directory)
     assert resolved["source_class"] == "speed_limit_25"
     assert resolved["attack_target_class"] == "speed_limit_55"
-    assert resolved["sign_image"].endswith("assets\\speed25.png")
+    assert Path(resolved["sign_image"]) == tmp_path / "assets" / "speed25.png"
 
 
 def test_manifest_rejects_cross_split_instance_leakage(tmp_path):
