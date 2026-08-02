@@ -88,15 +88,20 @@ def _repair_by_priority(
         key=lambda pos: (-float(values[pos]), int(eligible[pos])),
     )
     selected: List[int] = []
+    used_groups: Set[int] = set()
     used = 0
     limit = int(evaluator.budget.material_pixel_limit)
     for pos in order:
         if float(values[pos]) <= 0.0:
             continue
         index = int(eligible[pos])
+        group = evaluator.group_id(index)
+        if group in used_groups:
+            continue
         cost = int(evaluator.cell_material_pixels[index])
         if used + cost <= limit:
             selected.append(index)
+            used_groups.add(group)
             used += cost
     return tuple(sorted(selected))
 
@@ -104,9 +109,19 @@ def _repair_by_priority(
 def _random_candidate(
     rng: np.random.Generator, evaluator: BudgetedEvaluator
 ) -> Tuple[int, ...]:
+    """Sample physical groups, then one categorical token per chosen group."""
+
     n = len(evaluator.selectable_indices)
     inclusion_rate = float(rng.uniform(0.0, 1.0))
-    priorities = rng.random(n) - (1.0 - inclusion_rate)
+    priorities = np.full(n, -1.0, dtype=np.float64)
+    positions_by_group: Dict[int, List[int]] = {}
+    for position, index in enumerate(evaluator.selectable_indices):
+        positions_by_group.setdefault(evaluator.group_id(index), []).append(position)
+    for positions in positions_by_group.values():
+        if float(rng.random()) >= inclusion_rate:
+            continue
+        selected_position = positions[int(rng.integers(0, len(positions)))]
+        priorities[selected_position] = 1.0 + float(rng.random())
     return _repair_by_priority(priorities, evaluator)
 
 
@@ -116,7 +131,7 @@ def random_search(
     seed: int,
     max_evaluations: Optional[int] = None,
 ) -> SearchResult:
-    """Independent uniform-rate binary masks, repaired to the material cap."""
+    """Independent group masks with uniform categorical material choices."""
     seed, max_evaluations = _validate_common(seed, max_evaluations)
     rng = np.random.default_rng(seed)
     count = 0
@@ -127,7 +142,7 @@ def random_search(
         evaluator,
         method="random_search",
         seed=seed,
-        implementation="native-independent-binary-v1",
+        implementation="native-grouped-categorical-random-v1",
         config={"max_evaluations": max_evaluations},
     )
 
@@ -152,10 +167,12 @@ def greedy_search(
 
     while _evaluation_allowed(evaluator, count, max_evaluations):
         current_set = set(current)
+        current_groups = {evaluator.group_id(index) for index in current}
         additions = [
             index
             for index in evaluator.selectable_indices
             if index not in current_set
+            and evaluator.group_id(index) not in current_groups
             and evaluator.is_material_feasible(current + (index,))
         ]
         if not additions:

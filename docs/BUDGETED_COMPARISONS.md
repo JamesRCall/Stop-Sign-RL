@@ -6,12 +6,24 @@ results and not evidence that a named method has been faithfully reproduced.
 Run it only with owned or expressly authorized sign replicas in a controlled
 setting.
 
+The synthetic nine-detector driver applies this contract automatically; see
+the [misclassification matrix guide](MISCLASSIFICATION_MATRIX.md). That runner
+is a software simulation and does not make its outputs physical evidence.
+
 ## What is matched
 
 Every admitted run receives a fresh oracle with the same scene, sign, detector,
-class objective, paint, grid, transformation seeds, thresholds, and scalar
-reward. The suite hashes that contract and rejects a method if its fingerprint
-differs from the first method's fingerprint.
+class objective, fixed material or ordered material palette, action encoding,
+grid, transformation seeds, thresholds, and scalar reward. The suite hashes
+that contract and rejects a method if its fingerprint differs from the first
+method's fingerprint.
+
+Two candidate spaces are supported. Fixed-material mode has one binary token
+per eligible canonical cell. Joint-palette mode has one token per
+cell/material pair. All tokens belonging to one cell share a group, and the
+evaluator rejects a candidate that selects more than one token from that group.
+This gives every optimizer the same color choices without allowing it to spend
+one cell's area multiple times or assign contradictory materials.
 
 The hard budgets are:
 
@@ -20,10 +32,11 @@ The hard budgets are:
   activated reference images. Each candidate costs another `2 * K` images.
   Fixed EOT is mandatory; adaptive `K` is rejected.
 - **Material pixels.** A cell costs the exact number of source-sign alpha-mask
-  pixels that it covers. A candidate that would exceed the inclusive integer
-  limit is rejected before detector inference. This image-space measure is not
-  physical ink volume; report measured mass or volume separately in physical
-  experiments.
+  pixels that it covers. Every material token for that cell has the same cost;
+  palette size does not multiply the area budget. A candidate that selects two
+  materials for one cell or exceeds the inclusive integer limit is rejected
+  before detector inference. This image-space measure is not physical ink
+  volume; report measured mass or volume separately in physical experiments.
 
 The oracle reports the same localized disappearance, untargeted
 misclassification, or targeted-misclassification objective used by the Gym
@@ -39,12 +52,12 @@ full trace rather than only the scalar-score winner.
 
 | Method ID | Execution | Claim boundary |
 |---|---|---|
-| `random_search` | Native | Independent random binary masks with exact material repair; not uniform sampling over all feasible masks. |
+| `random_search` | Native | Samples physical-cell inclusion rates, then one uniformly chosen material token per included cell, followed by exact material repair; not uniform over all feasible assignments. |
 | `forward_greedy` | Native | Seeded, query-bounded forward marginal addition. |
-| `genetic_algorithm` | Native | Binary GA with uniform crossover, mutation, and exact repair. |
-| `gaussian_es` | Native | Isotropic Gaussian logit ES; it is not CMA-ES or NES. |
-| `cma_es` | Reference package | The installed `cma` implementation optimizes continuous priorities which are deterministically decoded to feasible binary masks. |
-| `fipatch_style_pso_proxy` | Native proxy | Executable binary PSO-family comparator only; never report it as FIPatch. |
+| `genetic_algorithm` | Native | Binary-token GA with uniform crossover, mutation, and exact group/material repair. |
+| `gaussian_es` | Native | Isotropic Gaussian logit ES decoded to a grouped feasible assignment; it is not CMA-ES or NES. |
+| `cma_es` | Reference package | The installed `cma` implementation optimizes continuous priorities which are deterministically decoded to grouped feasible assignments. |
+| `fipatch_style_pso_proxy` | Native proxy | Executable binary-token PSO-family comparator with grouped repair; never report it as FIPatch. |
 | `fipatch_pso` | External adapter | Requires pinned upstream code and an audited mapping from FIPatch's native parameters into the common candidate/material contract. |
 | `patchattack` | External adapter | Requires pinned upstream code, texture assets, and an audited detector/grid adaptation. The original PatchAttack is an ImageNet texture/position attack, so a grid adaptation is not the unmodified ECCV method. |
 | `baap_2606_18318` | External adapter | Requires a pinned implementation and an audited mapping for its location, texture, and size variables. |
@@ -93,6 +106,9 @@ minimal study-specific file resembles:
   "attack_target_class": "speed_limit_55",
   "yolo_weights": "./weights/fine_grained_traffic_sign.pt",
   "bgdir": "./data/backgrounds_development",
+  "paint_action_mode": "joint_palette",
+  "paint_palette": "white,red,green,yellow,blue,orange",
+  "action_indexing": "canonical_full_grid",
   "eval_K": 8,
   "area_cap_frac": 0.2,
   "transform_strength": 1.0
@@ -150,11 +166,14 @@ status, adaptation differences, and offline query count; do not make the status
 valid before the mapping has actually been preregistered and independently
 reviewed.
 
-Because the common oracle currently accepts binary fluorescent-grid masks, a
-method whose native variables include free texture, color, patch position, or
-shape needs a preregistered mapping. Report such a run as an adaptation unless
-the authors' original algorithm and search space are genuinely preserved. A
-pinned wrapper is necessary but not sufficient for a fidelity claim.
+The common oracle accepts either fixed-material cell masks or grouped
+cell-by-material tokens. A method whose native variables include continuous
+texture, free patch position, shape, blending, or a different material model
+still needs a preregistered mapping. A joint-palette adapter must declare the
+canonical token encoding and may never select two material tokens for one cell.
+Report such a run as an adaptation unless the authors' original algorithm and
+search space are genuinely preserved. A pinned wrapper is necessary but not
+sufficient for a fidelity claim.
 
 ## Paper experiment matrix
 
@@ -168,6 +187,11 @@ a paper-level comparison. Before inspecting results, preregister a matrix over:
 - at least five independent optimizer/training seeds; and
 - several common query and material budgets sufficient to recover a Pareto
   curve.
+
+For joint-palette experiments, freeze palette membership and order before
+opening outcomes. Run geometry-only fixed-material controls for every palette
+entry and report the larger `N * P` search space. Do not give the proposed
+policy access to color while constraining comparators to geometry alone.
 
 Aggregate macro and per-task joint ASR with uncertainty intervals. Also report
 clean eligibility, inactive preservation, exact material pixels and fraction,
@@ -193,7 +217,9 @@ costs equal.
 The harness verifies accounting and configuration invariants, not empirical
 superiority, physical transfer, sample independence, or novelty. It does not
 yet aggregate a full task manifest, execute external named-paper adapters from
-the CLI, measure ink volume, or ship comparison results. Until those studies
-exist, the defensible statement is “the repository implements a matched-budget
-evaluation contract,” not “the proposed method outperforms FIPatch,
-PatchAttack, or other prior work.”
+the CLI, measure ink volume, or ship paper-level comparison results. Grouped
+cell-material accounting establishes a fair discrete contract; it does not
+show that the palette is physically realizable or that the enlarged action
+space is novel. Until the required studies exist, the defensible statement is
+“the repository implements a matched-budget evaluation contract,” not “the
+proposed method outperforms FIPatch, PatchAttack, or other prior work.”

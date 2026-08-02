@@ -12,6 +12,7 @@ from tools.eval_frozen_pattern import (
     summarize_metric_rows,
     wilson_interval,
 )
+from utils.uv_paint import GREEN_GLOW, RED_GLOW
 
 
 def _write_json(tmp_path, payload, name="pattern.json"):
@@ -284,3 +285,80 @@ def test_certification_reuses_one_stencil_without_stepping(tmp_path, monkeypatch
     assert report["pattern"]["applied_stencil"]["selected_indices"]
     assert len({row["physical_stencil_sha256"] for row in report["rows"]}) == 1
     assert "misclassification_success_rate" in report["mean_metrics"]
+
+
+def test_joint_palette_certification_preserves_encoded_material_assignment(
+    tmp_path, monkeypatch
+):
+    sign = _circle_sign()
+    env = _NoStepEnvironment(
+        stop_sign_image=sign,
+        stop_sign_uv_image=sign.copy(),
+        background_images=[Image.new("RGB", (128, 128), "gray")],
+        pole_image=None,
+        grid_cell_px=16,
+        cell_cover_thresh=0.10,
+        action_indexing="canonical_full_grid",
+        paint_action_mode="joint_palette",
+        uv_paint_palette=[RED_GLOW, GREEN_GLOW],
+        source_class="stop sign",
+        detector_instance=_AlwaysSourceDetector(),
+        img_size=(128, 128),
+        eval_K=1,
+        obs_size=(64, 64),
+        transform_strength=0.0,
+        localization_iou_threshold=0.01,
+    )
+    row, col = (int(value) for value in env._valid_coords[0])
+    flat_cell = row * env.Gw + col
+    green_action = env.encode_action(flat_cell, 1)
+    pattern_path = _write_json(
+        tmp_path,
+        {
+            "actions": [green_action],
+            "paint_action_mode": "joint_palette",
+            "paint_palette": ["red", "green"],
+            "action_indexing": "canonical_full_grid",
+        },
+    )
+    monkeypatch.setattr(frozen_eval, "build_env_from_args", lambda _args: env)
+    args = frozen_eval.parse_args(
+        [
+            "--pattern-json",
+            str(pattern_path),
+            "--pattern-type",
+            "actions",
+            "--episodes",
+            "2",
+            "--seed-base",
+            "300",
+            "--eval-K",
+            "1",
+            "--grid-cell",
+            "16",
+            "--bg-mode",
+            "solid",
+            "--no-pole",
+            "--localization-iou",
+            "0.01",
+            "--paint-action-mode",
+            "joint_palette",
+            "--paint-palette",
+            "red,green",
+            "--action-indexing",
+            "canonical_full_grid",
+        ]
+    )
+
+    report = frozen_eval.run_certification(args)
+
+    applied = report["pattern"]["applied_stencil"]
+    assert applied["action_encoding"] == "canonical_cell_major_material_minor_v1"
+    assert applied["cell_material_assignments"] == [
+        {
+            "cell_index": flat_cell,
+            "material_index": 1,
+            "material_name": "GreenGlow",
+        }
+    ]
+    assert len({row["physical_stencil_sha256"] for row in report["rows"]}) == 1

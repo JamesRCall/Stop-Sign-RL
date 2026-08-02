@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+import numpy as np
 from PIL import Image, ImageDraw
 import pytest
 
@@ -46,6 +47,7 @@ from tools.run_budgeted_comparison import (
     _load_object,
     _validate_environment_keys,
 )
+from utils.uv_paint import UVPaint
 
 
 class StubOracle:
@@ -75,6 +77,27 @@ class StubOracle:
 
     def close(self):
         self.closed = True
+
+
+class GroupedStubOracle(StubOracle):
+    """Two material tokens per fabrication cell."""
+
+    dimension = 6
+    selectable_indices = (0, 1, 2, 3, 4, 5)
+    cell_material_pixels = (2, 2, 3, 3, 4, 4)
+    candidate_group_ids = (0, 0, 1, 1, 2, 2)
+    sign_material_pixels = 20
+    objective_id = "grouped-stub-objective-v1"
+
+
+def _grouped_evaluator(query_limit=24, material_limit=9):
+    return BudgetedEvaluator(
+        GroupedStubOracle(),
+        BudgetSpec(
+            detector_query_limit=query_limit,
+            material_pixel_limit=material_limit,
+        ),
+    )
 
 
 def _evaluator(query_limit=24, material_limit=12):
@@ -139,6 +162,49 @@ def test_guard_rejects_duplicates_nonselectable_and_invalid_contracts():
     )
     with pytest.raises(ValueError, match="non-selectable"):
         restricted.evaluate((1,))
+
+
+def test_grouped_evaluator_rejects_two_material_tokens_for_one_cell_before_query():
+    evaluator = _grouped_evaluator()
+    counter = evaluator.oracle.detector_queries_total
+
+    with pytest.raises(ValueError, match="multiple action tokens.*exclusive group"):
+        evaluator.evaluate((0, 1))
+    with pytest.raises(ValueError, match="multiple action tokens.*exclusive group"):
+        evaluator.material_pixels((2, 3))
+
+    assert evaluator.oracle.detector_queries_total == counter
+    assert evaluator.queries_used == evaluator.initial_queries
+    assert evaluator.trace == ()
+
+
+@pytest.mark.parametrize(
+    "runner,kwargs",
+    [
+        (random_search, {}),
+        (greedy_search, {}),
+        (genetic_search, {"population_size": 4}),
+        (evolution_strategy_search, {"population_size": 4}),
+        (fipatch_style_pso_proxy_search, {"swarm_size": 4}),
+    ],
+)
+def test_native_optimizer_candidates_respect_exclusive_material_groups(
+    runner, kwargs
+):
+    result = runner(
+        _grouped_evaluator(),
+        seed=37,
+        max_evaluations=8,
+        **kwargs,
+    )
+
+    assert result.trace
+    for row in result.trace:
+        groups = [
+            GroupedStubOracle.candidate_group_ids[index]
+            for index in row.selected_indices
+        ]
+        assert len(groups) == len(set(groups))
 
 
 @pytest.mark.parametrize(
@@ -245,6 +311,48 @@ def test_cma_reference_package_path_obeys_common_budget(monkeypatch):
     assert result.implementation == "cma-package-4.4.4"
     assert result.evaluated_candidates == 4
     assert strategies[0].tell_calls == 2
+
+
+def test_cma_reference_candidates_respect_exclusive_material_groups(monkeypatch):
+    from baselines.budgeted import optimizers
+
+    class FakeStrategy:
+        def __init__(self, mean, sigma, options):
+            assert len(mean) == len(GroupedStubOracle.selectable_indices)
+            self.population_size = options["popsize"]
+
+        def ask(self):
+            return [
+                [2.0, 1.0, 2.0, 1.0, 2.0, 1.0],
+                [1.0, 2.0, 1.0, 2.0, 1.0, 2.0],
+            ]
+
+        def tell(self, points, losses):
+            assert len(points) == self.population_size
+            assert len(losses) == self.population_size
+
+    fake_cma = type("FakeCMA", (), {"CMAEvolutionStrategy": FakeStrategy})
+    real_import = optimizers.importlib.import_module
+    monkeypatch.setattr(
+        optimizers.importlib,
+        "import_module",
+        lambda name: fake_cma if name == "cma" else real_import(name),
+    )
+    monkeypatch.setattr(optimizers.importlib_metadata, "version", lambda name: "test")
+
+    result = cma_es_search(
+        _grouped_evaluator(query_limit=12),
+        seed=4,
+        population_size=2,
+    )
+
+    assert result.trace
+    for row in result.trace:
+        groups = [
+            GroupedStubOracle.candidate_group_ids[index]
+            for index in row.selected_indices
+        ]
+        assert len(groups) == len(set(groups))
 
 
 def _write_external_manifest(tmp_path, method_id="patchattack"):
@@ -479,6 +587,36 @@ def _traffic_env(attack_mode="disappearance"):
     )
 
 
+def _joint_palette_traffic_env():
+    sign = _circle_sign()
+    palette = [
+        UVPaint("RedMaterial", "#220000", "#FF0000", translucent=False),
+        UVPaint("GreenMaterial", "#002200", "#00FF00", translucent=False),
+    ]
+    return TrafficSignGridEnv(
+        stop_sign_image=sign,
+        stop_sign_uv_image=sign.copy(),
+        background_images=[Image.new("RGB", (128, 128), "gray")],
+        pole_image=None,
+        grid_cell_px=16,
+        cell_cover_thresh=0.10,
+        source_class="speed limit 25",
+        attack_mode="targeted_misclassification",
+        attack_target_class="speed limit 55",
+        detector_instance=SourceDetector(),
+        img_size=(128, 128),
+        eval_K=1,
+        obs_size=(64, 64),
+        transform_strength=0.0,
+        localization_iou_threshold=0.10,
+        area_cap_frac=0.30,
+        terminate_on_success=False,
+        action_indexing="canonical_full_grid",
+        paint_action_mode="joint_palette",
+        uv_paint_palette=palette,
+    )
+
+
 @pytest.mark.parametrize(
     "attack_mode",
     (
@@ -516,6 +654,50 @@ def test_traffic_sign_oracle_matches_env_reward_and_exact_query_area(attack_mode
     )
     _, reward, _, _, _ = replay.step(valid_action)
     assert observation.score == pytest.approx(reward)
+
+
+def test_joint_palette_oracle_maps_tokens_to_one_material_and_one_cell_cost():
+    env = _joint_palette_traffic_env()
+    oracle = TrafficSignCandidateOracle(env, scene_seed=19)
+    evaluator = BudgetedEvaluator(
+        oracle,
+        BudgetSpec(
+            detector_query_limit=8,
+            material_pixel_limit=oracle.objective_material_pixel_limit,
+        ),
+    )
+    palette_size = len(env.paint_palette)
+    flat_cell = int(np.flatnonzero(env._valid_cells.reshape(-1))[0])
+    red_token = flat_cell * palette_size
+    green_token = red_token + 1
+    row, col = divmod(flat_cell, env.Gw)
+    expected_cell_pixels = int(env._cell_pixel_areas[row, col])
+
+    assert oracle.dimension == env.Gh * env.Gw * palette_size
+    assert oracle.candidate_group_ids[red_token] == flat_cell
+    assert oracle.candidate_group_ids[green_token] == flat_cell
+    assert oracle.cell_material_pixels[red_token] == expected_cell_pixels
+    assert oracle.cell_material_pixels[green_token] == expected_cell_pixels
+    assert evaluator.material_pixels((green_token,)) == expected_cell_pixels
+
+    before = oracle.detector_queries_total
+    with pytest.raises(ValueError, match="multiple action tokens.*exclusive group"):
+        evaluator.evaluate((red_token, green_token))
+    assert oracle.detector_queries_total == before
+
+    observation = evaluator.evaluate((green_token,))
+    assert observation.selected_material_pixels == expected_cell_pixels
+    assert observation.metrics["selected_material_pixels"] == expected_cell_pixels
+    assert observation.metrics["selected_action_tokens"] == [green_token]
+    assert observation.metrics["cell_material_assignments"] == [
+        {
+            "cell_index": flat_cell,
+            "material_index": 1,
+            "material_name": "GreenMaterial",
+        }
+    ]
+    assert env._episode_cells.sum() == 1
+    assert env._episode_paint_ids[row, col] == 1
 
 
 def test_exact_material_limit_uses_integer_sign_pixels():

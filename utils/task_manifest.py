@@ -67,6 +67,8 @@ _ENVIRONMENT_KEYS = {
     "detector_device",
     "paint",
     "paint_list",
+    "paint_action_mode",
+    "paint_palette",
     "episode_steps",
     "eval_K",
     "grid_cell",

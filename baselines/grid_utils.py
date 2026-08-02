@@ -43,6 +43,35 @@ def resolve_paint_list(paint: str, paint_list: Optional[str]) -> List[UVPaint]:
     return paints
 
 
+def resolve_paint_palette(paint_palette: Any) -> List[UVPaint]:
+    """Resolve an explicit, ordered per-cell material palette.
+
+    Unlike the legacy episode-randomization list, palette typos fail closed: the
+    order is part of the joint action encoding and must be reproducible.
+    """
+
+    mapping = {
+        "white": WHITE_GLOW,
+        "red": RED_GLOW,
+        "green": GREEN_GLOW,
+        "yellow": YELLOW_GLOW,
+        "blue": BLUE_GLOW,
+        "orange": ORANGE_GLOW,
+    }
+    if isinstance(paint_palette, str):
+        names = [part.strip().lower() for part in paint_palette.split(",") if part.strip()]
+    else:
+        names = [str(part).strip().lower() for part in (paint_palette or []) if str(part).strip()]
+    if not names:
+        raise ValueError("paint_palette must name at least one paint")
+    unknown = [name for name in names if name not in mapping]
+    if unknown:
+        raise ValueError("unknown paint_palette entries: " + ", ".join(unknown))
+    if len(names) != len(set(names)):
+        raise ValueError("paint_palette entries must be unique")
+    return [mapping[name] for name in names]
+
+
 def resolve_yolo_weights(yolo_version: str, yolo_weights: Optional[str]) -> str:
     if yolo_weights:
         return yolo_weights
@@ -126,6 +155,14 @@ def build_env_from_args(args) -> TrafficSignGridEnv:
         if isinstance(paint_override, UVPaint)
         else resolve_paint_list(args.paint, args.paint_list)
     )
+    paint_action_mode = str(
+        getattr(args, "paint_action_mode", "fixed") or "fixed"
+    ).strip().lower().replace("-", "_")
+    paint_palette = (
+        resolve_paint_palette(getattr(args, "paint_palette", ""))
+        if paint_action_mode in ("joint", "palette", "joint_palette")
+        else None
+    )
 
     env = TrafficSignGridEnv(
         stop_sign_image=stop_plain,
@@ -154,6 +191,8 @@ def build_env_from_args(args) -> TrafficSignGridEnv:
         uv_paint=paint_list[0],
         uv_paint_list=paint_list if len(paint_list) > 1 else None,
         use_single_color=True,
+        paint_action_mode=paint_action_mode,
+        uv_paint_palette=paint_palette,
         cell_cover_thresh=float(args.cell_cover_thresh),
 
         uv_drop_threshold=float(args.uv_threshold),
@@ -267,7 +306,13 @@ def _as_float(v: Any, default: float = float("nan")) -> float:
 
 def _apply_pattern(env, pattern_type: str, pattern: List[int]) -> None:
     env._episode_cells[:] = False
+    if getattr(env, "_episode_paint_ids", None) is not None:
+        env._episode_paint_ids[:] = -1
     if pattern_type == "selected_indices":
+        if str(getattr(env, "paint_action_mode", "fixed")) == "joint_palette":
+            raise ValueError(
+                "joint_palette replay requires encoded actions so material identity is preserved"
+            )
         for idx in pattern:
             i = int(idx)
             if i < 0 or i >= (env.Gh * env.Gw):
@@ -278,11 +323,24 @@ def _apply_pattern(env, pattern_type: str, pattern: List[int]) -> None:
         return
     if pattern_type == "actions":
         for a in pattern:
-            i = int(a)
-            if i < 0 or i >= int(env._n_valid):
+            token = int(a)
+            if token < 0 or token >= int(env.action_space.n):
                 continue
-            rr, cc = env._valid_coords[i]
+            cell_action, material_index = env.decode_action(token)
+            if str(getattr(env, "action_indexing", "valid_cells")) == "canonical_full_grid":
+                rr, cc = divmod(int(cell_action), int(env.Gw))
+                if not bool(env._valid_cells[rr, cc]):
+                    continue
+            else:
+                if cell_action < 0 or cell_action >= int(env._n_valid):
+                    continue
+                rr, cc = env._valid_coords[cell_action]
+                rr, cc = int(rr), int(cc)
+            if env._episode_cells[int(rr), int(cc)]:
+                raise ValueError("pattern assigns multiple materials to one grid cell")
             env._episode_cells[int(rr), int(cc)] = True
+            if getattr(env, "_episode_paint_ids", None) is not None:
+                env._episode_paint_ids[int(rr), int(cc)] = int(material_index)
         return
     raise ValueError(f"Unknown pattern_type: {pattern_type}")
 
@@ -395,6 +453,8 @@ def _default_cfg_for_env(cfg: Dict[str, Any]) -> Dict[str, Any]:
     d.setdefault("success_conf", 0.20)
     d.setdefault("paint", "yellow")
     d.setdefault("paint_list", "")
+    d.setdefault("paint_action_mode", "fixed")
+    d.setdefault("paint_palette", "")
     d.setdefault("cell_cover_thresh", 0.60)
     d.setdefault("obs_size", 224)
     d.setdefault("obs_margin", 0.10)

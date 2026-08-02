@@ -503,13 +503,33 @@ class AmortizedTrafficSignEnv(gym.Env):
             self._episode_queries += delta
             self._lifetime_queries += delta
 
-        reference_cells = np.asarray(
-            _base_env(self._active_task.support_envs[0])._episode_cells, dtype=bool
-        )
+        reference_base = _base_env(self._active_task.support_envs[0])
+        reference_cells = np.asarray(reference_base._episode_cells, dtype=bool)
+        reference_raw_paint_ids = getattr(reference_base, "_episode_paint_ids", None)
+        if reference_raw_paint_ids is None:
+            # Older/custom support environments predate material-aware actions.
+            # Treat their single fixed paint as palette entry zero so the
+            # amortized wrapper remains backwards compatible.
+            reference_paint_ids = np.where(reference_cells, 0, -1).astype(np.int16)
+        else:
+            reference_paint_ids = np.asarray(reference_raw_paint_ids, dtype=np.int16)
         for env in self._active_task.support_envs[1:]:
-            if not np.array_equal(
-                reference_cells,
-                np.asarray(_base_env(env)._episode_cells, dtype=bool),
+            base = _base_env(env)
+            peer_cells = np.asarray(base._episode_cells, dtype=bool)
+            peer_raw_paint_ids = getattr(base, "_episode_paint_ids", None)
+            if peer_raw_paint_ids is None:
+                peer_paint_ids = np.where(peer_cells, 0, -1).astype(np.int16)
+            else:
+                peer_paint_ids = np.asarray(peer_raw_paint_ids, dtype=np.int16)
+            if (
+                not np.array_equal(
+                    reference_cells,
+                    peer_cells,
+                )
+                or not np.array_equal(
+                    reference_paint_ids,
+                    peer_paint_ids,
+                )
             ):
                 raise RuntimeError("support scenes diverged from the shared stencil")
         self._ordered_actions.append(action_index)
@@ -622,6 +642,23 @@ class AmortizedTrafficSignEnv(gym.Env):
                 for env in self._active_task.support_envs
             ],
         }
+        reference_env = _base_env(self._active_task.support_envs[0])
+        if str(getattr(reference_env, "paint_action_mode", "fixed")) == "joint_palette":
+            assignments = reference_env._selected_material_assignments()
+            info.update(
+                {
+                    "paint_action_mode": "joint_palette",
+                    "action_encoding": str(reference_env.action_encoding),
+                    "paint_palette": [
+                        reference_env._paint_descriptor(paint)
+                        for paint in reference_env.paint_palette
+                    ],
+                    "selected_material_indices": [
+                        int(row["material_index"]) for row in assignments
+                    ],
+                    "cell_material_assignments": assignments,
+                }
+            )
         return self._observation(), float(constrained_reward), terminated, truncated, info
 
     def close(self) -> None:

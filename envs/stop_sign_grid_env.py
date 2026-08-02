@@ -111,6 +111,8 @@ class TrafficSignGridEnv(gym.Env):
         uv_paint: UVPaint = YELLOW_GLOW,
         uv_paint_list: Optional[List[UVPaint]] = None,
         use_single_color: bool = True,
+        paint_action_mode: str = "fixed",
+        uv_paint_palette: Optional[Sequence[UVPaint]] = None,
 
         # Threshold logic
         uv_drop_threshold: float = 0.75,
@@ -254,10 +256,56 @@ class TrafficSignGridEnv(gym.Env):
                     "hard area cap is smaller than every valid canonical cell"
                 )
 
-        # UV paint pair (single or list)
+        # UV paint pair (single or list).  ``uv_paint_list`` retains its
+        # historical meaning: sample one global paint for the whole episode.
+        # Joint palette mode is deliberately opt-in and uses a separate palette
+        # so an old configuration cannot silently change action semantics.
         self.paint_list = list(uv_paint_list) if uv_paint_list else None
         self.paint = uv_paint
         self.use_single_color = bool(use_single_color)
+        normalized_paint_mode = str(paint_action_mode).strip().lower().replace("-", "_")
+        normalized_paint_mode = {
+            "single": "fixed",
+            "single_color": "fixed",
+            "palette": "joint_palette",
+            "joint": "joint_palette",
+        }.get(normalized_paint_mode, normalized_paint_mode)
+        if normalized_paint_mode not in ("fixed", "joint_palette"):
+            raise ValueError("paint_action_mode must be 'fixed' or 'joint_palette'")
+        palette = tuple(uv_paint_palette or ())
+        if normalized_paint_mode == "joint_palette":
+            if not palette:
+                raise ValueError(
+                    "uv_paint_palette must contain at least one paint in joint_palette mode"
+                )
+            if self.paint_list:
+                raise ValueError(
+                    "uv_paint_list episode randomization cannot be combined with "
+                    "joint_palette actions"
+                )
+            if any(not isinstance(value, UVPaint) for value in palette):
+                raise TypeError("every uv_paint_palette entry must be a UVPaint")
+            palette_names = [str(value.name) for value in palette]
+            if len(palette_names) != len(set(palette_names)):
+                raise ValueError("uv_paint_palette paint names must be unique")
+        elif palette:
+            raise ValueError(
+                "uv_paint_palette is only valid when paint_action_mode='joint_palette'"
+            )
+        self.paint_action_mode = normalized_paint_mode
+        self.paint_palette: Tuple[UVPaint, ...] = (
+            palette if self.paint_action_mode == "joint_palette" else (self.paint,)
+        )
+        self.paint_action_count = len(self.paint_palette)
+        self.action_encoding = (
+            (
+                "canonical_cell_major_material_minor_v1"
+                if self.action_indexing == "canonical_full_grid"
+                else "valid_cell_major_material_minor_v1"
+            )
+            if self.paint_action_mode == "joint_palette"
+            else "cell_only_v1"
+        )
 
         # threshold / reward
         self.uv_drop_threshold = float(uv_drop_threshold)
@@ -317,7 +365,23 @@ class TrafficSignGridEnv(gym.Env):
             target_class=source_class,
             debug=detector_debug,
         )
-        self.source_class_id = int(getattr(self.det, "target_id"))
+        # Detector wrappers retain ``target_id`` for the legacy confidence-only
+        # API.  Amortized experiments may deliberately share one detector model
+        # across tasks with different source labels, so that mutable wrapper
+        # field is not a safe source-of-truth for an individual environment.
+        # The structured detection path below consumes the complete class arrays;
+        # resolve and retain this environment's source id independently instead.
+        source_resolver = getattr(self.det, "resolve_class_id", None)
+        if callable(source_resolver):
+            self.source_class_id = int(
+                source_resolver(source_class, role="source class")
+            )
+        else:
+            self.source_class_id = resolve_class_id(
+                getattr(self.det, "id_to_name", {}) or {},
+                source_class,
+                role="source class",
+            )
         self.attack_target_class = attack_target_class
         self.attack_target_id: Optional[int] = None
         if attack_target_class is not None:
@@ -378,10 +442,13 @@ class TrafficSignGridEnv(gym.Env):
 
 
         # action/obs spaces
-        self.action_space = spaces.Discrete(
+        self._base_action_count = (
             self._n_valid
             if self.action_indexing == "valid_cells"
             else self.Gh * self.Gw
+        )
+        self.action_space = spaces.Discrete(
+            self._base_action_count * self.paint_action_count
         )
         H, W = self.obs_size[1], self.obs_size[0]
         C = 4 if self.obs_include_mask else 3
@@ -395,6 +462,7 @@ class TrafficSignGridEnv(gym.Env):
         self._bg_rgb = None
         self._bg_index: Optional[int] = None
         self._episode_cells: np.ndarray = None  # bool mask [Gh, Gw] of selected cells
+        self._episode_paint_ids: Optional[np.ndarray] = None  # int material id [Gh, Gw]
         self._place_seed = None
         self._transform_seeds: List[int] = []
         self._baseline_c0_day_list: List[float] = []
@@ -461,6 +529,7 @@ class TrafficSignGridEnv(gym.Env):
         self._detector_queries = 0
         self._detector_requests = 0
         self._episode_cells = np.zeros((self.Gh, self.Gw), dtype=bool)
+        self._episode_paint_ids = np.full((self.Gh, self.Gw), -1, dtype=np.int16)
 
         if self.paint_list:
             pick = int(self.rng.integers(0, len(self.paint_list)))
@@ -491,9 +560,11 @@ class TrafficSignGridEnv(gym.Env):
     def step(self, action):
         self._step += 1
 
-        # 1) Action is an index into valid cells (octagon-aware)
+        # 1) Action is either a cell index (legacy fixed-paint mode) or a
+        # cell-major/material-minor token (joint-palette mode).
         idx = int(action)
         idx = max(0, min(idx, int(self.action_space.n) - 1))
+        cell_action, paint_index = self.decode_action(idx)
         free_mask = self._valid_cells & (~self._episode_cells)
         if not np.any(free_mask):
             # no free cells left
@@ -517,10 +588,10 @@ class TrafficSignGridEnv(gym.Env):
             return obs, -1.0, bool(terminated), bool(truncated), info
 
         if self.action_indexing == "valid_cells":
-            pick = self._valid_coords[idx]
+            pick = self._valid_coords[cell_action]
             r, c = int(pick[0]), int(pick[1])
         else:
-            r, c = divmod(idx, self.Gw)
+            r, c = divmod(cell_action, self.Gw)
         if not free_mask[r, c]:
             # invalid action (duplicate or not free); should be prevented by action masking
             terminated = False
@@ -560,6 +631,9 @@ class TrafficSignGridEnv(gym.Env):
                 return obs, float(self.area_cap_penalty), bool(terminated), bool(truncated), info
 
         self._episode_cells[r, c] = True
+        if self._episode_paint_ids is None:
+            self._episode_paint_ids = np.full((self.Gh, self.Gw), -1, dtype=np.int16)
+        self._episode_paint_ids[r, c] = int(paint_index)
 
         area_frac = self._area_frac_selected()
         cap_exceeded = self.area_cap_frac is not None and area_frac > self.area_cap_frac
@@ -829,6 +903,27 @@ class TrafficSignGridEnv(gym.Env):
                 "fixed_angle_deg": float(self.fixed_angle_deg) if self.fixed_angle_deg is not None else None,
             },
         }
+        if self.paint_action_mode == "joint_palette":
+            assignments = self._selected_material_assignments()
+            info["paint_name"] = "joint_palette"
+            info["paint_palette_names"] = [paint.name for paint in self.paint_palette]
+            info["trace"].update(
+                {
+                    "paint_action_mode": self.paint_action_mode,
+                    "action_encoding": self.action_encoding,
+                    "paint_name": "joint_palette",
+                    "paint_palette": [self._paint_descriptor(paint) for paint in self.paint_palette],
+                    "material_observation_channel": {
+                        "unpainted_value": 0,
+                        "encoding": "round(255*(material_index+1)/palette_size)",
+                        "palette_size": int(self.paint_action_count),
+                    },
+                    "selected_material_indices": [
+                        int(row["material_index"]) for row in assignments
+                    ],
+                    "cell_material_assignments": assignments,
+                }
+            )
         if max_cells_reached:
             info["note"] = "max_cells_reached"
 
@@ -878,9 +973,38 @@ class TrafficSignGridEnv(gym.Env):
                 maximum_pixels + 1e-12
             )
         if self.action_indexing == "canonical_full_grid":
-            return feasible.reshape(-1).astype(bool)
-        coords = self._valid_coords
-        return feasible[coords[:, 0], coords[:, 1]].astype(bool)
+            cell_mask = feasible.reshape(-1).astype(bool)
+        else:
+            coords = self._valid_coords
+            cell_mask = feasible[coords[:, 0], coords[:, 1]].astype(bool)
+        if self.paint_action_mode == "joint_palette":
+            return np.repeat(cell_mask, self.paint_action_count)
+        return cell_mask
+
+    def encode_action(self, cell_action: int, material_index: int = 0) -> int:
+        """Encode one base-cell action and material choice into a policy token."""
+
+        cell = int(cell_action)
+        material = int(material_index)
+        if cell < 0 or cell >= int(self._base_action_count):
+            raise ValueError("cell_action is outside the base action space")
+        if self.paint_action_mode == "fixed":
+            if material != 0:
+                raise ValueError("fixed paint mode only accepts material_index=0")
+            return cell
+        if material < 0 or material >= int(self.paint_action_count):
+            raise ValueError("material_index is outside the paint palette")
+        return cell * int(self.paint_action_count) + material
+
+    def decode_action(self, action: int) -> Tuple[int, int]:
+        """Decode a policy token as ``(base_cell_action, material_index)``."""
+
+        token = int(action)
+        if token < 0 or token >= int(self.action_space.n):
+            raise ValueError("action is outside the action space")
+        if self.paint_action_mode == "fixed":
+            return token, 0
+        return divmod(token, int(self.paint_action_count))
 
     def next_step_detector_query_cost(self) -> int:
         """Return the exact number of detector images a valid next step uses."""
@@ -968,6 +1092,46 @@ class TrafficSignGridEnv(gym.Env):
     def _selected_indices_list(self) -> List[int]:
         idxs = np.flatnonzero(self._episode_cells.reshape(-1)).tolist()
         return idxs
+
+    @staticmethod
+    def _paint_descriptor(paint: UVPaint) -> Dict[str, Any]:
+        return {
+            "name": str(paint.name),
+            "day_hex": str(paint.day_hex),
+            "active_hex": str(paint.active_hex),
+            "translucent": bool(paint.translucent),
+            "day_alpha": float(paint.day_alpha),
+            "active_alpha": float(paint.active_alpha),
+        }
+
+    def _selected_material_assignments(self) -> List[Dict[str, Any]]:
+        """Return canonical row-major cell/material assignments for the trace."""
+
+        if self._episode_cells is None:
+            return []
+        if self._episode_paint_ids is None:
+            if np.any(self._episode_cells) and self.paint_action_mode == "joint_palette":
+                raise RuntimeError("selected cells are missing joint-palette assignments")
+            paint_ids = np.zeros((self.Gh, self.Gw), dtype=np.int16)
+        else:
+            paint_ids = np.asarray(self._episode_paint_ids)
+        assignments: List[Dict[str, Any]] = []
+        for flat_index in self._selected_indices_list():
+            row, col = divmod(int(flat_index), int(self.Gw))
+            material_index = int(paint_ids[row, col])
+            if material_index < 0 or material_index >= int(self.paint_action_count):
+                raise RuntimeError(
+                    f"selected cell {flat_index} has invalid material index "
+                    f"{material_index}"
+                )
+            assignments.append(
+                {
+                    "cell_index": int(flat_index),
+                    "material_index": material_index,
+                    "material_name": str(self.paint_palette[material_index].name),
+                }
+            )
+        return assignments
 
     def _eval_angles_current(self, angles: List[float], eval_K: int) -> List[Dict[str, Any]]:
         if not angles:
@@ -1153,8 +1317,16 @@ class TrafficSignGridEnv(gym.Env):
         if not self.obs_include_mask:
             return np.array(crop, dtype=np.uint8)
 
-        # Build overlay mask aligned to the sign placement.
-        overlay = self._render_overlay_pattern(mode="on")
+        # Build an auxiliary channel aligned to the sign placement.  Fixed mode
+        # preserves the historical active-overlay alpha mask byte-for-byte.
+        # Joint mode instead records the material ID, because the built-in
+        # fluorescent paints intentionally look alike in daylight and a binary
+        # mask would alias distinct policy states.
+        overlay = (
+            self._render_material_observation_pattern()
+            if self.paint_action_mode == "joint_palette"
+            else self._render_overlay_pattern(mode="on")
+        )
         overlay_t = self._transform_sign(overlay, transform_seed)
         x1, y1, x2, y2 = [float(v) for v in sign_bbox_bg]
         mw = max(1, int(round(x2 - x1)))
@@ -1168,6 +1340,23 @@ class TrafficSignGridEnv(gym.Env):
         rgb = np.array(crop, dtype=np.uint8)
         m = np.array(mask_crop, dtype=np.uint8)
         return np.dstack([rgb, m])
+
+    def _render_material_observation_pattern(self) -> Image.Image:
+        """Render stable material-index codes in an RGBA alpha channel."""
+
+        self._selected_material_assignments()
+        size = self.sign_rgba_day.size
+        codes = Image.new("L", size, 0)
+        draw = ImageDraw.Draw(codes)
+        palette_size = int(self.paint_action_count)
+        for row, col in np.argwhere(self._episode_cells):
+            material_index = int(self._episode_paint_ids[row, col])
+            code = int(round(255.0 * float(material_index + 1) / float(palette_size)))
+            x0, y0, x1, y1 = self._cell_rects[int(row) * self.Gw + int(col)]
+            draw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=code)
+        codes = Image.composite(codes, Image.new("L", size, 0), self._sign_alpha)
+        blank = Image.new("L", size, 0)
+        return Image.merge("RGBA", (blank, blank, blank, codes))
 
     def set_area_cap_frac(self, value: Optional[float]) -> None:
         """
@@ -1312,35 +1501,65 @@ class TrafficSignGridEnv(gym.Env):
             ),
         }
 
-    def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
-        rgb = sign_rgba.convert("RGB")
-        a   = sign_rgba.split()[-1]
+    def _paint_layers(self, mode: str):
+        """Yield ``(paint, selected_coordinates)`` layers for one render state."""
 
-        if mode == "day":
-            color = self.paint.day_rgb
-            alpha = self.paint.day_alpha if self.paint.translucent else 1.0
-        else:
-            color = self.paint.active_rgb
-            alpha = self.paint.active_alpha if self.paint.translucent else 1.0
-            if self.paint.translucent:
-                alpha = max(alpha, self.uv_min_alpha)
+        if mode not in ("day", "on"):
+            raise ValueError("overlay mode must be 'day' or 'on'")
+        if self.paint_action_mode == "fixed":
+            return [(self.paint, np.argwhere(self._episode_cells))]
+        # Validate every selected cell before rendering; silently falling back to
+        # palette entry zero would make saved action tokens non-reproducible.
+        self._selected_material_assignments()
+        return [
+            (
+                paint,
+                np.argwhere(
+                    self._episode_cells
+                    & (self._episode_paint_ids == int(material_index))
+                ),
+            )
+            for material_index, paint in enumerate(self.paint_palette)
+        ]
 
-        mask = Image.new("L", rgb.size, 0)
+    def _grid_layer_mask(
+        self,
+        size: Tuple[int, int],
+        coordinates: np.ndarray,
+        alpha: float,
+    ) -> Image.Image:
+        mask = Image.new("L", size, 0)
         mdraw = ImageDraw.Draw(mask)
-        on = np.argwhere(self._episode_cells)
-        for r, c in on:
-            x0, y0, x1, y1 = self._cell_rects[r * self.Gw + c]
+        for r, c in coordinates:
+            x0, y0, x1, y1 = self._cell_rects[int(r) * self.Gw + int(c)]
             mdraw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=255)
-
-
-        mask = Image.composite(mask, Image.new("L", mask.size, 0), self._sign_alpha)
-
+        mask = Image.composite(mask, Image.new("L", size, 0), self._sign_alpha)
         if alpha < 1.0:
             arr = (np.array(mask, dtype=np.float32) * float(alpha)).astype(np.uint8)
             mask = Image.fromarray(arr)
+        return mask
 
-        rgb.paste(color, mask=mask)
-        return Image.merge("RGBA", (*rgb.split(), a))
+    def _paint_color_and_alpha(
+        self, paint: UVPaint, mode: str
+    ) -> Tuple[Tuple[int, int, int], float]:
+        if mode == "day":
+            color = paint.day_rgb
+            alpha = paint.day_alpha if paint.translucent else 1.0
+        else:
+            color = paint.active_rgb
+            alpha = paint.active_alpha if paint.translucent else 1.0
+            if paint.translucent:
+                alpha = max(alpha, self.uv_min_alpha)
+        return color, float(alpha)
+
+    def _apply_grid_overlay(self, sign_rgba: Image.Image, mode: str) -> Image.Image:
+        rgb = sign_rgba.convert("RGB")
+        source_alpha = sign_rgba.split()[-1]
+        for paint, coordinates in self._paint_layers(mode):
+            color, alpha = self._paint_color_and_alpha(paint, mode)
+            mask = self._grid_layer_mask(rgb.size, coordinates, alpha)
+            rgb.paste(color, mask=mask)
+        return Image.merge("RGBA", (*rgb.split(), source_alpha))
 
     def _render_overlay_pattern(self, mode: str) -> Image.Image:
         """Render only the overlay pattern on a transparent background."""
@@ -1348,28 +1567,10 @@ class TrafficSignGridEnv(gym.Env):
         size = self.sign_rgba_day.size
         img = Image.new("RGBA", size, (0, 0, 0, 0))
 
-        if mode == "day":
-            color = self.paint.day_rgb
-            alpha = self.paint.day_alpha if self.paint.translucent else 1.0
-        else:
-            color = self.paint.active_rgb
-            alpha = self.paint.active_alpha if self.paint.translucent else 1.0
-            if self.paint.translucent:
-                alpha = max(alpha, self.uv_min_alpha)
-
-        mask = Image.new("L", size, 0)
-        mdraw = ImageDraw.Draw(mask)
-        on = np.argwhere(self._episode_cells)
-        for r, c in on:
-            x0, y0, x1, y1 = self._cell_rects[r * self.Gw + c]
-            mdraw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=255)
-
-        mask = Image.composite(mask, Image.new("L", size, 0), self._sign_alpha)
-        if alpha < 1.0:
-            arr = (np.array(mask, dtype=np.float32) * float(alpha)).astype(np.uint8)
-            mask = Image.fromarray(arr)
-
-        img.paste(color, mask=mask)
+        for paint, coordinates in self._paint_layers(mode):
+            color, alpha = self._paint_color_and_alpha(paint, mode)
+            mask = self._grid_layer_mask(size, coordinates, alpha)
+            img.paste(color, mask=mask)
         return img
 
     def _perceptual_delta(self) -> float:

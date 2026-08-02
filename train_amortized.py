@@ -7,6 +7,7 @@ not evidence of cross-task amortization.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -46,6 +47,8 @@ DEFAULT_ENVIRONMENT: Dict[str, Any] = {
     "detector_device": "cpu",
     "paint": "yellow",
     "paint_list": "",
+    "paint_action_mode": "fixed",
+    "paint_palette": "",
     "episode_steps": 64,
     "eval_K": 3,
     "grid_cell": 16,
@@ -82,6 +85,80 @@ DEFAULT_ENVIRONMENT: Dict[str, Any] = {
 }
 
 
+class RollingSuccessGate:
+    """Bounded, auditable stopping rule over completed training episodes.
+
+    Training never runs indefinitely: ``total_steps`` remains the hard upper
+    bound.  When enabled, this gate permits an earlier stop only after a full
+    rolling window of terminal episodes reaches the declared joint-success
+    rate and the minimum policy-step count has been met.
+    """
+
+    def __init__(
+        self,
+        *,
+        success_rate: float,
+        window: int,
+        minimum_steps: int,
+    ) -> None:
+        self.success_rate = float(success_rate)
+        self.window = int(window)
+        self.minimum_steps = int(minimum_steps)
+        if not 0.0 <= self.success_rate <= 1.0:
+            raise ValueError("early-stop-success-rate must be in [0, 1]")
+        if self.window < 1:
+            raise ValueError("early-stop-window must be >= 1")
+        if self.minimum_steps < 0:
+            raise ValueError("minimum-steps must be >= 0")
+        self.history: deque[bool] = deque(maxlen=self.window)
+        self.terminal_episodes = 0
+        self.triggered = False
+        self.trigger_step: int | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.success_rate > 0.0
+
+    @property
+    def rolling_rate(self) -> float | None:
+        if not self.history:
+            return None
+        return float(sum(self.history) / len(self.history))
+
+    def observe(self, *, success: bool, policy_steps: int) -> bool:
+        self.terminal_episodes += 1
+        self.history.append(bool(success))
+        ready = bool(
+            self.enabled
+            and int(policy_steps) >= self.minimum_steps
+            and len(self.history) == self.window
+            and float(self.rolling_rate or 0.0) >= self.success_rate
+        )
+        if ready and not self.triggered:
+            self.triggered = True
+            self.trigger_step = int(policy_steps)
+        return ready
+
+    def report(self, *, final_policy_steps: int) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "required_rolling_success_rate": self.success_rate,
+            "window_terminal_episodes": self.window,
+            "minimum_policy_steps": self.minimum_steps,
+            "terminal_episodes_observed": self.terminal_episodes,
+            "final_window_size": len(self.history),
+            "final_rolling_success_rate": self.rolling_rate,
+            "triggered": self.triggered,
+            "trigger_policy_step": self.trigger_step,
+            "final_policy_steps": int(final_policy_steps),
+            "stop_reason": (
+                "rolling_joint_success_gate"
+                if self.triggered
+                else "maximum_total_steps"
+            ),
+        }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -104,6 +181,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output-dir", default="./runs/amortized")
     parser.add_argument("--save-freq", type=int, default=100_000)
+    parser.add_argument(
+        "--minimum-steps",
+        type=int,
+        default=0,
+        help="Minimum policy steps before the optional rolling success gate may stop training.",
+    )
+    parser.add_argument(
+        "--early-stop-success-rate",
+        type=float,
+        default=0.0,
+        help=(
+            "Joint-success rate required across a full terminal-episode window; "
+            "0 disables early stopping and total-steps remains the hard limit."
+        ),
+    )
+    parser.add_argument(
+        "--early-stop-window",
+        type=int,
+        default=50,
+        help="Number of completed episodes in the optional rolling success gate.",
+    )
     parser.add_argument("--check-env", action="store_true")
     parser.add_argument(
         "--allow-uncalibrated-simulation",
@@ -136,6 +234,52 @@ def _detector_signature(config: Dict[str, Any]) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _detector_class_binding(environment: Any) -> Dict[str, Any]:
+    """Return an auditable, per-environment detector/class binding record."""
+    import hashlib
+
+    base = getattr(environment, "unwrapped", environment)
+    detector = getattr(base, "det", None)
+    if detector is None:
+        raise RuntimeError("training environment does not expose its detector")
+
+    raw_names = getattr(detector, "id_to_name", {}) or {}
+    id_to_name = {
+        int(class_id): str(class_name)
+        for class_id, class_name in dict(raw_names).items()
+    }
+    canonical_names = json.dumps(
+        [[class_id, id_to_name[class_id]] for class_id in sorted(id_to_name)],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    source_id = int(getattr(base, "source_class_id"))
+    attack_target_id = getattr(base, "attack_target_id", None)
+    return {
+        "detector_runtime_type": (
+            f"{type(detector).__module__}.{type(detector).__qualname__}"
+        ),
+        "label_map_class_count": len(id_to_name),
+        "label_map_sha256": hashlib.sha256(canonical_names).hexdigest(),
+        "id_to_name": {str(class_id): id_to_name[class_id] for class_id in sorted(id_to_name)},
+        "source_class_id": source_id,
+        "source_class_name": id_to_name.get(source_id),
+        "attack_target_class_id": (
+            int(attack_target_id) if attack_target_id is not None else None
+        ),
+        "attack_target_class_name": (
+            id_to_name.get(int(attack_target_id))
+            if attack_target_id is not None
+            else None
+        ),
+        # Kept only to expose accidental dependence on the wrapper's legacy
+        # confidence-only binding when one model is shared across source tasks.
+        "legacy_wrapper_target_id": (
+            int(detector.target_id) if hasattr(detector, "target_id") else None
+        ),
+    }
 
 
 def _task_environment_config(
@@ -326,8 +470,20 @@ def _write_run_manifest(
     output_dir: Path,
     manifest: TaskManifest,
     args: argparse.Namespace,
+    *,
+    environment: AmortizedTrafficSignEnv,
 ) -> None:
     task_inputs = []
+    environments_by_task = {
+        task.spec.task_id: task.support_envs for task in environment.tasks
+    }
+    expected_task_ids = {
+        task.task_id for task in manifest.tasks_for_split("train")
+    }
+    if set(environments_by_task) != expected_task_ids:
+        raise RuntimeError(
+            "training environment tasks do not match the manifest train split"
+        )
     supported_images = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
     for task_index, task in enumerate(manifest.tasks_for_split("train")):
         config = _task_environment_config(
@@ -364,15 +520,29 @@ def _write_run_manifest(
             sign_active_image=(config.get("sign_active_image") or None),
             source_class=task.source_class,
         )
+        class_bindings = [
+            _detector_class_binding(support_env)
+            for support_env in environments_by_task[task.task_id]
+        ]
+        if not class_bindings or any(
+            binding != class_bindings[0] for binding in class_bindings[1:]
+        ):
+            raise RuntimeError(
+                f"task {task.task_id!r} has inconsistent detector class bindings "
+                "across support scenes"
+            )
         task_inputs.append(
             {
                 "task_id": task.task_id,
                 "detector_id": task.detector_id,
+                "source_class": task.source_class,
+                "attack_target_class": task.target_class,
                 "detector_backend": str(config.get("detector", "")),
                 "detector_model_identifier": str(
                     config.get("detector_model", "") or ""
                 ),
                 "detector_weights": optional_record(detector_weights),
+                "detector_class_binding": class_bindings[0],
                 "sign_day": file_record(sign_assets.day_image),
                 "sign_active": file_record(sign_assets.active_image),
                 "physics_calibration": optional_record(
@@ -451,6 +621,7 @@ def _finalize_run_manifest(
     *,
     environment: AmortizedTrafficSignEnv,
     policy_steps: int,
+    training_stop: Dict[str, Any],
 ) -> None:
     path = output_dir / "amortized_run_manifest.json"
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -469,6 +640,7 @@ def _finalize_run_manifest(
     record["final_constraint_duals"] = {
         name: float(value) for name, value in environment._duals.items()
     }
+    record["training_stop"] = dict(training_stop)
     record["final_artifacts"] = {
         "policy_sha256": _sha256_file(model_path),
         "vecnormalize_sha256": _sha256_file(normalizer_path),
@@ -483,7 +655,7 @@ def main() -> None:
     manifest = load_task_manifest(args.task_manifest)
     env = build_training_environment(manifest, args)
     output_dir = Path(args.output_dir).resolve()
-    _write_run_manifest(output_dir, manifest, args)
+    _write_run_manifest(output_dir, manifest, args, environment=env)
 
     # Heavy RL imports stay local so manifest/schema tooling remains usable in
     # lightweight review and CI environments.
@@ -527,6 +699,28 @@ def main() -> None:
         save_path=str(output_dir),
         name_prefix="amortized_prefix_policy",
     )
+    success_gate = RollingSuccessGate(
+        success_rate=float(args.early_stop_success_rate),
+        window=int(args.early_stop_window),
+        minimum_steps=int(args.minimum_steps),
+    )
+
+    class StopOnRollingJointSuccess(BaseCallback):
+        def _on_step(self) -> bool:
+            infos = list(self.locals.get("infos", []) or [])
+            dones = np.asarray(self.locals.get("dones", []), dtype=bool).reshape(-1)
+            for index, done in enumerate(dones):
+                if not bool(done):
+                    continue
+                info = infos[index] if index < len(infos) else {}
+                if success_gate.observe(
+                    success=bool(info.get("attack_success", False)),
+                    policy_steps=int(self.num_timesteps),
+                ):
+                    return False
+            return True
+
+    success_callback = StopOnRollingJointSuccess()
     model = MaskablePPO(
         "MultiInputPolicy",
         vector,
@@ -544,7 +738,11 @@ def main() -> None:
     try:
         model.learn(
             total_timesteps=int(args.total_steps),
-            callback=[checkpoint, SaveNormalizer(int(args.save_freq))],
+            callback=[
+                checkpoint,
+                SaveNormalizer(int(args.save_freq)),
+                success_callback,
+            ],
             tb_log_name="task_amortized_prefix_valid",
         )
         model.save(str(output_dir / "amortized_prefix_policy_final"))
@@ -553,6 +751,9 @@ def main() -> None:
             output_dir,
             environment=env,
             policy_steps=int(model.num_timesteps),
+            training_stop=success_gate.report(
+                final_policy_steps=int(model.num_timesteps)
+            ),
         )
     finally:
         vector.close()

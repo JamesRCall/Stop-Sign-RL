@@ -157,7 +157,25 @@ def _applied_stencil_identity(env: Any) -> Dict[str, Any]:
         "sign_day_rgba_sha256": _image_digest(env.sign_rgba_day),
         "sign_active_rgba_sha256": _image_digest(env.sign_rgba_on),
         "paint": paint_descriptor,
+        "paint_action_mode": str(getattr(env, "paint_action_mode", "fixed")),
     }
+    if str(getattr(env, "paint_action_mode", "fixed")) == "joint_palette":
+        assignments = env._selected_material_assignments()
+        palette = [env._paint_descriptor(value) for value in env.paint_palette]
+        canonical_mask.update(
+            {
+                "action_encoding": str(env.action_encoding),
+                "cell_material_assignments": assignments,
+            }
+        )
+        context.update(
+            {
+                "action_encoding": str(env.action_encoding),
+                "cell_material_assignments": assignments,
+                "paint_palette": palette,
+                "paint_palette_sha256": _json_digest(palette),
+            }
+        )
     return {
         **context,
         "canonical_mask_sha256": _json_digest(canonical_mask),
@@ -215,6 +233,9 @@ def _declared_config_from_records(
         "cell_cover_thresh",
         "paint",
         "paint_list",
+        "paint_action_mode",
+        "paint_palette",
+        "action_indexing",
     )
     aliases = {
         "objective": "attack_mode",
@@ -608,6 +629,18 @@ def _normalized_class_list(value: Any) -> Tuple[str, ...]:
     return tuple(sorted(_normalized_token(item) for item in raw_values if str(item).strip()))
 
 
+def _normalized_palette(value: Any) -> Tuple[str, ...]:
+    if value in (None, ""):
+        return ()
+    raw_values = value if isinstance(value, (list, tuple)) else str(value).split(",")
+    names = []
+    for item in raw_values:
+        raw_name = item.get("name") if isinstance(item, Mapping) else item
+        if raw_name is not None and str(raw_name).strip():
+            names.append(_normalized_paint(raw_name))
+    return tuple(names)
+
+
 def _float_values_match(saved: Any, requested: Any) -> bool:
     if saved is None or requested is None:
         return saved is None and requested is None
@@ -681,6 +714,22 @@ def pattern_config_mismatch_groups(
         saved_paint != requested_paint
     ):
         add_mismatch(geometry, "paint", saved_paint, requested_paint)
+
+    if "paint_action_mode" in source_config:
+        saved_mode = _normalized_token(source_config.get("paint_action_mode"))
+        requested_mode = _normalized_token(effective_config.get("paint_action_mode"))
+        if saved_mode != requested_mode:
+            add_mismatch(geometry, "paint_action_mode", saved_mode, requested_mode)
+    if "paint_palette" in source_config:
+        saved_palette = _normalized_palette(source_config.get("paint_palette"))
+        requested_palette = _normalized_palette(effective_config.get("paint_palette"))
+        if saved_palette != requested_palette:
+            add_mismatch(geometry, "paint_palette", saved_palette, requested_palette)
+    if "action_indexing" in source_config:
+        saved_indexing = _normalized_token(source_config.get("action_indexing"))
+        requested_indexing = _normalized_token(effective_config.get("action_indexing"))
+        if saved_indexing != requested_indexing:
+            add_mismatch(geometry, "action_indexing", saved_indexing, requested_indexing)
 
     if "source_class" in source_config or "sign_profile" in source_config:
         saved_source = _effective_source_class(source_config)
@@ -759,7 +808,10 @@ def pattern_config_mismatch_groups(
         if saved_bgdir != requested_bgdir:
             add_mismatch(protocol, "bgdir", saved_bgdir, requested_bgdir)
 
-    if "yolo_version" in source_config or "yolo_weights" in source_config:
+    saved_detector = _normalized_token(source_config.get("detector") or "yolo")
+    if saved_detector in {"yolo", "ultralytics"} and (
+        "yolo_version" in source_config or "yolo_weights" in source_config
+    ):
         saved_weights = source_config.get("yolo_weights") or (
             "./weights/yolov8n.pt"
             if str(source_config.get("yolo_version") or "8") == "8"
@@ -882,6 +934,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--fixed-angle-deg", type=float, default=None)
     parser.add_argument("--paint", default="yellow")
     parser.add_argument("--paint-list", default="")
+    parser.add_argument(
+        "--paint-action-mode",
+        choices=["fixed", "joint_palette"],
+        default="fixed",
+    )
+    parser.add_argument("--paint-palette", default="")
+    parser.add_argument(
+        "--action-indexing",
+        choices=["valid_cells", "canonical_full_grid"],
+        default="valid_cells",
+    )
     parser.add_argument("--cell-cover-thresh", type=float, default=0.60)
     parser.add_argument("--obs-size", type=int, default=224)
     parser.add_argument("--obs-margin", type=float, default=0.10)

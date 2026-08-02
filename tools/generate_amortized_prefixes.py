@@ -175,16 +175,49 @@ def _pattern_descriptor(
     prefix_info: Mapping[str, Any],
 ) -> Dict[str, Any]:
     config = task.resolved_environment(manifest.directory)
+    # Freeze the exact replay-facing protocol next to every prefix.  The
+    # selection step can then emit a self-contained pattern instead of relying
+    # on an external manifest that might later change.
+    replay_config = dict(config)
+    replay_config["action_indexing"] = "canonical_full_grid"
     selected_pixels = int(prefix_info["selected_pixels"])
     sign_pixels = int(prefix_info["sign_pixels"])
     if selected_pixels <= 0 or sign_pixels <= 0 or selected_pixels > sign_pixels:
         raise ValueError(f"task {task.task_id!r} returned invalid exact area")
     actions = [int(value) for value in prefix_info["ordered_actions"]]
     selected = [int(value) for value in prefix_info["selected_indices"]]
-    if len(actions) != len(selected) or sorted(actions) != selected:
+    paint_action_mode = str(prefix_info.get("paint_action_mode", "fixed"))
+    joint_palette = paint_action_mode == "joint_palette"
+    assignments = list(prefix_info.get("cell_material_assignments", []))
+    palette = list(prefix_info.get("paint_palette", []))
+    if len(actions) != len(selected):
         raise ValueError(f"task {task.task_id!r} returned an invalid prefix sequence")
-    return {
-        "schema_version": 1,
+    if joint_palette:
+        action_encoding = str(prefix_info.get("action_encoding", ""))
+        if action_encoding != "canonical_cell_major_material_minor_v1":
+            raise ValueError(
+                f"task {task.task_id!r} returned unsupported action encoding "
+                f"{action_encoding!r}"
+            )
+        if not palette or len(assignments) != len(selected):
+            raise ValueError(f"task {task.task_id!r} omitted joint-palette metadata")
+        assignment_map = {
+            int(row["cell_index"]): int(row["material_index"])
+            for row in assignments
+        }
+        if sorted(assignment_map) != selected:
+            raise ValueError(f"task {task.task_id!r} returned inconsistent material cells")
+        palette_size = len(palette)
+        decoded = [divmod(action, palette_size) for action in actions]
+        if any(
+            cell not in assignment_map or assignment_map[cell] != material
+            for cell, material in decoded
+        ):
+            raise ValueError(f"task {task.task_id!r} returned inconsistent action tokens")
+    elif sorted(actions) != selected:
+        raise ValueError(f"task {task.task_id!r} returned an invalid prefix sequence")
+    descriptor = {
+        "schema_version": 2 if joint_palette else 1,
         "coordinate_system": "canonical_full_grid_row_major",
         "grid_shape": [int(grid_shape[0]), int(grid_shape[1])],
         "task_id": task.task_id,
@@ -196,11 +229,27 @@ def _pattern_descriptor(
         "calibration_sha256": task.calibration_sha256,
         "sign_day_asset_sha256": _resolved_file_hash(config, "sign_image"),
         "sign_active_asset_sha256": _resolved_file_hash(config, "sign_active_image"),
+        "config": replay_config,
         "ordered_actions": actions,
         "selected_indices": selected,
         "selected_pixels": selected_pixels,
         "sign_pixels": sign_pixels,
     }
+    if joint_palette:
+        descriptor.update(
+            {
+                "paint_action_mode": "joint_palette",
+                "action_encoding": action_encoding,
+                "ordered_action_tokens": actions,
+                "selected_material_indices": [
+                    int(assignment_map[cell]) for cell in selected
+                ],
+                "cell_material_assignments": assignments,
+                "paint_palette": palette,
+                "paint_palette_sha256": canonical_sha256(palette),
+            }
+        )
+    return descriptor
 
 
 def assemble_candidate_family(

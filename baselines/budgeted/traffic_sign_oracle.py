@@ -202,13 +202,31 @@ class TrafficSignCandidateOracle:
             )
 
         env.reset(seed=self.scene_seed)
-        self.dimension = int(env.Gh * env.Gw)
-        self.selectable_indices = tuple(
+        base_dimension = int(env.Gh * env.Gw)
+        palette_size = (
+            int(env.paint_action_count)
+            if str(getattr(env, "paint_action_mode", "fixed")) == "joint_palette"
+            else 1
+        )
+        self.dimension = base_dimension * palette_size
+        valid_cells = tuple(
             int(value) for value in np.flatnonzero(env._valid_cells.reshape(-1))
         )
-        self.cell_material_pixels = tuple(
-            int(value) for value in env._cell_pixel_areas.reshape(-1)
+        self.selectable_indices = tuple(
+            cell * palette_size + material
+            for cell in valid_cells
+            for material in range(palette_size)
         )
+        base_costs = tuple(int(value) for value in env._cell_pixel_areas.reshape(-1))
+        self.cell_material_pixels = tuple(
+            base_costs[token // palette_size] for token in range(self.dimension)
+        )
+        # A cell may receive exactly one material.  All material tokens for that
+        # cell therefore share one exclusive candidate group.
+        self.candidate_group_ids = tuple(
+            token // palette_size for token in range(self.dimension)
+        )
+        self.palette_size = palette_size
         self.sign_material_pixels = int(env._sign_pixel_area)
         self.objective_material_pixel_limit = (
             exact_material_limit(
@@ -264,6 +282,7 @@ class TrafficSignCandidateOracle:
                     else str(value)
                 )
         paint = env.paint
+        palette = tuple(getattr(env, "paint_palette", (paint,)))
         contract = {
             "adapter": "traffic-sign-fixed-eot-v1",
             "scene_seed": self.scene_seed,
@@ -330,6 +349,21 @@ class TrafficSignCandidateOracle:
                 "day_alpha": float(getattr(paint, "day_alpha", 1.0)),
                 "active_alpha": float(getattr(paint, "active_alpha", 1.0)),
             },
+            "paint_action": {
+                "mode": str(getattr(env, "paint_action_mode", "fixed")),
+                "encoding": str(getattr(env, "action_encoding", "unknown")),
+                "palette": [
+                    {
+                        "name": str(getattr(value, "name", "unknown")),
+                        "day_rgb": list(getattr(value, "day_rgb", ())),
+                        "active_rgb": list(getattr(value, "active_rgb", ())),
+                        "translucent": bool(getattr(value, "translucent", False)),
+                        "day_alpha": float(getattr(value, "day_alpha", 1.0)),
+                        "active_alpha": float(getattr(value, "active_alpha", 1.0)),
+                    }
+                    for value in palette
+                ],
+            },
             "eval_k": self.eval_k,
             "grid_shape": [int(env.Gh), int(env.Gw)],
             "cell_material_pixels_sha256": hashlib.sha256(
@@ -359,11 +393,16 @@ class TrafficSignCandidateOracle:
             raise RuntimeError("traffic-sign candidate oracle is closed")
         env = self.env
         env._episode_cells[:] = False
-        for index in selected_indices:
-            row, col = divmod(int(index), int(env.Gw))
+        if getattr(env, "_episode_paint_ids", None) is not None:
+            env._episode_paint_ids[:] = -1
+        for token in selected_indices:
+            cell_index, material_index = divmod(int(token), int(self.palette_size))
+            row, col = divmod(cell_index, int(env.Gw))
             if not bool(env._valid_cells[row, col]):
-                raise ValueError(f"index {index} is not a printable grid cell")
+                raise ValueError(f"token {token} is not a printable grid-cell material")
             env._episode_cells[row, col] = True
+            if getattr(env, "_episode_paint_ids", None) is not None:
+                env._episode_paint_ids[row, col] = int(material_index)
 
         seeds = env._transform_seeds[: self.eval_k]
         overlay = env._eval_overlay_over_K(
@@ -420,6 +459,19 @@ class TrafficSignCandidateOracle:
             "selected_material_pixels": selected_pixels,
             "sign_material_pixels": int(env._sign_pixel_area),
             "material_fraction": area_fraction,
+            "selected_action_tokens": [int(value) for value in selected_indices],
+            "cell_material_assignments": (
+                env._selected_material_assignments()
+                if str(getattr(env, "paint_action_mode", "fixed")) == "joint_palette"
+                else [
+                    {
+                        "cell_index": int(value),
+                        "material_index": 0,
+                        "material_name": str(getattr(env.paint, "name", "unknown")),
+                    }
+                    for value in selected_indices
+                ]
+            ),
             "clean_detection_rate": clean_rate,
             "day_correct_rate": day_rate,
             "eligible_transform_count": len(eligible),

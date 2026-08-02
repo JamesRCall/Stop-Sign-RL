@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "experiment_id": "pixel-color-targeted-misclassification-v1",
+  "description": "Runnable synthetic/non-empirical matrix. A frozen detector is attacked by a separately trained black-box RL pixel-cell patch policy. This configuration is not physical or novelty evidence.",
+  "attack": {
+    "mode": "targeted_misclassification",
+    "source_class": "stop sign",
+    "target_class": "traffic light",
+    "allowed_alternative_classes": ""
+  },
+  "assets": {
+    "sign_day": "../data/stop_sign.png",
+    "sign_active": "../data/stop_sign.png",
+    "backgrounds": "../data/backgrounds"
+  },
+  "patch": {
+    "paint": "yellow",
+    "paint_action_mode": "joint_palette",
+    "paint_palette": "white,red,green,yellow,blue,orange",
+    "physics": "fixed_palette",
+    "grid_cell": 16,
+    "area_cap_fraction": 0.2,
+    "transform_strength": 1.0
+  },
+  "models": [
+    {
+      "id": "yolov8n",
+      "detector": "yolo",
+      "detector_model": "",
+      "yolo_version": "8",
+      "weights": "../weights/yolov8n.pt",
+      "enabled": true,
+      "requires_network": false
+    },
+    {
+      "id": "yolo11n",
+      "detector": "yolo",
+      "detector_model": "",
+      "yolo_version": "11",
+      "weights": "../weights/yolo11n.pt",
+      "enabled": true,
+      "requires_network": false
+    },
+    {
+      "id": "fasterrcnn_resnet50_fpn_v2",
+      "detector": "torchvision",
+      "detector_model": "fasterrcnn_resnet50_fpn_v2",
+      "yolo_version": "8",
+      "weights": null,
+      "enabled": true,
+      "requires_network": true
+    },
+    {
+      "id": "fasterrcnn_resnet50_fpn",
+      "detector": "torchvision",
+      "detector_model": "fasterrcnn_resnet50_fpn",
+      "yolo_version": "8",
+      "weights": null,
+      "enabled": true,
+      "requires_network": true
+    },
+    {
+      "id": "retinanet_resnet50_fpn_v2",
+      "detector": "torchvision",
+      "detector_model": "retinanet_resnet50_fpn_v2",
+      "yolo_version": "8",
+      "weights": null,
+      "enabled": true,
+      "requires_network": true
+    },
+    {
+      "id": "retinanet_resnet50_fpn",
+      "detector": "torchvision",
+      "detector_model": "retinanet_resnet50_fpn",
+      "yolo_version": "8",
+      "weights": null,
+      "enabled": true,
+      "requires_network": true
+    },
+    {
+      "id": "ssd300_vgg16",
+      "detector": "torchvision",
+      "detector_model": "ssd300_vgg16",
+      "yolo_version": "8",
+      "weights": null,
+      "enabled": true,
+      "requires_network": true
+    },
+    {
+      "id": "fcos_resnet50_fpn",
+      "detector": "torchvision",
+      "detector_model": "fcos_resnet50_fpn",
+      "yolo_version": "8",
+      "weights": null,
+      "enabled": true,
+      "requires_network": true
+    },
+    {
+      "id": "rtdetr_r50vd",
+      "detector": "rtdetr",
+      "detector_model": "PekingU/rtdetr_r50vd",
+      "yolo_version": "8",
+      "weights": null,
+      "enabled": true,
+      "requires_network": true
+    }
+  ]
+}

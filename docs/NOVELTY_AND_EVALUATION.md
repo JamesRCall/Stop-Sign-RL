@@ -20,6 +20,15 @@ material, generalization, or physical robustness. No trained v2 checkpoints,
 paper-ready speed-sign assets, measured calibration records, or empirical v2
 tables are included. In particular:
 
+- The runnable [misclassification matrix](MISCLASSIFICATION_MATRIX.md) is
+  explicitly synthetic and non-empirical. It trains a separate patch policy
+  against each frozen detector; it is not detector-ensemble training, physical
+  validation, held-out certification, or evidence of a successful attack.
+- Joint-palette mode expands an eligible-cell action into a grouped
+  cell-by-material action and records one material per selected cell. This is a
+  software capability and candidate method component, not proof that the
+  component is novel or improves any metric.
+
 - Current speed-sign support is **plumbing only**. The repository does not ship
   a validated fine-grained speed-sign detector, a complete speed-sign asset
   suite, or new physical speed-sign results.
@@ -48,7 +57,7 @@ The implemented components correspond to five auditable stages:
 |---|---|---|
 | Preregistered tasks | The strict [task-manifest loader](../utils/task_manifest.py) hashes manifests, resolves task-relative paths, defines `train`, `development`, `calibration`, and `certification` splits, and rejects declared cross-split leakage. The [template](../configs/amortized_tasks.template.json) enumerates the required fields. | The template is non-runnable and its assets, detectors, and calibration are placeholders. A manifest does not prove the sampled tasks represent deployment. |
 | Amortized target-conditioned training | [train_amortized.py](../train_amortized.py) samples only training tasks. [AmortizedTrafficSignEnv](../envs/amortized_traffic_sign_env.py) conditions observations on source/target, detector, calibration, constraints, and task features; one action is evaluated on every support scene; empirical lower-tail CVaR, constraint duals, and query counters are exposed. A completed run manifest seals offline query totals and final policy/normalizer hashes. | There is no trained-policy result, no demonstrated held-out generalization, and no demonstrated online-query or material saving. Several identities are opaque hash fingerprints; feature semantics are not validated; background/run IDs are not direct task-vector fields; and only the first support image is observed directly. Other replicas affect aggregate feedback/reward. The ledger scope must be reconciled with every external query source. |
-| Prefix-valid output | Canonical cell actions only add unused cells. The environment checks strict digital inclusion. The [development-only generator](../tools/generate_amortized_prefixes.py) loads frozen artifacts, emits a capped ordered sequence with exact image-pixel area and support measurements, hashes task/sign/material/calibration descriptors and policy artifacts, and assembles a content-addressed common-order candidate family. [build_risk_protocol.py](../tools/build_risk_protocol.py) binds that family to a researcher-supplied trial inventory and validates the resulting strict plan, which must then be externally registered for a preregistration claim. | “Prefix-valid” is currently a digital invariant, not proof of physical fabricability. Generation stops at the declared prefix/query limit or environment termination, and the common family is truncated to the shortest task sequence. Per-prefix descriptors omit some physical dimensions/volume, detector/camera identity, paint, and transport-draw fields. Neither the generator nor the binding tool reads outcomes, proves prior registration, or issues a certificate. |
+| Prefix-valid joint geometry-material output | Canonical actions only add unused cells. Fixed mode assigns one declared material globally; joint mode selects one palette material with each cell, prevents selecting another material for the same cell, and binds palette order and assignments into generated descriptors. The [development-only generator](../tools/generate_amortized_prefixes.py) loads frozen artifacts, emits a capped ordered sequence with exact image-pixel area and support measurements, hashes task/sign/material/calibration descriptors and policy artifacts, and assembles a content-addressed common-order candidate family. [build_risk_protocol.py](../tools/build_risk_protocol.py) binds that family to a researcher-supplied trial inventory and validates the resulting strict plan, which must then be externally registered for a preregistration claim. | “Prefix-valid” remains a digital invariant, not proof of physical fabricability. The bundled palette is fixed synthetic RGB, not measured material response. Generation stops at the declared prefix/query limit or environment termination, and the common family is truncated to the shortest task sequence. Descriptors still omit some physical dimensions/volume, detector/camera identity, and transport-draw fields. Neither the generator nor the binding tool reads outcomes, proves prior registration, or issues a certificate. |
 | Spectral/camera transport | The [v1 schema](../schemas/fluorescence_transport_v1.schema.json), [strict loader and transport](../utils/fluorescence_transport.py), and [model documentation](fluorescence_transport.md) cover wavelength grids, ambient/UV spectra, substrate, fluorescence, camera/ISP response, uncertainty draws, and input hashes. | The bundled fixture is explicitly synthetic and non-empirical. Training converts each seeded result to one opaque effective day/active 8-bit sRGB cell color per support replica; it does not render spatial spectra, geometry-dependent illumination, camera noise, or a nonlinear ISP. `measured` provenance is declared and structurally validated, not authenticated by the loader. |
 | Disjoint prefix certification | Given protocol and result rows, the [two-phase CLI](../tools/certify_attack_results.py) requires complete fixed calibration rows for all declared prefixes, rejects duplicate JSON keys/non-finite constants, seals the smallest passing order, requires non-overlapping declared final sample hashes, and computes simultaneous one-sided exact binomial bounds with exact area and query checks. | No current candidate is certified. The CLI validates supplied booleans, hashes, areas, and counts; it does not run detectors, inspect content behind hashes, prove physical independence/preregistration, validate prefix-set inclusion, or automatically ingest evaluator output. Integrity hashes are not signatures, and one prefix ID may contain a different task pattern for every task. The bound is neither formal verification nor an all-world guarantee. |
 
@@ -136,11 +145,12 @@ its novelty.
 | First meta-learned, amortized, class-agnostic, or model-agnostic physical attack | [Meta-Attack (ICCV 2021)](https://openaccess.thecvf.com/content/ICCV2021/html/Feng_Meta-Attack_Class-Agnostic_and_Model-Agnostic_Physical_Adversarial_Attack_ICCV_2021_paper.html) | Preempted. Support/query task construction and novel-image/model adaptation are prior art; task amortization alone is not the contribution. |
 | First offline learned model that reduces queries to unseen black-box targets | [Simulator Attack (CVPR 2021)](https://openaccess.thecvf.com/content/CVPR2021/html/Ma_Simulating_Unknown_Target_Models_for_Query-Efficient_Black-Box_Attacks_CVPR_2021_paper.html) | Preempted at the generic query-amortization level. Demonstrate measured savings against this broader design pattern and count all offline queries. |
 | First sparse, irregular, minimum-area, or minimum-material patch | [RPAttack](https://arxiv.org/abs/2103.12469), [IMPACT](https://papers.nips.cc/paper_files/paper/2025/hash/8172ca14a9ec80a3409113d1d1f8bc42-Abstract-Conference.html), and FIPatch | Preempted or heavily narrowed. The testable distinction is an irreversible ordered prefix family plus risk-limited selection, not sparsity alone. |
+| First optimization of patch geometry and color/material | PatchAttack optimizes texture and position; IMPACT jointly optimizes mask, content, shape, location, and number; FIPatch optimizes fluorescent perturbations | Preempted at the component level. The repository's grouped cell-by-material action is a controlled candidate-space contract, not a standalone first claim. Test whether irreversible joint prefixes improve a matched query/material frontier over geometry-only, fixed-material, and unrestricted final-set alternatives. |
 | First budget-aware, footprint-aware, or adaptively growing black-box patch | [Budget-Aware Adaptive Adversarial Patches (arXiv/ICIP 2026)](https://arxiv.org/abs/2606.18318) | Preempted. A growing patch under query/footprint budgets is not enough; compare directly at matched budgets and discuss concurrent overlap. |
 | First targeted stop/speed or fine-grained speed-sign physical scenario | [NDSS 2026 near-IR study](https://www.ndss-symposium.org/ndss-paper/targeted-physical-evasion-attacks-in-the-near-infrared-domain/) | Preempted. Speed-sign compatibility is an evaluation domain, not novelty. |
 | First fluorescence or camera simulation | FIPatch already includes digital fluorescence modeling | Not supportable. The v2 distinction is a strict measured-input and uncertainty contract whose fidelity must be quantified. |
 | New confidence-bound method | Exact binomial intervals and Bonferroni control are standard statistical tools | Do not claim statistical novelty. Their role is to prevent prefix-selection leakage and scope the empirical statement. |
-| First combination of amortization, prefix-valid fabrication, measured transport, and disjoint risk certification | Not established by the cited set | This remains a hypothesis, not a “first” claim. Any defensible distinction must hinge on the combined ordered irreversible fluorescent prefix family, conditioning across held-out source-target-detector-camera/material tasks, and disjoint simultaneous finite-sample selection—not meta-learning or patch growth alone. Re-run a systematic search immediately before submission. |
+| First combination of amortization, joint geometry-material prefix validity, measured transport, and disjoint risk certification | Not established by the cited set | This remains a hypothesis, not a “first” claim. Any defensible distinction must hinge on the combined ordered irreversible fluorescent prefix family, jointly assigned materials, conditioning across held-out source-target-detector-camera/material tasks, and disjoint simultaneous finite-sample selection—not meta-learning, color search, or patch growth alone. Re-run a systematic search immediately before submission. |
 
 Adding PPO or speed-sign assets to FIPatch is therefore unlikely to be viewed as
 a sufficient contribution. The paper needs a research question that makes the
@@ -148,15 +158,15 @@ learned policy necessary and tests a capability absent from per-instance search.
 
 ## Defensible research framing
 
-A concise method label is **target-conditioned, task-amortized, prefix-valid
-fluorescent stencil optimization**. The exact proposed claim sentence is:
+A concise method label is **target-conditioned, task-amortized, joint
+geometry-material prefix optimization**. The exact proposed claim sentence is:
 
 > We study whether a target-conditioned optimizer trained across a
 > preregistered task distribution can reduce online query and material costs by
-> emitting inclusion-monotone fluorescent-stencil prefixes, with the smallest
-> qualifying prefix selected on calibration trials and evaluated on disjoint
-> certification trials under measured spectral/camera inputs and simultaneous
-> finite-sample risk bounds.
+> emitting inclusion-monotone joint geometry-material fluorescent-stencil
+> prefixes, with the smallest qualifying prefix selected on calibration trials
+> and evaluated on disjoint certification trials under measured
+> spectral/camera inputs and simultaneous finite-sample risk bounds.
 
 This wording does not assert that a reduction or a novelty result has already
 been observed. It makes each part falsifiable and keeps the statistical scope
@@ -174,6 +184,7 @@ and ablations are required before the corresponding paper clauses are asserted:
 |---|---|---|
 | One optimizer amortizes across tasks | Train one frozen policy over multiple source-target, sign, detector, camera, material, and scene tasks; evaluate without retraining on held-out sign instances and source-target combinations, including at least one held-out detector family and camera/material batch. Report offline and online queries separately and the break-even deployment count. | Per-task PPO and per-task PSO/ES/CMA-ES at equal online query, material, and wall-clock budgets; v2 without task conditioning; v2 with shuffled or ID-only conditioning; zero-, few-, and full-online-query operating points. |
 | Support batching learns distributional rather than scene-specific stencils | Show that one action sequence is shared across each support batch and improves held-out task distributions, not only its training scenes. Report mean and lower-tail performance and every constraint violation. | Support size 1 versus larger fixed sizes; task-conditioned policy without support batching; mean reward versus lower-tail CVaR; fixed versus learned constraint duals. |
+| Joint geometry-material actions improve the operating frontier | Compare the same eligible grid and exact material-pixel cap while recording every cell/material assignment. Show gains on frozen held-out tasks, not only policy-training episodes, and measure palette/material transfer. | Geometry-only with each fixed material; joint grouped actions; unrestricted final-set color optimization; palette-size and palette-order controls; held-out material batches; and equal query, area, and wall-clock budgets. |
 | Prefix-valid output improves the query/material operating frontier | Freeze and hash full ordered sequences, evaluate every prefix because success may be nonmonotone, and report prefix curves and exact painted-pixel area for every task. | Unrestricted add/remove or final-set optimization versus irreversible additions at matched queries and final area; fixed prefix lengths versus risk-limited selection. |
 | Measured spectral/camera transport improves physical fidelity | Collect versioned empirical spectra for illuminants, substrate, material batches, camera sensitivities, exposure, and ISP; report held-out digital-to-physical RGB and detector-prediction error with uncertainty coverage across batches and cameras. | Legacy constant RGB; measured point estimate without uncertainty; full bounded uncertainty; leave-one-camera and leave-one-material-batch-out tests. The bundled synthetic fixture is excluded from this evidence. |
 | Disjoint selection supports a scoped risk statement | Preregister tasks, independent capture-cluster sampling units, prefix family, sample sizes, thresholds, area cap, query totals, and familywise alpha. Release calibration selection and untouched certification rows with disjoint hashes and simultaneous bounds. | Validation-tuned or uncorrected prefix selection versus corrected calibration selection followed by final holdout; coverage simulation for the stated sampling design; sensitivity to task and claim multiplicity. Do not present this as a new statistical estimator. |
@@ -197,6 +208,7 @@ Do not claim any of the following:
 - first physical traffic-sign misclassification or designated-target attack;
 - first stop-to-speed, speed-to-stop, or speed-limit-sign attack;
 - first RL adversarial patch or first RL traffic-sign attack;
+- first pixel-color, joint geometry-color, or material-optimizing patch;
 - first grid, sparse, minimum-area, or minimum-material patch merely because the
   implementation selects cells;
 - first black-box, EOT-robust, transferable, or multi-detector physical patch;
@@ -436,17 +448,21 @@ random and greedy search:
   results.
 
 The implemented [matched-budget harness](BUDGETED_COMPARISONS.md) currently
-runs native random, forward greedy, binary GA, Gaussian ES, a plainly labeled
-binary PSO-family proxy, and the installed reference `cma` package against one
-fixed task/scene at a time. It hashes the common objective, detector weights,
-background collection, selected scene, sign assets, fixed EOT seeds, and exact
-material costs; rejects budget or contract drift; and records the full trace.
+runs native random, forward greedy, GA, Gaussian ES, a plainly labeled
+PSO-family proxy, and the installed reference `cma` package against one fixed
+task/scene at a time. Fixed-material mode exposes one token per cell;
+joint-palette mode exposes one token per cell/material pair and fail-closed
+group constraints prevent selecting multiple materials for one cell. Every
+token for a cell has the same exact cell-pixel cost. The harness hashes the
+common objective, detector weights, background collection, selected scene,
+sign assets, palette/action encoding, fixed EOT seeds, and exact material costs;
+rejects budget or contract drift; and records the full trace.
 The proxy must not be reported as FIPatch. FIPatch, PatchAttack, the 2026
 budget-adaptive method, per-task PPO, Wei et al., Meta-Attack, Simulator Attack,
 and IMPACT have fail-closed external slots, not bundled results. Each requires a
-pinned wrapper, a declared/preregistered mapping into the binary-grid candidate
-space, separate offline-query disclosure where relevant, and independent
-semantic review before any named-method equivalence claim.
+pinned wrapper, a declared/preregistered mapping into the fixed or grouped
+candidate space, separate offline-query disclosure where relevant, and
+independent semantic review before any named-method equivalence claim.
 
 Use identical sign masks, paint parameterization, transformations, thresholds,
 area caps, and source/target pairs. For every method, plot:

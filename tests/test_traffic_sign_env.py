@@ -9,6 +9,7 @@ from envs.stop_sign_grid_env import (
     _random_perspective_coeffs,
 )
 from envs.attack_objective import aggregate_metrics, summarize_detection
+from utils.uv_paint import UVPaint
 
 
 class FakeDetector:
@@ -23,6 +24,21 @@ class FakeDetector:
             {"boxes": [], "confs": [], "clss": []}
             for _ in images
         ]
+
+
+class AlwaysSourceDetector(FakeDetector):
+    def infer_detections_batch(self, images):
+        rows = []
+        for image in images:
+            width, height = image.size
+            rows.append(
+                {
+                    "boxes": [[0, 0, width, height]],
+                    "confs": [0.9],
+                    "clss": [self.target_id],
+                }
+            )
+        return rows
 
 
 def _circle_sign(size=64):
@@ -96,6 +112,164 @@ def test_canonical_full_grid_actions_keep_coordinates_stable_across_silhouettes(
     mask = canonical.action_masks()
     assert mask[flat_index]
     assert not np.any(mask.reshape(canonical.Gh, canonical.Gw)[~canonical._valid_cells])
+
+
+def test_joint_palette_actions_encode_cell_and_material_and_mask_whole_cell():
+    sign = _circle_sign()
+    palette = [
+        UVPaint("RedMaterial", "#220000", "#FF0000", translucent=False),
+        UVPaint("GreenMaterial", "#002200", "#00FF00", translucent=False),
+    ]
+    env = TrafficSignGridEnv(
+        stop_sign_image=sign,
+        stop_sign_uv_image=sign.copy(),
+        background_images=[Image.new("RGB", (128, 128), "gray")],
+        pole_image=None,
+        img_size=(128, 128),
+        obs_size=(64, 64),
+        grid_cell_px=16,
+        cell_cover_thresh=0.10,
+        action_indexing="canonical_full_grid",
+        paint_action_mode="joint_palette",
+        uv_paint_palette=palette,
+        source_class="speed limit 25",
+        detector_instance=AlwaysSourceDetector(),
+        localization_iou_threshold=0.01,
+        transform_strength=0.0,
+    )
+    env.reset(seed=7)
+
+    assert env.action_space.n == env.Gh * env.Gw * len(palette)
+    cell_mask = env._valid_cells.reshape(-1)
+    action_mask = env.action_masks().reshape(env.Gh * env.Gw, len(palette))
+    assert np.all(action_mask[cell_mask])
+    assert not np.any(action_mask[~cell_mask])
+
+    flat_cell = int(np.flatnonzero(cell_mask)[0])
+    green_action = env.encode_action(flat_cell, 1)
+    assert env.decode_action(green_action) == (flat_cell, 1)
+    _, _, _, _, info = env.step(green_action)
+
+    row, col = divmod(flat_cell, env.Gw)
+    assert env._episode_cells[row, col]
+    assert env._episode_paint_ids[row, col] == 1
+    assert not np.any(
+        env.action_masks().reshape(env.Gh * env.Gw, len(palette))[flat_cell]
+    )
+    assert info["trace"]["paint_action_mode"] == "joint_palette"
+    assert (
+        info["trace"]["action_encoding"]
+        == "canonical_cell_major_material_minor_v1"
+    )
+    assert info["trace"]["selected_indices"] == [flat_cell]
+    assert info["trace"]["selected_material_indices"] == [1]
+    assert info["trace"]["cell_material_assignments"] == [
+        {
+            "cell_index": flat_cell,
+            "material_index": 1,
+            "material_name": "GreenMaterial",
+        }
+    ]
+
+
+def test_joint_palette_render_uses_each_cells_assigned_day_and_active_color():
+    sign = _circle_sign()
+    palette = [
+        UVPaint("RedMaterial", "#220000", "#FF0000", translucent=False),
+        UVPaint("GreenMaterial", "#002200", "#00FF00", translucent=False),
+    ]
+    env = TrafficSignGridEnv(
+        stop_sign_image=sign,
+        stop_sign_uv_image=sign.copy(),
+        background_images=[],
+        pole_image=None,
+        grid_cell_px=16,
+        cell_cover_thresh=0.10,
+        action_indexing="canonical_full_grid",
+        paint_action_mode="joint_palette",
+        uv_paint_palette=palette,
+        source_class="speed limit 25",
+        detector_instance=FakeDetector(),
+    )
+    env._episode_cells = np.zeros((env.Gh, env.Gw), dtype=bool)
+    env._episode_paint_ids = np.full((env.Gh, env.Gw), -1, dtype=np.int16)
+    selected = [tuple(int(value) for value in row) for row in env._valid_coords[:2]]
+    assert len(selected) == 2
+    for material_index, (row, col) in enumerate(selected):
+        env._episode_cells[row, col] = True
+        env._episode_paint_ids[row, col] = material_index
+
+    day = env._render_overlay_pattern(mode="day")
+    active = env._render_overlay_pattern(mode="on")
+    sign_alpha = np.asarray(sign.getchannel("A"))
+    for material_index, (row, col) in enumerate(selected):
+        x0, y0, x1, y1 = env._cell_rects[row * env.Gw + col]
+        local_y, local_x = np.argwhere(sign_alpha[y0:y1, x0:x1] > 0)[0]
+        point = (x0 + int(local_x), y0 + int(local_y))
+        assert day.getpixel(point)[:3] == palette[material_index].day_rgb
+        assert active.getpixel(point)[:3] == palette[material_index].active_rgb
+
+
+def test_joint_palette_observation_channel_preserves_material_identity():
+    sign = _circle_sign()
+    palette = [
+        UVPaint("RedMaterial", "#D0D0D0", "#FF0000", translucent=False),
+        UVPaint("GreenMaterial", "#D0D0D0", "#00FF00", translucent=False),
+    ]
+    env = TrafficSignGridEnv(
+        stop_sign_image=sign,
+        stop_sign_uv_image=sign.copy(),
+        background_images=[Image.new("RGB", (128, 128), "gray")],
+        pole_image=None,
+        img_size=(128, 128),
+        obs_size=(64, 64),
+        grid_cell_px=16,
+        cell_cover_thresh=0.10,
+        action_indexing="canonical_full_grid",
+        paint_action_mode="joint_palette",
+        uv_paint_palette=palette,
+        source_class="speed limit 25",
+        detector_instance=FakeDetector(),
+        transform_strength=0.0,
+    )
+    env.reset(seed=17)
+    env._episode_cells[:] = False
+    env._episode_paint_ids[:] = -1
+    center = np.asarray([0.5 * (env.Gh - 1), 0.5 * (env.Gw - 1)])
+    coordinates = sorted(
+        (tuple(int(value) for value in row) for row in env._valid_coords),
+        key=lambda row: float(np.linalg.norm(np.asarray(row) - center)),
+    )[:2]
+    for material_index, (row, col) in enumerate(coordinates):
+        env._episode_cells[row, col] = True
+        env._episode_paint_ids[row, col] = material_index
+
+    observation = env._render_observation(
+        kind="day",
+        use_overlay=True,
+        transform_seed=env._transform_seeds[0],
+    )
+    material_values = set(np.unique(observation[..., 3]).tolist())
+    assert 0 in material_values
+    assert int(round(255 / len(palette))) in material_values
+    assert 255 in material_values
+
+
+def test_joint_palette_configuration_fails_closed_on_ambiguous_materials():
+    sign = _circle_sign()
+    red = UVPaint("RepeatedMaterial", "#220000", "#FF0000", translucent=False)
+    green = UVPaint("RepeatedMaterial", "#002200", "#00FF00", translucent=False)
+    with pytest.raises(ValueError, match="paint names must be unique"):
+        TrafficSignGridEnv(
+            stop_sign_image=sign,
+            stop_sign_uv_image=sign.copy(),
+            background_images=[],
+            pole_image=None,
+            paint_action_mode="joint_palette",
+            uv_paint_palette=[red, green],
+            source_class="speed limit 25",
+            detector_instance=FakeDetector(),
+        )
 
 
 def test_hard_area_cap_masks_cells_that_cannot_be_added_exactly():

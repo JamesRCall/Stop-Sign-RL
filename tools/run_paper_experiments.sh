@@ -468,7 +468,7 @@ if [[ "$RUN_COMPARISONS" == "1" ]]; then
           output="$RESULTS/comparisons/$task/$area_tag/q$query_budget/scene${scene_seed}_opt${optimizer_seed}.json"
           log="${output%.json}.log"
           if [[ -f "$output" ]] && \
-            json_field_equals "$output" protocol_version budgeted-black-box-v2; then
+            json_field_equals "$output" protocol_version budgeted-black-box-v3-grouped-actions; then
             progress "SKIP comparison $task/$area_tag/q$query_budget/$scene_seed/$optimizer_seed"
             continue
           fi
@@ -541,7 +541,7 @@ for run_manifest in sorted((root / "amortized").glob("seed_*/amortized_run_manif
 comparison_rows = []
 for path in sorted((root / "comparisons").rglob("*.json")):
     record = json.loads(path.read_text(encoding="utf-8"))
-    if record.get("protocol_version") != "budgeted-black-box-v2":
+    if record.get("protocol_version") != "budgeted-black-box-v3-grouped-actions":
         continue
     invocation = record["invocation"]
     budget = invocation["budget"]

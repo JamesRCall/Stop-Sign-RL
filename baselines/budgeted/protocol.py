@@ -9,7 +9,7 @@ import operator
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 
-PROTOCOL_VERSION = "budgeted-black-box-v2"
+PROTOCOL_VERSION = "budgeted-black-box-v3-grouped-actions"
 
 
 class BudgetError(RuntimeError):
@@ -79,6 +79,7 @@ class CandidateOracle(Protocol):
 
     dimension: int
     selectable_indices: Sequence[int]
+    candidate_group_ids: Sequence[int]
     cell_material_pixels: Sequence[int]
     sign_material_pixels: int
     objective_material_pixel_limit: Optional[int]
@@ -87,7 +88,12 @@ class CandidateOracle(Protocol):
     objective_id: str
 
     def evaluate(self, selected_indices: Tuple[int, ...]) -> OracleObservation:
-        """Evaluate one canonical binary pattern using exactly the fixed cost."""
+        """Evaluate one canonical action-token set at the fixed query cost.
+
+        Tokens may be ordinary binary cell choices or categorical material
+        choices. ``candidate_group_ids`` makes alternatives for one physical
+        cell mutually exclusive without charging that cell more than once.
+        """
 
 
 @dataclass(frozen=True)
@@ -106,6 +112,10 @@ class CandidateEvaluation:
     def to_dict(self) -> Dict[str, Any]:
         row = asdict(self)
         row["selected_indices"] = list(self.selected_indices)
+        # Explicit alias for v3: under grouped categorical searches these are
+        # action tokens, while ``selected_indices`` remains for compatibility
+        # with existing result readers.
+        row["selected_action_tokens"] = list(self.selected_indices)
         row["metrics"] = _json_safe(self.metrics)
         return row
 
@@ -203,6 +213,10 @@ class BudgetedEvaluator:
             _exact_integer(value, "cell material cost")
             for value in oracle.cell_material_pixels
         )
+        self.candidate_group_ids = tuple(
+            _exact_integer(value, "candidate group id")
+            for value in getattr(oracle, "candidate_group_ids", range(self.dimension))
+        )
         self.selectable_indices = tuple(
             sorted(
                 _exact_integer(value, "selectable index")
@@ -215,6 +229,10 @@ class BudgetedEvaluator:
             raise ValueError("cell_material_pixels length must equal dimension")
         if any(value < 0 for value in self.cell_material_pixels):
             raise ValueError("cell material costs must be non-negative")
+        if len(self.candidate_group_ids) != self.dimension:
+            raise ValueError("candidate_group_ids length must equal dimension")
+        if any(value < 0 for value in self.candidate_group_ids):
+            raise ValueError("candidate_group_ids must be non-negative")
         if len(self.selectable_indices) != len(set(self.selectable_indices)):
             raise ValueError("selectable_indices must not contain duplicates")
         if not self.selectable_indices:
@@ -294,6 +312,7 @@ class BudgetedEvaluator:
     def material_pixels(self, indices: Iterable[int]) -> int:
         candidate = canonical_candidate(indices, self.dimension)
         self._validate_selectable(candidate)
+        self._validate_candidate_groups(candidate)
         return candidate_material_pixels(candidate, self.cell_material_pixels)
 
     def is_material_feasible(self, indices: Iterable[int]) -> bool:
@@ -302,6 +321,7 @@ class BudgetedEvaluator:
     def evaluate(self, indices: Iterable[int]) -> CandidateEvaluation:
         candidate = canonical_candidate(indices, self.dimension)
         self._validate_selectable(candidate)
+        self._validate_candidate_groups(candidate)
         selected_pixels = candidate_material_pixels(
             candidate, self.cell_material_pixels
         )
@@ -373,6 +393,18 @@ class BudgetedEvaluator:
                 + ", ".join(str(value) for value in invalid[:8])
             )
 
+    def group_id(self, index: int) -> int:
+        """Return the exclusive fabrication group for one candidate token."""
+
+        return int(self.candidate_group_ids[int(index)])
+
+    def _validate_candidate_groups(self, candidate: Sequence[int]) -> None:
+        groups = [self.group_id(index) for index in candidate]
+        if len(groups) != len(set(groups)):
+            raise ValueError(
+                "candidate assigns multiple action tokens to one exclusive group"
+            )
+
     def result(
         self,
         *,
@@ -410,6 +442,7 @@ class BudgetedEvaluator:
             "dimension": self.dimension,
             "selectable_indices": list(self.selectable_indices),
             "cell_material_pixels": list(self.cell_material_pixels),
+            "candidate_group_ids": list(self.candidate_group_ids),
             "sign_material_pixels": self.sign_material_pixels,
             "objective_material_pixel_limit": self.objective_material_pixel_limit,
             "queries_per_evaluation": self.queries_per_evaluation,

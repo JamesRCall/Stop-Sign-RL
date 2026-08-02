@@ -30,10 +30,10 @@ The exact proposed claim sentence is deliberately a question, not a result:
 
 > We study whether a target-conditioned optimizer trained across a
 > preregistered task distribution can reduce online query and material costs by
-> emitting inclusion-monotone fluorescent-stencil prefixes, with the smallest
-> qualifying prefix selected on calibration trials and evaluated on disjoint
-> certification trials under measured spectral/camera inputs and simultaneous
-> finite-sample risk bounds.
+> emitting inclusion-monotone joint geometry-material fluorescent-stencil
+> prefixes, with the smallest qualifying prefix selected on calibration trials
+> and evaluated on disjoint certification trials under measured
+> spectral/camera inputs and simultaneous finite-sample risk bounds.
 
 The repository implements the contracts needed to test that sentence. It does
 not yet establish an online-query reduction, a material reduction, physical
@@ -104,10 +104,12 @@ capture outcomes still require explicit result rows. Task-manifest
   `amortized_run_manifest.json`.
 - [envs/amortized_traffic_sign_env.py](envs/amortized_traffic_sign_env.py)
   applies each canonical cell action to every support scene, rejects repeated or
-  invalid actions, records the ordered prefix and its hash, aggregates a lower-
-  tail empirical CVaR objective, and exposes explicit constraint violations and
-  dual variables. That prefix hash covers grid shape and ordered cell indices,
-  not a complete physical artifact.
+  invalid actions, and supports either a fixed material or an opt-in joint
+  cell-by-material action. Joint mode records exactly one palette material per
+  selected cell. The wrapper records the ordered prefix and its hash, aggregates
+  a lower-tail empirical CVaR objective, and exposes explicit constraint
+  violations and dual variables. These digital descriptors are not complete
+  physical artifacts.
 - [tools/generate_amortized_prefixes.py](tools/generate_amortized_prefixes.py)
   loads the frozen policy, normalization state, and completed run manifest;
   generates a capped ordered sequence on development tasks only; records exact
@@ -142,8 +144,10 @@ capture outcomes still require explicit result rows. Task-manifest
   detector or prove that declared samples are physically independent. See the
   [certification protocol](docs/CERTIFICATION_PROTOCOL.md).
 - [baselines/budgeted](baselines/budgeted) provides one fail-closed query and
-  exact image-pixel material ledger for native random, forward-greedy, binary
-  GA, Gaussian ES, binary PSO-family, and reference-package CMA-ES runs. Named
+  exact image-pixel material ledger for native random, forward-greedy, GA,
+  Gaussian ES, PSO-family, and reference-package CMA-ES runs. Joint-palette
+  comparisons expose the same cell-by-material tokens to every optimizer and
+  enforce one material choice per cell. Named
   FIPatch, PatchAttack, budget-adaptive, per-task RL, Meta-Attack, Simulator
   Attack, Wei et al., and IMPACT slots remain unavailable until a pinned runner
   and declared, preregistered candidate-space mapping are supplied; an
@@ -153,6 +157,11 @@ capture outcomes still require explicit result rows. Task-manifest
   speed-sign geometry, exact area, deterministic reset, detector failures,
   strict class lookup, task leakage, prefix invariants, spectral transport,
   risk bounds, and frozen evaluation.
+- [tools/run_all_misclassification_models.sh](tools/run_all_misclassification_models.sh)
+  drives a bounded synthetic matrix over nine frozen detector checkpoints,
+  training one separate joint cell-material patch policy per detector and seed,
+  then running frozen evaluation and matched native baselines. See the exact
+  [Linux matrix guide](docs/MISCLASSIFICATION_MATRIX.md).
 
 ## Important scope limits
 
@@ -186,11 +195,12 @@ image observation is the first support replica while the others affect aggregate
 feedback and reward. Treat cross-task generalization as an empirical question.
 
 Likewise, “prefix-valid” currently means digitally inclusion-monotone canonical
-cell indices with exact rendered-image-pixel area. The development pattern
-descriptor does not fully encode fabrication dimensions or volume, detector and
-camera identity, the applied paint descriptor, or the spectral transport
-draw/seed. Do not call a generated prefix physically fabricable until a complete
-physical artifact is exported, hashed, fabricated, and checked.
+cell indices with exact rendered-image-pixel area. Joint-palette descriptors
+bind the palette and per-cell material assignments, but they still do not fully
+encode fabrication dimensions or volume, detector/camera identity, or every
+spectral transport draw. Do not call a generated prefix physically fabricable
+until a complete physical artifact is exported, hashed, fabricated, and
+checked.
 
 The implemented “disappearance” predicate is source-class evasion: localized
 source confidence is below its threshold. It does not prove that all
@@ -251,6 +261,26 @@ The bundled coarse defaults are:
 Binary assets are managed through Git LFS. Complete provenance, redistribution
 rights, calibration, and physical metadata in
 [data/DATA_CARD.md](data/DATA_CARD.md) before an artifact release.
+
+## Full synthetic detector matrix on Linux
+
+The bounded matrix trains one separate joint cell-material patch policy for
+each configured frozen detector and seed, then performs fresh frozen-pattern
+evaluation and matched native baseline searches:
+
+~~~bash
+PYTHON_BIN="$PWD/.venv/bin/python" \
+DEVICE="cuda:0" \
+OUTPUT="$PWD/runs/misclassification_matrix" \
+bash tools/run_all_misclassification_models.sh
+~~~
+
+The default nine-detector, five-seed run is large. Run the documented one-model
+smoke test first, launch the full job detached, and retain every failure. The
+[matrix guide](docs/MISCLASSIFICATION_MATRIX.md) specifies setup, bounded
+stopping, resume behavior, outputs, fair grouped budgets, and the speed-sign
+checkpoint boundary. All outputs from this runner are labeled synthetic and
+non-empirical.
 
 ## Training
 
@@ -427,8 +457,8 @@ weight and background hashes, and the common contract fingerprint. Existing
 reports are not overwritten.
 
 This command covers one task/scene and optimizer seed; a paper needs a
-preregistered task-by-seed matrix and uncertainty intervals. The binary PSO row
-is only a FIPatch-family proxy. Named-paper comparisons require reviewed
+preregistered task-by-seed matrix and uncertainty intervals. The PSO-family row
+is only a FIPatch-style proxy. Named-paper comparisons require reviewed
 external wrappers and candidate mappings; use the non-runnable
 [external manifest](configs/external_baseline_manifest.template.json) and
 [mapping](configs/external_candidate_mapping.template.json) templates. The
