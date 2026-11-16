@@ -5,6 +5,32 @@ DIRP, Greedy and Random are read from the existing saved comparison files;
 they are never trained or rerun. All five table labels are plain method names.
 The default new workload is 2 methods x 6 detectors x 5 seeds = 60 searches.
 
+## Revision 4: IMPACT-only full-cell rerun
+
+The revision-3 IMPACT adapter incorrectly divided boundary-cell sign coverage
+by a full 256 pixels, excluding ten cropped cells allowed by DIRP. Revision 4
+uses the actual cropped cell size and the environment's coverage threshold.
+For the current sign it now matches all **221 DIRP-eligible cells**, verified
+against the real grid builder and asserted again before every IMPACT search.
+This does not enable transparent/background cells that DIRP itself excludes.
+
+Run only IMPACT with the same RGB mode, nominal support levels, native DE/ES
+settings, five seeds and 1,500-candidate budget used in revision 3:
+
+```bash
+bash tools/run_impact_all_cells_v4_linux.sh
+```
+
+This creates `runs/impact_all_cells_v4`; the previous results are not replaced.
+It runs 30 searches across all six detectors. FIPatch is not rerun, and saved
+DIRP/Greedy/Random results are only read. The code/protocol revision is 4; older
+output folders cannot be resumed with changed code. Use the new wrapper with
+`--resume` only for an interrupted run of this same revision/settings.
+
+Existing area-accounting, clean-reference and native-method-reproduction
+qualifications still apply. Correcting eligibility does not guarantee better
+ASR, and the fresh results should be retained regardless of outcome.
+
 ## Revision 3: sign geometry, material warm starts and meaningful refinement
 
 The first server run completed but selected empty FIPatch masks in 20 of 30

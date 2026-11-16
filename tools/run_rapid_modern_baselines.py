@@ -180,7 +180,8 @@ def preflight(args):
             versions[package] = "not_installed"
     return dict(detectors=args.detector_names, seeds=args.seed_values, methods=args.method_names,
                 requested_queries=args.queries, population=args.population, circles=args.circles,
-                adapter_revision=3, search_objective=args.search_objective,
+                adapter_revision=4, search_objective=args.search_objective,
+                impact_cell_rule="actual cropped-cell coverage, identical to DIRP",
                 color_mode=args.color_mode, swarm=args.swarm, budget_policy=args.budget_policy,
                 search_area_levels=args.search_area_levels,
                 device=args.device, input_sha256=sources, upstream=SOURCES, package_versions=versions,
@@ -364,7 +365,7 @@ def worker(args):
                           detector_image_queries=oracle.queries if oracle else 0,
                           best=oracle.best if oracle else None, error=error,
                           reference_confidence_difference=reference_delta,
-                          adapter_revision=3, search_objective=args.search_objective,
+                          adapter_revision=4, search_objective=args.search_objective,
                           color_mode=args.color_mode,
                           minimum_evaluated_confidence=oracle.min_confidence if oracle else None,
                           zero_area_candidates=oracle.zero_area_candidates if oracle else None,
@@ -528,7 +529,8 @@ def main():
     if manifest.exists() and read(manifest)["fingerprint"] != fingerprint:
         raise ValueError("Resume contract differs: inputs, methods, seeds, code or settings changed")
     save(manifest, dict(fingerprint=fingerprint, contract=contract))
-    print("Running ONLY FIPatch and IMPACT; DIRP/Greedy/Random are read from saved files.", flush=True)
+    print("Running ONLY "+" and ".join(args.method_names)+
+          "; DIRP/Greedy/Random are read from saved files.", flush=True)
     fetch_sources(output/"upstream")
     if args.prepare_only:
         print("Inputs and pinned upstream code verified. No GPU work started.")
@@ -554,7 +556,7 @@ def main():
             export_report(args)
             raise RuntimeError("Too little time for even 64 candidates/run; choose fewer detectors/seeds or increase --hours")
         plan = dict(candidate_limit=count, detector_image_query_limit=2*max_k*(count+1),
-                    budget_policy=args.budget_policy, adapter_revision=3,
+                    budget_policy=args.budget_policy, adapter_revision=4,
                     trial_time_policy="remaining detector wall budget divided among unfinished searches",
                     calibration_seconds_per_candidate=timings, safety_factor=2.0, planned_new_runs=jobs)
         save(plan_path, plan)

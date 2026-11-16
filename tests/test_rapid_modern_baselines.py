@@ -206,6 +206,33 @@ def test_tile_support_omits_transparent_cells():
     assert (areas[valid] == 16).all()
 
 
+@pytest.mark.parametrize("threshold", [.3, .6, .9])
+def test_impact_eligible_cells_match_actual_dirp_grid_including_edges(threshold):
+    from PIL import Image
+    from envs.stop_sign_grid_env import TrafficSignGridEnv
+    # Run the real grid builder without constructing or querying a detector.
+    env = object.__new__(TrafficSignGridEnv)
+    env.sign_rgba_day = Image.open(ROOT/"data/stop_sign.png").convert("RGBA")
+    env._sign_alpha = env.sign_rgba_day.getchannel("A")
+    env.grid_cell_px, env.cell_cover_thresh = 16, threshold
+    env._build_grid_index()
+    mask = np.asarray(env._sign_alpha) > 0
+    side, valid, areas = tile_support(mask, 16, threshold)
+    assert side == env.Gw == env.Gh
+    assert np.array_equal(valid, np.flatnonzero(env._valid_cells))
+    assert np.array_equal(areas, env._cell_pixel_areas.reshape(-1))
+    if threshold == .6:
+        assert len(valid) == 221
+        assert set([101, 118, 135, 152, 277, 278, 279, 280, 281, 282]).issubset(valid)
+
+
+def test_partial_cells_use_their_cropped_size_not_full_tile_size():
+    # A 5x5 opaque sign has four valid 4px cells, including 1x4 and 1x1 edges.
+    side, valid, areas = tile_support(np.ones((5, 5), dtype=bool), 4)
+    assert side == 2 and valid.tolist() == [0, 1, 2, 3]
+    assert areas.tolist() == [16, 4, 4, 1]
+
+
 def test_fixed_query_policy_and_material_mode_reach_workers(monkeypatch):
     runner = runner_module()
     monkeypatch.setattr(sys, "argv", ["runner", "--budget-policy", "fixed",

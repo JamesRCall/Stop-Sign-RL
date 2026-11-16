@@ -1,4 +1,4 @@
-"""Revision-3 detector/UV adaptations of circle PSO and IMPACT DE/ES.
+"""Detector/UV adaptations; revision 4 fixes IMPACT edge-cell eligibility.
 
 Author optimizer kernels are retained. Material warm starts, sign-support
 repair, variable circle radius, and tile-space ES are explicit adaptations.
@@ -111,17 +111,18 @@ def fipatch(oracle, upstream, seed: int, *, circles: int = 3, swarm: int = 16):
             swarmsize=swarm, maxiter=40, n_restarts=1)
 
 
-def tile_support(sign_mask, tile):
-    """Return square native-code grid and legal cells matching DIRP coverage."""
+def tile_support(sign_mask, tile, coverage_threshold=.6):
+    """Use DIRP's coverage fraction of the ACTUAL cropped cell, including edges."""
     h, w = sign_mask.shape
     side = math.ceil(max(h, w)/tile)
     areas = np.zeros(side*side, dtype=int)
+    sizes = np.zeros(side*side, dtype=int)
     for index in range(side*side):
         r, c = divmod(index, side)
-        areas[index] = int(sign_mask[r*tile:(r+1)*tile, c*tile:(c+1)*tile].sum())
-    valid = np.flatnonzero(areas >= .6*tile*tile)
-    if len(valid) < 4:
-        valid = np.flatnonzero(areas > 0)
+        cell = sign_mask[r*tile:(r+1)*tile, c*tile:(c+1)*tile]
+        areas[index], sizes[index] = int(cell.sum()), cell.size
+    coverage = np.divide(areas, sizes, out=np.zeros_like(areas, dtype=float), where=sizes>0)
+    valid = np.flatnonzero((sizes > 0) & (coverage >= coverage_threshold))
     if len(valid) < 4:
         raise ValueError("Too few nonempty sign cells for IMPACT")
     return side, valid, areas
@@ -160,7 +161,13 @@ def impact(oracle, upstream, seed: int, *, population: int = 16, phase1_fraction
     h, w = oracle.shape
     color_mode, material = _settings(oracle)
     tile = oracle.grid_cell
-    side, valid, areas = tile_support(oracle.sign_mask, tile)
+    threshold = getattr(oracle, "config", {}).get("cell_cover_thresh", .6)
+    side, valid, areas = tile_support(oracle.sign_mask, tile, threshold)
+    if hasattr(oracle, "env"):
+        coordinates = np.argwhere(oracle.env._valid_cells)
+        expected = coordinates[:, 0]*side + coordinates[:, 1]
+        if not np.array_equal(valid, expected):
+            raise RuntimeError("IMPACT eligible cells differ from the DIRP environment")
     dimension = side*side
     levels = getattr(oracle, "config", {}).get("search_area_levels", [.25, .5])
     # The old area target is a penalty, not a hard 25% support constraint.
