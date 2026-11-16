@@ -67,7 +67,14 @@ def evaluate_metrics(c0_day, c0_on, c_day, c_on, area, config):
     over = bool(area > cap)
     if over and config.get("area_cap_mode", "soft") == "soft":
         raw = -abs(float(config.get("area_cap_penalty", -0.2))) * (1 + 2 * (area - cap) / cap)
-    return dict(score=float(raw), base_conf=float(c0_day), base_uv_conf=float(c0_on),
+    objective = config.get("search_objective", "dirp_score")
+    if objective not in ("dirp_score", "suppression"):
+        raise ValueError("Unknown search objective")
+    # Confidence-only search is a diagnostic alternative, not the old reward.
+    # Keep all original metrics and gates; never redefine attack success.
+    optimization_score = -c_on if objective == "suppression" else raw
+    return dict(score=float(raw), optimization_score=float(optimization_score),
+                base_conf=float(c0_day), base_uv_conf=float(c0_on),
                 after_conf=float(c_on), patched_day_conf=float(c_day), drop_day=drop_day,
                 drop_on=float(c0_on - c_on), area_frac=float(area), success=success,
                 clean_eligible=eligible, area_cap_exceeded=over,
@@ -90,6 +97,9 @@ class AttackOracle:
         self.evaluations = 0
         self.best = None
         self.best_key = None
+        self.min_confidence = 1.0
+        self.zero_area_candidates = 0
+        self.search_stage = "unspecified"
         self.started = time.monotonic()
         self.trace_path = self.folder / "trace.jsonl"
         self.original_overlay = env._apply_grid_overlay
@@ -97,6 +107,7 @@ class AttackOracle:
         self.current_rgb = np.zeros((*self.shape, 3), dtype=np.uint8)
         self.queries_at_start = recorder.images
         env.reset(seed=int(seed))
+        self.material_rgb = np.asarray(env.paint.active_rgb, dtype=np.float32)
         initial = recorder.records[-2 * env.eval_K_max:]
         if len(initial) != 2 * env.eval_K_max:
             raise RuntimeError("Unexpected clean-reference query count")
@@ -129,7 +140,13 @@ class AttackOracle:
                              query_limit=2*self.k*(self.candidate_limit+1),
                              area_cap_mode=config.get("area_cap_mode", "soft"),
                              area_cap_fraction=config.get("area_cap_frac", 0.3),
-                             active_rgb_optimized=True, inactive_color=list(env.paint.day_rgb))
+                             adapter_revision=3, circle_centers="repaired onto opaque sign support",
+                             search_objective=config.get("search_objective", "dirp_score"),
+                             color_mode=config.get("color_mode", "rgb"),
+                             search_area_levels=config.get("search_area_levels", [.25, .5]),
+                             active_rgb_optimized=config.get("color_mode", "rgb") == "rgb",
+                             material_active_rgb=list(map(float, self.material_rgb)),
+                             inactive_color=list(env.paint.day_rgb))
         atomic_json(self.folder / "contract.json", self.contract)
 
     @property
@@ -163,13 +180,16 @@ class AttackOracle:
         row = evaluate_metrics(self.c0_day, self.c0_on, c_day, c_on,
                                float(self.current_mask.sum()) / self.sign_pixels, self.config)
         self.evaluations += 1
+        self.min_confidence = min(self.min_confidence, c_on)
+        self.zero_area_candidates += int(row["area_frac"] == 0)
         row.update(candidate=self.evaluations, detector_image_queries=self.queries,
+                   search_stage=self.search_stage,
                    elapsed_sec=time.monotonic()-self.started)
         with self.trace_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(row, allow_nan=False) + "\n")
         # Match the existing Random winner convention: a successful candidate
         # outranks a failure; among successes prefer the smaller footprint.
-        key = (int(row["success"]), -row["area_frac"] if row["success"] else row["score"], -row["after_conf"])
+        key = (int(row["success"]), -row["area_frac"] if row["success"] else row["optimization_score"], -row["after_conf"])
         if self.best_key is None or key > self.best_key:
             self.best, self.best_key = dict(row), key
             np.savez_compressed(self.folder / "best_patch.npz", mask=self.current_mask, rgb=self.current_rgb)

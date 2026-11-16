@@ -11,7 +11,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from baselines.modern.oracle import evaluate_metrics, RecordingDetector, SearchStopped
-from baselines.modern.attacks import fipatch, impact
+from baselines.modern.attacks import fipatch, impact, circle_patch, repair_tiles, tile_support
 from baselines.modern.upstream import fetch_sources, load_kernels
 
 
@@ -96,6 +96,12 @@ def test_runtime_random_is_per_recorded_trial_and_partial_is_missing(tmp_path):
     partial = output/"yolo8/1000/FIPatch"
     partial.mkdir(parents=True)
     (partial/"result.json").write_text(json.dumps({"status": "wall_time_limit", "best": {"success": True, "after_conf": .1, "area_frac": .2}, "runtime_sec": 1}))
+    completed = output/"yolo8/1000/IMPACT"
+    completed.mkdir(parents=True)
+    (completed/"result.json").write_text(json.dumps({"status": "query_limit",
+        "best": {"success": True, "joint_success": False, "after_conf": .1,
+                 "area_frac": .5, "drop_on": .8, "clean_eligible": True},
+        "runtime_sec": 2, "minimum_evaluated_confidence": .02, "zero_area_candidates": 0}))
     from types import SimpleNamespace
     args = SimpleNamespace(output=str(output), compare_root=str(tmp_path/"compare"),
                            detector_names=["yolo8"], seed_values=[1000], method_names=["FIPatch", "IMPACT"])
@@ -105,24 +111,36 @@ def test_runtime_random_is_per_recorded_trial_and_partial_is_missing(tmp_path):
     assert random["record_count"] == 50 and random["mean_minutes"] == 1
     partial_row = next(r for r in report if r["method"]=="FIPatch")
     assert partial_row["completed_seeds"] == 0 and partial_row["ASR"] == ""
+    complete_row = next(r for r in report if r["method"]=="IMPACT")
+    assert complete_row["ASR"] == 1 and complete_row["joint_ASR"] == 0
+    assert complete_row["mean_minimum_evaluated_confidence"] == .02
+    assert random["joint_ASR"] == ""
 
 
 class SyntheticOracle:
     """Exercises real pinned optimizer kernels, never produces detector results."""
-    def __init__(self, budget=64):
+    def __init__(self, budget=64, color_mode="rgb"):
         self.shape = (32, 32)
         self.grid_cell = 4
         self.sign_pixels = 32*32
+        self.sign_mask = np.ones(self.shape, dtype=bool)
+        self.config = {"color_mode": color_mode}
+        self.material_rgb = np.asarray([230, 255, 0], dtype=np.float32)
         self.area_target = .25
         self.candidate_limit = budget
         self.evaluations = 0
         self.scores = []
+        self.stages = set()
 
     def evaluate(self, mask, rgb):
         if self.evaluations >= self.candidate_limit:
             raise SearchStopped("query_limit")
         assert mask.shape == self.shape and rgb.shape == (*self.shape, 3)
         assert np.isfinite(rgb).all()
+        assert (mask & self.sign_mask).any()
+        if self.config["color_mode"] == "material":
+            assert (rgb[mask & self.sign_mask] == self.material_rgb).all()
+        self.stages.add(self.search_stage)
         self.evaluations += 1
         score = float(mask.mean() - np.mean(rgb)/255)
         self.scores.append(score)
@@ -130,21 +148,71 @@ class SyntheticOracle:
 
 
 @pytest.mark.parametrize("method", ["FIPatch", "IMPACT"])
-def test_pinned_kernels_respect_external_candidate_cap(method):
+@pytest.mark.parametrize("color_mode", ["rgb", "material"])
+def test_pinned_kernels_respect_external_candidate_cap(method, color_mode):
     directory = ROOT/"_runs/rapid_baseline_test_upstream"
     if not directory.exists():
         pytest.skip("Run prepare-only once to populate hash-pinned author sources")
     kernels = load_kernels(directory)
-    oracle = SyntheticOracle()
+    oracle = SyntheticOracle(color_mode=color_mode)
     with pytest.raises(SearchStopped, match="query_limit"):
         if method == "FIPatch":
             fipatch(oracle, kernels[0], seed=1000)
         else:
             impact(oracle, kernels[1], seed=1000, population=8)
     assert oracle.evaluations == 64
+    if color_mode == "rgb":
+        assert len(oracle.stages) == 2
 
 
 def test_tampered_upstream_source_is_rejected(tmp_path):
     (tmp_path/"fipatch_attack.py").write_text("print('not the official source')")
     with pytest.raises(RuntimeError, match="hash mismatch"):
         fetch_sources(tmp_path)
+
+
+def test_circle_in_transparent_corner_is_repaired_to_real_sign():
+    support = np.zeros((64, 64), dtype=bool)
+    support[20:44, 20:44] = True
+    for center in [(0, 0), (63, 63), (0, 63), (63, 0)]:
+        mask, rgb = circle_patch(support.shape, support, [center], 5, [[255, 80, 0]])
+        assert mask.any() and not (mask & ~support).any()
+        assert (rgb[mask] == [255, 80, 0]).all()
+
+
+def test_suppression_diagnostic_changes_search_not_success_or_area_metrics():
+    original = evaluate_metrics(.95, .96, .94, .5, .2, {})
+    pilot = evaluate_metrics(.95, .96, .94, .5, .2, {"search_objective": "suppression"})
+    assert pilot["optimization_score"] == -.5
+    assert original["optimization_score"] == original["score"]
+    for key in original.keys() - {"optimization_score"}:
+        assert original[key] == pilot[key]
+
+
+def test_off_sign_tile_repair_preserves_colors_and_cardinality():
+    code = np.zeros(16, dtype=int)
+    code[[0, 5, 15]] = 1
+    colors = np.asarray([[10, 11, 12], [20, 21, 22], [30, 31, 32]])
+    repaired, content = repair_tiles(code, colors, np.asarray([5, 6, 9, 10]), 4)
+    assert np.flatnonzero(repaired).tolist() == [5, 6, 10]
+    assert content.tolist() == [colors[1].tolist(), colors[0].tolist(), colors[2].tolist()]
+
+
+def test_tile_support_omits_transparent_cells():
+    support = np.zeros((32, 32), dtype=bool)
+    support[8:24, 8:24] = True
+    side, valid, areas = tile_support(support, 4)
+    assert side == 8 and len(valid) == 16
+    assert (areas[valid] == 16).all()
+
+
+def test_fixed_query_policy_and_material_mode_reach_workers(monkeypatch):
+    runner = runner_module()
+    monkeypatch.setattr(sys, "argv", ["runner", "--budget-policy", "fixed",
+        "--color-mode", "material", "--search-areas", "0.25,0.5", "--queries", "9006"])
+    args = runner.parse_args()
+    command = runner.child_command(args, "attack", 123.0, "yolo8")
+    assert args.search_area_levels == [.25, .5]
+    assert command[command.index("--queries")+1] == "9006"
+    assert command[command.index("--budget-policy")+1] == "fixed"
+    assert command[command.index("--color-mode")+1] == "material"

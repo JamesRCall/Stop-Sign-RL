@@ -53,9 +53,18 @@ def parse_args():
     p.add_argument("--hours", type=float, default=13.5,
                    help="Runtime including calibration/model loads; maximum 13.5, reserving time for export")
     p.add_argument("--queries", type=int, default=12006,
-                   help="Maximum detector input images per new run, including clean references; calibration may lower it globally")
-    p.add_argument("--population", type=int, default=12)
-    p.add_argument("--circles", type=int, default=1)
+                   help="Detector input images per search including references; auto policy may lower the shared ceiling")
+    p.add_argument("--budget-policy", choices=["auto", "fixed"], default="auto",
+                   help="fixed honors the requested query ceiling; the wall deadline can still stop unfinished runs")
+    p.add_argument("--population", type=int, default=16)
+    p.add_argument("--circles", type=int, default=3)
+    p.add_argument("--swarm", type=int, default=16)
+    p.add_argument("--color-mode", choices=["rgb", "material"], default="rgb",
+                   help="rgb uses material warm starts then free RGB; material fixes the original UV-paint color")
+    p.add_argument("--search-areas", default="0.25,0.5",
+                   help="Predefined nominal sign-area levels for support search; original soft penalty/metrics are unchanged")
+    p.add_argument("--search-objective", choices=["dirp_score", "suppression"], default="dirp_score",
+                   help="Original area-penalized reward, or confidence-only diagnostic search; success gates stay unchanged")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--report-only", action="store_true")
@@ -72,6 +81,14 @@ def parse_args():
     args.detector_names = list(DETECTORS) if args.detectors == "all" else args.detectors.split(",")
     args.seed_values = list(map(int, args.seeds.split(",")))
     args.method_names = args.methods.split(",")
+    try:
+        args.search_area_levels = list(map(float, args.search_areas.split(",")))
+    except ValueError:
+        p.error("search-areas must be comma-separated fractions")
+    if (not args.search_area_levels or len(args.search_area_levels) > 4
+            or len(set(args.search_area_levels)) != len(args.search_area_levels)
+            or any(not 0 < x <= 1 for x in args.search_area_levels)):
+        p.error("Provide 1-4 distinct search-area fractions in (0,1]")
     if not args.detector_names or len(set(args.detector_names)) != len(args.detector_names) or any(n not in DETECTORS for n in args.detector_names):
         p.error("Unknown/duplicate detectors")
     if not args.method_names or len(set(args.method_names)) != len(args.method_names) or any(n not in METHODS for n in args.method_names):
@@ -80,8 +97,8 @@ def parse_args():
         p.error("Provide distinct nonnegative seeds")
     if not 0 < args.hours <= 13.5:
         p.error("--hours must be >0 and <=13.5 to leave export/shutdown time below 14 hours")
-    if args.queries < 102 or args.population < 4 or args.circles < 1:
-        p.error("queries >=102, population >=4, circles >=1 required")
+    if args.queries < 102 or args.population < 4 or args.circles < 1 or args.swarm < 4:
+        p.error("queries >=102, population/swarm >=4, circles >=1 required")
     return args
 
 
@@ -93,7 +110,9 @@ def environment_config(args, detector):
     from baselines.grid_utils import _default_cfg_for_env
     config = _default_cfg_for_env(comparison(args, detector)["ppo"]["config"])
     config.update(data=args.data, bgdir=args.backgrounds, detector_device=args.device,
-                  seed=args.seed_values[0], info_image_every=0)
+                  seed=args.seed_values[0], info_image_every=0, search_objective=args.search_objective,
+                  color_mode=getattr(args, "color_mode", "rgb"),
+                  search_area_levels=getattr(args, "search_area_levels", [.25, .5]))
     if config["detector"] == "yolo":
         name = "yolo11n.pt" if detector == "yolo11" else "yolov8n.pt"
         config["yolo_weights"] = str(Path(args.weights_dir) / name)
@@ -137,6 +156,8 @@ def preflight(args):
     for name in ["stop_sign.png", "stop_sign_uv.png"]:
         path = Path(args.data) / name
         sources[str(path)] = sha(path)
+    if (Path(args.data)/"pole.png").exists():
+        sources[str(Path(args.data)/"pole.png")] = sha(Path(args.data)/"pole.png")
     backgrounds = [p for p in Path(args.backgrounds).iterdir() if p.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"]]
     if not backgrounds:
         raise ValueError("No benchmark backgrounds; refusing a synthetic-background substitution")
@@ -159,9 +180,12 @@ def preflight(args):
             versions[package] = "not_installed"
     return dict(detectors=args.detector_names, seeds=args.seed_values, methods=args.method_names,
                 requested_queries=args.queries, population=args.population, circles=args.circles,
+                adapter_revision=3, search_objective=args.search_objective,
+                color_mode=args.color_mode, swarm=args.swarm, budget_policy=args.budget_policy,
+                search_area_levels=args.search_area_levels,
                 device=args.device, input_sha256=sources, upstream=SOURCES, package_versions=versions,
                 python_version=sys.version,
-                adaptation="Author optimizer kernels; detector-score loss and common DIRP UV renderer; active RGB optimized",
+                adaptation="Author PSO/DE kernels; material warm starts, sign support repair, variable-radius multicircle PSO, tile-space ES; DIRP UV renderer",
                 timing_note="Reused runtime measurements and new GPU measurements are not hardware-normalized speedups.")
 
 
@@ -172,6 +196,10 @@ def child_command(args, mode, deadline, detector=None):
                "--detectors", args.detectors, "--seeds", args.seeds, "--methods", args.methods,
                "--hours", str(args.hours), "--queries", str(args.queries),
                "--population", str(args.population), "--circles", str(args.circles),
+               "--search-objective", args.search_objective,
+               "--color-mode", args.color_mode, "--swarm", str(args.swarm),
+               "--search-areas", args.search_areas,
+               "--budget-policy", args.budget_policy,
                "--device", args.device, "--deadline", str(deadline)]
     if detector:
         command += ["--detector", detector]
@@ -276,7 +304,13 @@ def worker(args):
         attempt_root.mkdir(parents=True, exist_ok=True)
         attempt = attempt_root/f"{len(list(attempt_root.iterdir()))+1:03d}"
         # Each run receives the same query ceiling and a conservative time guard.
-        trial_deadline = min(args.deadline, time.monotonic()+plan["max_trial_seconds"])
+        remaining_jobs = sum(
+            not ((Path(args.output)/args.detector/str(s)/m/"result.json").exists()
+                 and read(Path(args.output)/args.detector/str(s)/m/"result.json").get("status")
+                 in ["completed", "query_limit"])
+            for s, m in jobs[position:])
+        trial_deadline = min(args.deadline, time.monotonic()+
+            max(1.0, (args.deadline-time.monotonic())/max(1, remaining_jobs)))
         last_progress = [0.0]
 
         def progress(oracle):
@@ -289,11 +323,14 @@ def worker(args):
             state = dict(detector=args.detector, method=method, seed=seed,
                          candidates=oracle.evaluations, candidate_limit=oracle.candidate_limit,
                          detector_images=oracle.queries, trial_eta_seconds=eta,
+                         search_stage=oracle.search_stage,
+                         lowest_confidence=oracle.min_confidence,
                          remaining_wall_seconds=max(0.0, args.deadline-now))
             save(Path(args.output)/"progress.json", state)
             print(f"[{args.detector}/{seed}/{method}] {oracle.evaluations}/{oracle.candidate_limit} candidates; "
                   f"{oracle.queries} detector images; trial ETA {eta/60:.1f}m; "
-                  f"wall budget remaining {(args.deadline-now)/3600:.2f}h", flush=True)
+                  f"lowest confidence {oracle.min_confidence:.4f}; "
+                  f"detector time allowance {(args.deadline-now)/3600:.2f}h", flush=True)
 
         oracle = None
         reference_delta = None
@@ -311,7 +348,7 @@ def worker(args):
                  note="Same seeds/settings do not prove identical assets or old software; retain this audit."))
             print(f"[start] {args.detector}/{seed}/{method}; reference difference={delta:+.6f}", flush=True)
             if method == "FIPatch":
-                fipatch(oracle, fipatch_kernel, seed, circles=args.circles)
+                fipatch(oracle, fipatch_kernel, seed, circles=args.circles, swarm=args.swarm)
             else:
                 impact(oracle, impact_kernel, seed, population=args.population)
         except SearchStopped as exc:
@@ -327,6 +364,10 @@ def worker(args):
                           detector_image_queries=oracle.queries if oracle else 0,
                           best=oracle.best if oracle else None, error=error,
                           reference_confidence_difference=reference_delta,
+                          adapter_revision=3, search_objective=args.search_objective,
+                          color_mode=args.color_mode,
+                          minimum_evaluated_confidence=oracle.min_confidence if oracle else None,
+                          zero_area_candidates=oracle.zero_area_candidates if oracle else None,
                           gpu=gpu, package_versions=versions,
                           fidelity="author-kernel detector/UV adaptation; not original published protocol")
             save(result_file, result)
@@ -375,8 +416,14 @@ def export_report(args):
                     detector_image_queries=result.get("detector_image_queries", ""),
                     clean_eligible=best.get("clean_eligible", ""), n_records=1))
                 rows[-1]["reference_confidence_difference"] = result.get("reference_confidence_difference", "")
+                rows[-1]["joint_success"] = best.get("joint_success", "")
+                rows[-1]["drop_on"] = best.get("drop_on", "")
+                rows[-1]["zero_area_candidates"] = result.get("zero_area_candidates", "")
+                rows[-1]["minimum_evaluated_confidence"] = result.get("minimum_evaluated_confidence", "")
     for row in rows:
         row.setdefault("reference_confidence_difference", "")
+        for key in ["joint_success", "drop_on", "zero_area_candidates", "minimum_evaluated_confidence"]:
+            row.setdefault(key, "")
     output.mkdir(parents=True, exist_ok=True)
     with (output/"per_seed.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
@@ -387,9 +434,14 @@ def export_report(args):
             group = [r for r in rows if r["detector"]==detector and r["method"]==method]
             completed = [r for r in group if r["status"] in ["completed", "query_limit"] and r["success"]!=""]
             mean = lambda key: statistics.mean(float(r[key]) for r in completed) if completed else ""
+            available_mean = lambda key: (statistics.mean(float(r[key]) for r in completed)
+                if completed and all(r[key] not in [None, ""] for r in completed) else "")
             summaries.append(dict(detector=detector, method=method, completed_seeds=len(completed),
                 planned_seeds=len(group), incomplete_seeds=len(group)-len(completed),
                 ASR=mean("success"), mean_after_conf=mean("after_conf"), mean_area=mean("area_frac"),
+                joint_ASR=available_mean("joint_success"), mean_drop_on=available_mean("drop_on"),
+                mean_minimum_evaluated_confidence=available_mean("minimum_evaluated_confidence"),
+                mean_zero_area_candidates=available_mean("zero_area_candidates"),
                 mean_minutes=mean("runtime_sec")/60 if completed else "",
                 timing_unit="per Random candidate" if method=="Random" else "per search/episode",
                 record_count=sum(r["n_records"] for r in completed),
@@ -398,18 +450,27 @@ def export_report(args):
     with (output/"comparison.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(summaries[0]))
         writer.writeheader(); writer.writerows(summaries)
-    lines = ["# DIRP baseline comparison", "", "| Detector | Method | Completed/planned | ASR | Area | Minutes |",
-             "|---|---|---:|---:|---:|---:|"]
+    lines = ["# DIRP baseline comparison", "", "| Detector | Method | Completed/planned | ASR | Activated confidence | Area | Joint ASR | Minutes |",
+             "|---|---|---:|---:|---:|---:|---:|---:|"]
     for r in summaries:
         fmt = lambda k: f"{r[k]:.3f}" if r[k]!="" else "--"
         lines.append(f"| {r['detector']} | {r['method']} | {r['completed_seeds']}/{r['planned_seeds']} | "
-                     f"{fmt('ASR')} | {fmt('mean_area')} | {fmt('mean_minutes')} |")
+                     f"{fmt('ASR')} | {fmt('mean_after_conf')} | {fmt('mean_area')} | {fmt('joint_ASR')} | {fmt('mean_minutes')} |")
     lines += ["", "FIPatch/IMPACT use author optimizer kernels adapted to detector scores and the DIRP UV renderer; active RGB is optimized.",
               "DIRP/Greedy/Random values are read from the saved matching-seed experiment files. Their timing measurements use the original hardware and exclude PPO training.",
               "Random timing is per recorded candidate, not a whole best-of-50 search. No cross-hardware speedup is implied.",
               "Incomplete or errored new runs are missing data, not attack failures; ASR averages completed runs only. Check the completed/planned column.",
               "The shared ceiling applies to the two new methods, not retroactively to the saved three methods.",
+              "ASR is clean-eligible activated confidence <=0.20. New-method Joint ASR additionally checks the original 0.30 area and daylight gates; unavailable saved joint values are --.",
               "Reference confidence deltas and task hashes are saved per run; same seed alone does not establish exact old-scene reproduction."]
+    manifest_path = output/"manifest.json"
+    if manifest_path.exists():
+        contract = read(manifest_path).get("contract", {})
+        lines += ["", f"Adapter revision: {contract.get('adapter_revision', 1)}. "
+                  f"Search objective: {contract.get('search_objective', 'dirp_score')}. "
+                  f"Color mode: {contract.get('color_mode', 'rgb')}. "
+                  f"Nominal support levels: {contract.get('search_area_levels', 'not recorded')}. "
+                  "Search-objective changes do not change the success thresholds. These settings must be disclosed when comparing protocols."]
     drift = [r for r in rows if r["source"]=="new_run" and r["reference_confidence_difference"] not in [None, ""]
              and abs(r["reference_confidence_difference"]) > 0.001]
     if drift:
@@ -419,8 +480,12 @@ def export_report(args):
     (output/"comparison.md").write_text("\n".join(lines)+"\n", encoding="utf-8")
     save(output/"comparison.json", summaries)
     order = ["DIRP", "Greedy", "Random"]+args.method_names
+    protocol = read(manifest_path).get("contract", {}) if manifest_path.exists() else {}
+    protocol_note = (f" New-method adapter revision {protocol.get('adapter_revision', 1)}, "
+        f"color mode {protocol.get('color_mode', 'rgb')}, "
+        f"search objective {protocol.get('search_objective', 'dirp_score')}.").replace("_", r"\_")
     latex = [r"\begin{table*}[t]", r"\centering", r"\scriptsize",
-             r"\caption{Baseline comparison on the configured original seeds. FIPatch and IMPACT are detector/UV adaptations using author optimizer kernels. DIRP, Greedy and Random use the saved seed-matched results. Time is minutes per search/episode, except Random per candidate; PPO training is excluded and timings are not hardware-normalized. Incomplete method/seed groups are shown as --.}",
+             r"\caption{Baseline comparison on the configured original seeds. FIPatch and IMPACT are detector/UV adaptations using author optimizer kernels. DIRP, Greedy and Random use the saved seed-matched results. Time is minutes per search/episode, except Random per candidate; PPO training is excluded and timings are not hardware-normalized. ASR uses the confidence threshold only; area and daylight gates are reported separately. Incomplete method/seed groups are shown as --."+protocol_note+"}",
              r"\label{tab:modern_baselines}", r"\resizebox{\textwidth}{!}{%",
              r"\begin{tabular}{l"+"ccc"*len(order)+"}", r"\toprule",
              "Detector & "+" & ".join(r"\multicolumn{3}{c}{"+method+"}" for method in order)+r" \\",
@@ -484,12 +549,13 @@ def main():
         # Factor 2 allows for native clustering/DE, disk flushes, and variation
         # beyond measured inference. Allocate only 70% of remaining wall time.
         affordable = int(0.7*max(0, deadline-time.monotonic())/(jobs*max(timings.values())*2))
-        count = min(requested, affordable)
+        count = requested if args.budget_policy == "fixed" else min(requested, affordable)
         if count < 64:
             export_report(args)
             raise RuntimeError("Too little time for even 64 candidates/run; choose fewer detectors/seeds or increase --hours")
         plan = dict(candidate_limit=count, detector_image_query_limit=2*max_k*(count+1),
-                    max_trial_seconds=max(60.0, min((deadline-time.monotonic())/jobs, max(timings.values())*count*2.5+30)),
+                    budget_policy=args.budget_policy, adapter_revision=3,
+                    trial_time_policy="remaining detector wall budget divided among unfinished searches",
                     calibration_seconds_per_candidate=timings, safety_factor=2.0, planned_new_runs=jobs)
         save(plan_path, plan)
     plan = read(plan_path)
