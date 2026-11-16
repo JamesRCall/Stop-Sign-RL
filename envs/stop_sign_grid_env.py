@@ -99,6 +99,7 @@ class TrafficSignGridEnv(gym.Env):
         eval_K_min: Optional[int] = None,
         eval_K_max: Optional[int] = None,
         eval_K_ramp_threshold: Optional[float] = None,
+        active_only_steps: bool = False,
 
         # Grid config
         grid_cell_px: int = 16,
@@ -181,6 +182,10 @@ class TrafficSignGridEnv(gym.Env):
             if eval_K_ramp_threshold is not None
             else 0.5 * float(uv_drop_threshold)
         )
+        # Cheap policy-search environments may query only the activated state
+        # after an edit. Clean references are still measured at reset; reported
+        # development/certification results must use full day+active evaluation.
+        self.active_only_steps = bool(active_only_steps)
 
         self.sign_rgba_day = stop_sign_image.convert("RGBA")
         self.sign_rgba_on  = (stop_sign_uv_image or stop_sign_image).convert("RGBA")
@@ -750,7 +755,7 @@ class TrafficSignGridEnv(gym.Env):
             + self.lambda_classification * classification_gain
             + self.lambda_efficiency * efficiency
         )
-        perceptual = self._perceptual_delta()
+        perceptual = self._perceptual_delta() if self.lambda_perceptual != 0.0 else 0.0
         raw_core -= self.lambda_perceptual * perceptual
 
         shaping = 0.35 * math.tanh(
@@ -791,9 +796,9 @@ class TrafficSignGridEnv(gym.Env):
 
         truncated = (self._step >= self.steps_per_episode)
 
-        # 4) Observation and preview
+        # 4) Observation. Preview rendering is deferred until it is actually
+        # attached to info; constructing it unconditionally doubled PIL work.
         obs = self._render_observation(kind="day", use_overlay=True, transform_seed=self._transform_seeds[0])
-        preview_on = self._render_variant(kind="on", use_overlay=True, transform_seed=self._transform_seeds[0])
 
         source_id = self.source_class_id
         source_name = None
@@ -865,6 +870,7 @@ class TrafficSignGridEnv(gym.Env):
             "eval_K_used": int(eval_K),
             "eval_K_min": int(self.eval_K_min),
             "eval_K_max": int(self.eval_K_max),
+            "active_only_step": bool(overlay_metrics.get("active_only_step", False)),
             "uv_drop_threshold": float(self.uv_drop_threshold),
             "success_conf_threshold": float(self.success_conf_threshold),
             "day_tolerance": float(self.day_tolerance),
@@ -939,12 +945,20 @@ class TrafficSignGridEnv(gym.Env):
             info["diagnostic_area_thresh"] = float(self.diag_area_thresh)
             info["diagnostic_conf_thresh"] = float(self.diag_conf_thresh)
 
-        # Always attach the final image if we hit drop success, so it can be saved reliably.
-        if terminated and attack_success:
-            info["composited_pil"] = preview_on
-            info["overlay_pil"] = self._render_overlay_pattern(mode="on")
-        # Otherwise only attach occasionally to reduce overhead
-        elif diagnostic or (self._step % self.info_image_every) == 0:
+        attach_preview = bool(
+            (terminated and attack_success)
+            or diagnostic
+            or (
+                self.info_image_every > 0
+                and (self._step % self.info_image_every) == 0
+            )
+        )
+        if attach_preview:
+            preview_on = self._render_variant(
+                kind="on",
+                use_overlay=True,
+                transform_seed=self._transform_seeds[0],
+            )
             info["composited_pil"] = preview_on
             info["overlay_pil"] = self._render_overlay_pattern(mode="on")
 
@@ -1010,8 +1024,8 @@ class TrafficSignGridEnv(gym.Env):
         """Return the exact number of detector images a valid next step uses."""
 
         eval_k = self._current_eval_K(self._last_drop_on_s)
-        # Each transform has one inactive/day overlay and one triggered overlay.
-        return 2 * int(eval_k)
+        multiplier = 1 if self.active_only_steps else 2
+        return multiplier * int(eval_k)
 
 
     # ----------------------------- helpers -----------------------------------
@@ -1034,8 +1048,15 @@ class TrafficSignGridEnv(gym.Env):
             imgs_plain_on.append(plain_on)
             sign_boxes_day.append(meta_day["sign_bbox_bg"])
             sign_boxes_on.append(meta_on["sign_bbox_bg"])
-        day_rows = self._summarize_detection_batch(imgs_plain_day, sign_boxes_day)
-        on_rows = self._summarize_detection_batch(imgs_plain_on, sign_boxes_on)
+        # One batched request keeps the GPU fed and preserves exact image-query
+        # accounting; day and active rows are split deterministically afterward.
+        combined_rows = self._summarize_detection_batch(
+            imgs_plain_day + imgs_plain_on,
+            sign_boxes_day + sign_boxes_on,
+        )
+        split = len(imgs_plain_day)
+        day_rows = combined_rows[:split]
+        on_rows = combined_rows[split:]
         self._last_plain_day_metrics = list(day_rows)
         self._last_plain_on_metrics = list(on_rows)
         return (
@@ -1403,27 +1424,48 @@ class TrafficSignGridEnv(gym.Env):
         sign_boxes_day, sign_boxes_on = [], []
 
         # Precompute overlays once per step
-        over_sign_day = self._apply_grid_overlay(self.sign_rgba_day, mode="day")
+        over_sign_day = (
+            None
+            if self.active_only_steps
+            else self._apply_grid_overlay(self.sign_rgba_day, mode="day")
+        )
         over_sign_on  = self._apply_grid_overlay(self.sign_rgba_on,  mode="on")
 
         for t_seed in seeds:
-            over_day, meta_day = self._compose_on_bg(
-                self._transform_sign(over_sign_day, t_seed),
-                self._place_seed,
-                return_meta=True,
-            )
+            if over_sign_day is not None:
+                over_day, meta_day = self._compose_on_bg(
+                    self._transform_sign(over_sign_day, t_seed),
+                    self._place_seed,
+                    return_meta=True,
+                )
+                imgs_over_day.append(over_day)
+                sign_boxes_day.append(meta_day["sign_bbox_bg"])
             over_on, meta_on = self._compose_on_bg(
                 self._transform_sign(over_sign_on, t_seed),
                 self._place_seed,
                 return_meta=True,
             )
-            imgs_over_day.append(over_day)
             imgs_over_on.append(over_on)
-            sign_boxes_day.append(meta_day["sign_bbox_bg"])
             sign_boxes_on.append(meta_on["sign_bbox_bg"])
 
-        day_rows_all = self._summarize_detection_batch(imgs_over_day, sign_boxes_day)
-        on_rows_all = self._summarize_detection_batch(imgs_over_on, sign_boxes_on)
+        if self.active_only_steps:
+            if baseline_day_metrics is None or len(baseline_day_metrics) < len(seeds):
+                raise RuntimeError(
+                    "active-only evaluation requires cached clean day metrics"
+                )
+            day_rows_all = list(baseline_day_metrics[: len(seeds)])
+            on_rows_all = self._summarize_detection_batch(
+                imgs_over_on,
+                sign_boxes_on,
+            )
+        else:
+            combined_rows = self._summarize_detection_batch(
+                imgs_over_day + imgs_over_on,
+                sign_boxes_day + sign_boxes_on,
+            )
+            split = len(imgs_over_day)
+            day_rows_all = combined_rows[:split]
+            on_rows_all = combined_rows[split:]
         if baseline_on_confidences is None and baseline_day_confidences is None:
             eligible_indices = list(range(len(on_rows_all)))
         else:
@@ -1499,6 +1541,7 @@ class TrafficSignGridEnv(gym.Env):
                 if day_rows
                 else 0.0
             ),
+            "active_only_step": bool(self.active_only_steps),
         }
 
     def _paint_layers(self, mode: str):

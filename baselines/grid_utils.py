@@ -180,6 +180,10 @@ def build_env_from_args(args) -> TrafficSignGridEnv:
 
         steps_per_episode=int(args.episode_steps),
         eval_K=int(args.eval_K),
+        eval_K_min=int(getattr(args, "eval_K_min", args.eval_K)),
+        eval_K_max=int(getattr(args, "eval_K_max", args.eval_K)),
+        eval_K_ramp_threshold=getattr(args, "eval_K_ramp_threshold", None),
+        active_only_steps=bool(int(getattr(args, "active_only_steps", 0))),
         detector_debug=bool(int(args.detector_debug)),
 
         grid_cell_px=int(args.grid_cell),
@@ -228,6 +232,8 @@ def build_env_from_args(args) -> TrafficSignGridEnv:
         require_source_suppression=bool(int(getattr(args, "require_source_suppression", 1))),
         require_day_preservation=bool(int(getattr(args, "require_day_preservation", 1))),
         detector_instance=getattr(args, "detector_instance", None),
+        conf_thresh=float(getattr(args, "detector_score_floor", 0.10)),
+        info_image_every=int(getattr(args, "info_image_every", 50)),
         seed=int(getattr(args, "seed", 0)),
     )
     return env
@@ -430,7 +436,13 @@ def _default_cfg_for_env(cfg: Dict[str, Any]) -> Dict[str, Any]:
     d.setdefault("detector_model", "")
     d.setdefault("detector_device", "auto")
     d.setdefault("detector_debug", 0)
+    d.setdefault("detector_score_floor", 0.10)
     d.setdefault("eval_K", 3)
+    d.setdefault("eval_K_min", d["eval_K"])
+    d.setdefault("eval_K_max", d["eval_K"])
+    d.setdefault("eval_K_ramp_threshold", None)
+    d.setdefault("active_only_steps", 0)
+    d.setdefault("info_image_every", 50)
     d.setdefault("grid_cell", 16)
     d.setdefault("episode_steps", 300)
     d.setdefault("transform_strength", 1.0)

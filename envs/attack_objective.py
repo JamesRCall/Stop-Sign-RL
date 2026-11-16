@@ -6,6 +6,7 @@ identical across PPO, baselines, angle sweeps, and physical-image evaluation.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -118,6 +119,101 @@ class AggregateAttackMetrics:
             "targeted_rate": float(self.targeted_rate),
             "top_class_counts": dict(self.top_class_counts or {}),
         }
+
+
+@dataclass(frozen=True)
+class DenseAttackPotential:
+    """Bounded black-box progress toward the selected attack objective.
+
+    Every component is in ``[0, 1]`` and larger is better.  Classification
+    modes keep source suppression, challenger confidence, challenger dominance,
+    and challenger localization separate.  Consequently, useful changes remain
+    visible before the challenger overtakes the source class.  In disappearance
+    mode ``localization`` means source *de-localization*; the challenger fields
+    are zero because no replacement class is required.
+    """
+
+    mode: str
+    potential: float
+    source_suppression: float
+    challenger_confidence: float
+    challenger_dominance: float
+    localization: float
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": str(self.mode),
+            "potential": float(self.potential),
+            "source_suppression": float(self.source_suppression),
+            "challenger_confidence": float(self.challenger_confidence),
+            "challenger_dominance": float(self.challenger_dominance),
+            "localization": float(self.localization),
+        }
+
+
+def _unit_interval(value: float) -> float:
+    """Return a finite confidence/IoU value clipped to its declared domain."""
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return 0.0
+    return min(1.0, max(0.0, numeric))
+
+
+def dense_attack_potential(
+    metrics: AggregateAttackMetrics,
+    config: AttackObjectiveConfig,
+) -> DenseAttackPotential:
+    """Return a dense, confidence-threshold-free potential from model outputs.
+
+    The function needs only black-box confidences and localized box IoUs.  It
+    deliberately does not include sparse success indicators or hard confidence
+    thresholds: over the valid confidence/IoU domain each useful change has a
+    non-zero linear contribution, including when the class margin is negative.
+    The resulting potential is an interpretable ``[0, 1]`` score, not a claim
+    that the attack has met :func:`attack_success`.
+    """
+    source_confidence = _unit_interval(metrics.mean_source_conf)
+    source_suppression = 1.0 - source_confidence
+
+    if config.mode == "disappearance":
+        source_delocalization = 1.0 - _unit_interval(metrics.mean_source_iou)
+        potential = 0.5 * (source_suppression + source_delocalization)
+        return DenseAttackPotential(
+            mode=config.mode,
+            potential=float(potential),
+            source_suppression=float(source_suppression),
+            challenger_confidence=0.0,
+            challenger_dominance=0.0,
+            localization=float(source_delocalization),
+        )
+
+    if config.mode == "untargeted_misclassification":
+        challenger_confidence = _unit_interval(metrics.mean_alternative_conf)
+        challenger_iou = _unit_interval(metrics.mean_alternative_iou)
+    else:
+        challenger_confidence = _unit_interval(metrics.mean_attack_target_conf)
+        challenger_iou = _unit_interval(metrics.mean_attack_target_iou)
+
+    # This affine margin maps [-1, 1] to [0, 1] without erasing negative
+    # margins.  It supplements (rather than replaces) the two confidences, so
+    # raising the challenger or lowering the source always improves potential.
+    challenger_dominance = 0.5 * (
+        1.0 + challenger_confidence - source_confidence
+    )
+    potential = 0.25 * (
+        source_suppression
+        + challenger_confidence
+        + challenger_dominance
+        + challenger_iou
+    )
+    return DenseAttackPotential(
+        mode=config.mode,
+        potential=float(potential),
+        source_suppression=float(source_suppression),
+        challenger_confidence=float(challenger_confidence),
+        challenger_dominance=float(challenger_dominance),
+        localization=float(challenger_iou),
+    )
 
 
 def summarize_detection(
